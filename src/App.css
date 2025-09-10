@@ -1,0 +1,407 @@
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+
+/* Estilos elegantes para o player - estilo Haruma */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 3px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Efeito de glow sutil para elementos selecionados */
+.selected-lesson {
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+}
+
+/* Animação suave para os tooltips */
+.tooltip-fade {
+  animation: tooltipFadeIn 0.3s ease-out;
+}
+
+@keyframes tooltipFadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Estilos para controles de tela cheia */
+.fullscreen-overlay {
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.fullscreen-controls {
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+/* Efeito de fade suave para os overlays */
+.overlay-fade-in {
+  animation: overlayFadeIn 0.3s ease-out;
+}
+
+.overlay-fade-out {
+  animation: overlayFadeOut 0.3s ease-out;
+}
+
+@keyframes overlayFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes overlayFadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+}
+
+/* Garantir que o container fullscreen funcione corretamente */
+.video-container:fullscreen,
+.video-container:-webkit-full-screen,
+.video-container:-moz-full-screen,
+.video-container:-ms-fullscreen {
+  background: #000;
+  width: 100vw !important;
+  height: 100vh !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.video-container:fullscreen video,
+.video-container:-webkit-full-screen video,
+.video-container:-moz-full-screen video,
+.video-container:-ms-fullscreen video {
+  width: 100vw !important;
+  height: 100vh !important;
+  object-fit: contain;
+}
+
+/* Overlays em fullscreen */
+.video-container:fullscreen > div[class*="absolute"],
+.video-container:-webkit-full-screen > div[class*="absolute"],
+.video-container:-moz-full-screen > div[class*="absolute"],
+.video-container:-ms-fullscreen > div[class*="absolute"] {
+  z-index: 2147483647 !important;
+}
+
+/* Remover cursor padrão do browser em fullscreen */
+.video-container:fullscreen {
+  cursor: none;
+}
+
+.video-container:fullscreen * {
+  cursor: none !important;
+}
+
+.video-container:fullscreen button,
+.video-container:fullscreen input {
+  cursor: pointer !important;
+}
+
+/* Ocultar COMPLETAMENTE todos os controles nativos do video */
+video::-webkit-media-controls,
+video::-webkit-media-controls-enclosure,
+video::-webkit-media-controls-panel,
+video::-webkit-media-controls-play-button,
+video::-webkit-media-controls-timeline-container,
+video::-webkit-media-controls-current-time-display,
+video::-webkit-media-controls-time-remaining-display,
+video::-webkit-media-controls-timeline,
+video::-webkit-media-controls-volume-slider-container,
+video::-webkit-media-controls-volume-slider,
+video::-webkit-media-controls-mute-button,
+video::-webkit-media-controls-toggle-closed-captions-button,
+video::-webkit-media-controls-fullscreen-button {
+  display: none !important;
+  -webkit-appearance: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* Para Firefox */
+video::-moz-media-controls {
+  display: none !important;
+}
+
+/* Para outros browsers */
+video::cue {
+  display: none !important;
+}
+
+.video-container:fullscreen::after,
+.video-container:fullscreen::before {
+  display: none !important;
+  content: none !important;
+}
+
+/* Remove exit fullscreen cursor e overlay */
+.video-container:fullscreen {
+  background: black !important;
+}
+
+.video-container:fullscreen:hover {
+  cursor: none !important;
+}
+
+/* Remove cursor de exit fullscreen do Chrome/Safari */
+.video-container:fullscreen::before,
+.video-container:fullscreen::after {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+}
+
+html:fullscreen,
+body:fullscreen {
+  cursor: none !important;
+}
+
+/* Força cursor none em toda área de fullscreen */
+/* Permitir cursor normal sobre o vídeo */
+.video-container {
+  cursor: default !important;
+}
+
+.video-container video {
+  cursor: default !important;
+}
+
+/* Em fullscreen, manter cursor visível mas remover indicadores do browser */
+.video-container:fullscreen {
+  background: #000 !important;
+  cursor: default !important;
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+.video-container:fullscreen video {
+  cursor: default !important;
+}
+
+/* Força ocultação de qualquer elemento do browser com z-index muito alto */
+.video-container:fullscreen *[style*="z-index: 2147483647"],
+.video-container:fullscreen *[style*="position: fixed"],
+.video-container:fullscreen > div:not([class]) {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* Bloqueia especificamente tooltips e overlays do browser */
+.video-container:fullscreen::before,
+.video-container:fullscreen::after {
+  display: none !important;
+  content: none !important;
+  visibility: hidden !important;
+}
+
+/* Ocultar exit fullscreen apenas via CSS */
+.video-container:fullscreen {
+  background: black !important;
+}
+
+/* Permitir cursor normal em elementos interativos */
+.video-container:fullscreen button,
+.video-container:fullscreen input,
+.video-container:fullscreen [role="button"] {
+  cursor: pointer !important;
+}
+
+/* For Webkit browsers */
+.video-container:fullscreen::-webkit-media-controls-fullscreen-button {
+  display: none !important;
+}
+
+/* For Firefox */
+.video-container:fullscreen:-moz-full-screen {
+  cursor: none !important;
+}
+
+/* Remove native fullscreen indicators */
+.video-container:fullscreen *::-webkit-media-controls,
+.video-container:fullscreen video::-webkit-media-controls-panel,
+.video-container:fullscreen video::-webkit-media-controls-play-button,
+.video-container:fullscreen video::-webkit-media-controls-fullscreen-button {
+  display: none !important;
+  -webkit-appearance: none;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* Garantir que os controles customizados sejam visíveis */
+.video-container:fullscreen button,
+.video-container:-webkit-full-screen button,
+.video-container:-moz-full-screen button {
+  cursor: pointer !important;
+  display: block !important;
+}
+
+/* Esconder completamente controles nativos do vídeo */
+video::-webkit-media-controls,
+video::-webkit-media-controls-enclosure {
+  display: none !important;
+}
+
+video::-moz-media-controls {
+  display: none !important;
+}
+
+/* Timeline customizada elegante */
+.custom-timeline {
+  position: relative;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  overflow: visible;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.custom-timeline:hover {
+  height: 10px;
+  background: rgba(255, 255, 255, 0.3);
+  transform: scaleY(1.2);
+}
+
+/* Removendo classe CSS problemática - usando inline styles */
+
+.custom-timeline-progress::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3));
+  border-radius: 4px;
+}
+
+.custom-timeline-thumb {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 16px;
+  height: 16px;
+  background: white;
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  cursor: grab;
+  z-index: 2;
+}
+
+.custom-timeline:hover .custom-timeline-thumb {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1.1);
+}
+
+.custom-timeline-thumb:active {
+  cursor: grabbing;
+  transform: translate(-50%, -50%) scale(1.2);
+}
+
+/* Animação suave para os botões */
+.player-button {
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition: all 0.2s ease;
+}
+
+.player-button:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+/* Estilos para o slider de volume */
+.slider {
+  background: linear-gradient(to right, #3b82f6 0%, #3b82f6 var(--value, 100%), rgba(255,255,255,0.2) var(--value, 100%), rgba(255,255,255,0.2) 100%);
+}
+
+.slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: white;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+
+.slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: white;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
