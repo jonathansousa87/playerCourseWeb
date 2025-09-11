@@ -45,6 +45,32 @@ const ModuleItem = ({
   const isExpanded = isModule && (expandedModules[item.path] || false);
   const isSelected = selectedLesson && selectedLesson.path === item.path;
   const isVideo = !isModule && item.title && item.title.match(/\.(mp4|webm|ts|m3u8)$/i);
+
+  // Função para calcular o tempo total de um módulo
+  const calculateModuleDuration = (moduleContent) => {
+    if (!moduleContent || !Array.isArray(moduleContent)) return { duration: 0, videoCount: 0 };
+    
+    return moduleContent.reduce((acc, contentItem) => {
+      if (contentItem.type === "lesson" && contentItem.title && contentItem.title.match(/\.(mp4|webm|ts|m3u8)$/i)) {
+        const duration = videoDurations[contentItem.path] || 0;
+        // Garantir que a duração é um número válido e não é infinita ou NaN
+        const validDuration = (isFinite(duration) && !isNaN(duration) && duration > 0) ? duration : 0;
+        return {
+          duration: acc.duration + validDuration,
+          videoCount: acc.videoCount + (validDuration > 0 ? 1 : 0)
+        };
+      } else if (contentItem.type === "module" && contentItem.content) {
+        const subModuleData = calculateModuleDuration(contentItem.content);
+        return {
+          duration: acc.duration + subModuleData.duration,
+          videoCount: acc.videoCount + subModuleData.videoCount
+        };
+      }
+      return acc;
+    }, { duration: 0, videoCount: 0 });
+  };
+
+  const moduleData = isModule ? calculateModuleDuration(item.content) : { duration: 0, videoCount: 0 };
   
   // Carregar duração do vídeo se for um vídeo - TEMPORARIAMENTE DESABILITADO
   // React.useEffect(() => {
@@ -113,6 +139,11 @@ const ModuleItem = ({
               : 'text-gray-400'
           }`}>
             {item.content?.length || 0} {item.content?.length === 1 ? 'item' : 'itens'}
+            {moduleData.duration > 0 && moduleData.videoCount > 0 && (
+              <span className="ml-2">
+                • {formatTime(moduleData.duration)} ({moduleData.videoCount} vídeo{moduleData.videoCount !== 1 ? 's' : ''})
+              </span>
+            )}
             {isCompleted && ' ✓ Completo'}
           </p>
         </div>
@@ -1067,10 +1098,14 @@ const MainComponent = () => {
   // Removida função duplicada - agora integrada no onMouseMove da timeline
 
   const formatTime = (seconds) => {
-    if (isNaN(seconds)) return "0:00";
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+    if (isNaN(seconds) || !isFinite(seconds) || seconds < 0) return "00:00:00";
+    
+    const totalSeconds = Math.floor(seconds);
+    const hours = Math.floor(totalSeconds / 3600);
+    const mins = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
+    
+    return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   const handleCourseSelect = (course) => {
