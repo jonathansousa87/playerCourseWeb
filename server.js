@@ -25,7 +25,7 @@ app.use((req, res, next) => {
 
 // Função auxiliar para verificar se é um arquivo de aula válido
 const isLessonFile = (filename) => {
-  const validExtensions = ['.mp4', '.webm', '.ts', '.m3u8', '.pdf', '.html'];
+  const validExtensions = ['.mp4', '.webm', '.ts', '.m3u8', '.mkv', '.pdf', '.html'];
   return validExtensions.some(ext => filename.toLowerCase().endsWith(ext));
 };
 
@@ -37,6 +37,7 @@ const getContentType = (filename) => {
     'webm': 'video/webm',
     'ts': 'video/mp2t',
     'm3u8': 'application/x-mpegURL',
+    'mkv': 'video/x-matroska',
     'pdf': 'application/pdf',
     'html': 'text/html'
   };

@@ -15,7 +15,7 @@ import React, { useEffect, useRef, useState } from "react";
 import Collapsible from 'react-collapsible';
 
 const getFileIcon = (filename) => {
-  if (filename.match(/\.(mp4|webm|ts|m3u8|mkv)$/i)) {
+  if (filename.match(/\.(mp4|webm|ts|m3u8)$/i)) {
     return <MonitorPlay className="w-5 h-5 mr-2 text-blue-500" />;
   } else if (filename.endsWith(".pdf")) {
     return <FileText className="w-5 h-5 mr-2 text-red-500" />;
@@ -44,14 +44,14 @@ const ModuleItem = ({
   const isModule = item.type === "module";
   const isExpanded = isModule && (expandedModules[item.path] || false);
   const isSelected = selectedLesson && selectedLesson.path === item.path;
-  const isVideo = !isModule && item.title && item.title.match(/\.(mp4|webm|ts|m3u8|mkv)$/i);
+  const isVideo = !isModule && item.title && item.title.match(/\.(mp4|webm|ts|m3u8)$/i);
 
   // Função para calcular o tempo total de um módulo
   const calculateModuleDuration = (moduleContent) => {
     if (!moduleContent || !Array.isArray(moduleContent)) return { duration: 0, videoCount: 0 };
     
     return moduleContent.reduce((acc, contentItem) => {
-      if (contentItem.type === "lesson" && contentItem.title && contentItem.title.match(/\.(mp4|webm|ts|m3u8|mkv)$/i)) {
+      if (contentItem.type === "lesson" && contentItem.title && contentItem.title.match(/\.(mp4|webm|ts|m3u8)$/i)) {
         const duration = videoDurations[contentItem.path] || 0;
         // Garantir que a duração é um número válido e não é infinita ou NaN
         const validDuration = (isFinite(duration) && !isNaN(duration) && duration > 0) ? duration : 0;
@@ -830,7 +830,7 @@ const MainComponent = () => {
 
     const getAllVideos = (content, videos = []) => {
       content.forEach(item => {
-        if (item.type === 'lesson' && item.title && item.title.match(/\.(mp4|webm|ts|m3u8|mkv)$/i)) {
+        if (item.type === 'lesson' && item.title && item.title.match(/\.(mp4|webm|ts|m3u8)$/i)) {
           videos.push(item.path);
         } else if (item.type === 'module' && item.content) {
           getAllVideos(item.content, videos);
@@ -1157,7 +1157,7 @@ const MainComponent = () => {
 
 
   const renderLesson = () => {
-    const isVideo = selectedLesson.title.match(/\.(mp4|webm|ts|m3u8|mkv)$/i);
+    const isVideo = selectedLesson.title.match(/\.(mp4|webm|ts|m3u8)$/i);
     const isPDF = selectedLesson.title.endsWith(".pdf");
     const isHTML = selectedLesson.title.endsWith(".html");
     const fileUrl = `http://localhost:3001/cursos/${selectedCourse.title}/${selectedLesson.path}`;
@@ -1563,14 +1563,12 @@ const MainComponent = () => {
               </div>
             </div>
           </div>
-          <div className="flex-1 bg-gray-100 overflow-auto">
-            <div className="mx-auto bg-white shadow-xl" style={{ width: "1000px", height: "100vh" }}>
-              <object data={fileUrl} type="application/pdf" className="w-full h-full">
-                <iframe src={fileUrl} className="w-full h-full" title={selectedLesson.title}>
-                  <a href={fileUrl}>Download PDF</a>
-                </iframe>
-              </object>
-            </div>
+          <div className="flex-1 bg-white">
+            <object data={fileUrl} type="application/pdf" className="w-full h-full">
+              <iframe src={fileUrl} className="w-full h-full" title={selectedLesson.title}>
+                <a href={fileUrl}>Download PDF</a>
+              </iframe>
+            </object>
           </div>
         </div>
       );
@@ -1868,18 +1866,17 @@ const MainComponent = () => {
 
   if (selectedLesson) {
     const isHTML = selectedLesson.title.endsWith(".html");
-    const isPDF = selectedLesson.title.endsWith(".pdf");
-
-    if (isHTML || isPDF) {
-      // Layout com sidebar fixa para HTML e PDF
+    
+    if (isHTML) {
+      // Layout com sidebar fixa para HTML
       return (
         <div className="h-screen bg-gray-900 text-gray-100 flex">
           {/* Área principal do conteúdo */}
           <div className="flex-1 bg-gray-800">
             {renderLesson()}
           </div>
-
-          {/* Sidebar fixa para HTML e PDF */}
+          
+          {/* Sidebar fixa para HTML */}
           <div className="w-[28rem] bg-gray-800 border-l border-gray-700 flex flex-col">
             {/* Header com título */}
             <div className="p-4 border-b border-gray-700">
@@ -1890,7 +1887,7 @@ const MainComponent = () => {
                 Lista de Aulas
               </div>
             </div>
-
+            
             {/* Lista de aulas com scroll */}
             <div className="flex-1 p-4 overflow-y-auto scrollbar-thin scrollbar-track-gray-800 scrollbar-thumb-gray-600 hover:scrollbar-thumb-gray-500">
               <div className="space-y-2">
