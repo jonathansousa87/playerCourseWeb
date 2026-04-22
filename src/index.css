@@ -25,8 +25,8 @@
   font-weight: 400;
 
   color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+  color: rgba(226, 232, 240, 0.9);
+  background-color: #020617;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -73,6 +73,61 @@ button:hover {
 button:focus,
 button:focus-visible {
   outline: 4px auto -webkit-focus-ring-color;
+}
+
+.prose-embedded {
+  word-wrap: break-word;
+}
+
+.prose-embedded p {
+  margin-bottom: 0.75em;
+}
+
+.prose-embedded h3 {
+  @apply text-slate-200 font-medium mt-3 mb-1.5 text-base;
+}
+
+.prose-embedded h4, .prose-embedded h5 {
+  @apply text-slate-300 font-medium mt-2 mb-1 text-sm;
+}
+
+.prose-embedded strong {
+  @apply text-slate-100;
+}
+
+.prose-embedded ul, .prose-embedded ol {
+  @apply mb-2 text-slate-300;
+  padding-left: 1.5em;
+}
+
+.prose-embedded li {
+  margin-bottom: 0.35em;
+}
+
+.prose-embedded code {
+  @apply text-cyan-300 font-mono text-xs;
+  background-color: #0d1117;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.prose-embedded pre {
+  @apply rounded-lg mt-2 mb-3;
+  background-color: #0d1117;
+  padding: 16px;
+  overflow-x: auto;
+}
+
+.prose-embedded pre code {
+  @apply text-cyan-300;
+  background-color: transparent;
+  padding: 0;
+}
+
+.prose-embedded blockquote {
+  @apply text-slate-400 border-l-4 border-slate-700;
+  padding: 0.5em 1em;
+  margin: 0.5em 0;
 }
 
 @media (prefers-color-scheme: light) {
