@@ -8,15 +8,11 @@ start.bat
 ```
 **Duplo clique no arquivo** ou execute no cmd/PowerShell
 
-### 🐧 Linux/Mac (Bash Universal)
+### 🐧 Linux/Mac
 ```bash
-./start-universal.sh
-```
-
-### 🐟 Linux/Mac (Fish Shell - Original)
-```fish
 ./start.sh
 ```
+Funciona em bash, zsh, fish (chamando direto). Verifica Node/NPM, sobe backend e frontend, faz cleanup dos dois ao receber Ctrl+C.
 
 ## 📋 Pré-requisitos
 
@@ -32,7 +28,7 @@ start.bat
 
 2. **Executar o script apropriado:**
    - Windows: `start.bat`
-   - Linux/Mac: `./start-universal.sh`
+   - Linux/Mac: `./start.sh`
 
 ## 🌐 Acesso
 
@@ -51,7 +47,7 @@ Após executar o script:
 ## 🛑 Parar os Serviços
 
 - **Windows:** Pressione `Ctrl+C` na janela do cmd
-- **Linux/Mac:** Pressione `Ctrl+C` no terminal
+- **Linux/Mac:** Pressione `Ctrl+C` no terminal (o trap cuida de matar backend e frontend juntos)
 
 ## 🆘 Problemas Comuns
 
@@ -65,6 +61,5 @@ Após executar o script:
 
 ### Permissão negada (Linux/Mac)
 ```bash
-chmod +x start-universal.sh
 chmod +x start.sh
 ```

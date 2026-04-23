@@ -30,7 +30,7 @@ start.bat
 
 **Linux/Mac:**
 ```bash
-./start-universal.sh
+./start.sh
 ```
 
 ### Acesso

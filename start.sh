@@ -1,24 +1,71 @@
-#!/usr/bin/env fish
+#!/bin/bash
 
-# Obtém o diretório atual
-set current_dir (pwd)
+# Script universal compatível com Bash (Linux/Mac/WSL)
+set -e
 
-# Inicia o servidor em background
-echo "Iniciando servidor..."
+echo "====================================="
+echo "       MINHA PLATAFORMA"
+echo "====================================="
+echo
+
+# Verificar Node.js
+if ! command -v node &> /dev/null; then
+    echo "ERRO: Node.js não encontrado!"
+    echo "Instale Node.js primeiro: https://nodejs.org"
+    exit 1
+fi
+
+echo "Node.js encontrado: $(node --version)"
+
+# Verificar NPM
+if ! command -v npm &> /dev/null; then
+    echo "ERRO: NPM não encontrado!"
+    exit 1
+fi
+
+echo "NPM encontrado: $(npm --version)"
+echo
+
+echo "Iniciando servidor backend..."
 node server.js &
-set server_pid $last_pid
+SERVER_PID=$!
 
-# Aguarda o servidor inicializar
+echo "Servidor iniciado (PID: $SERVER_PID)"
+echo "Aguardando servidor inicializar..."
 sleep 3
 
-# Inicia o cliente
-echo "Iniciando cliente..."
+echo
+echo "Iniciando cliente frontend..."
 npm run dev &
-set client_pid $last_pid
+CLIENT_PID=$!
 
-echo "Servidor PID: $server_pid"
-echo "Cliente PID: $client_pid"
-echo "Para parar os serviços: kill $server_pid $client_pid"
+echo "Cliente iniciado (PID: $CLIENT_PID)"
+echo
 
-# Mantém o script rodando
+echo "====================================="
+echo "  MINHA PLATAFORMA INICIADA!"
+echo "====================================="
+echo " Frontend: http://localhost:5173"
+echo " Backend:  http://localhost:3001"
+echo "====================================="
+echo
+echo "PIDs: Servidor($SERVER_PID) Cliente($CLIENT_PID)"
+echo "Para parar: kill $SERVER_PID $CLIENT_PID"
+echo "Ou pressione Ctrl+C"
+echo
+
+# Função de limpeza ao sair
+cleanup() {
+    echo
+    echo "Parando serviços..."
+    kill $SERVER_PID $CLIENT_PID 2>/dev/null || true
+    wait 2>/dev/null || true
+    echo "Serviços parados."
+    exit 0
+}
+
+# Capturar Ctrl+C
+trap cleanup SIGINT SIGTERM
+
+# Manter script rodando
 wait

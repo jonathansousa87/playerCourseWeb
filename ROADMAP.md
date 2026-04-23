@@ -69,9 +69,9 @@ O FSRS já adapta por card. O próximo nível:
 - [x] `server.js` separado em `server/routes/*.js`: `courses`, `notes`, `progress`, `flashcards`, `quiz`, `stats`, `ia`. `server/config.js` com get/set do `COURSES_PATH` mutável. `server.js` ficou com 41 linhas (bootstrap + routers).
 - [ ] Avisos de `react/prop-types` e `React unused` em todos os `.jsx` (não bloqueia, mas a lint tá ruidosa). Ou adiciona PropTypes, ou desabilita a regra globalmente.
 - [~] Testes: cobertura crescendo. Cobertos: `server/flashcardParser.js` (15 testes), `server/semanticConfusion.js` (16 testes) e `server/flashcards.js` (14 testes com `db/index.js` e `fs` mockados — reviewCard, getDueCards, getDueSummary, getDeck, importDeck com dedup + _ia priority + recursão). **Total: 45 testes.** Falta: parsers do frontend (`quizParser.js`, `examplesParser.js`) e teste de integração com Postgres real (opcional).
-- [ ] `video-durations-cache.json` commitado — mover pra `.gitignore` ou pro DB.
-- [ ] `CoursePlatform_bkp.jsx` — se existir no repo, apagar.
-- [ ] `start.sh` assume `fish`; `start-universal.sh` e `start.bat` duplicam intenção — consolidar.
+- [x] `video-durations-cache.json` está no `.gitignore` (não tracked). Cache fica local.
+- [x] `CoursePlatform_bkp.jsx` removido do repo.
+- [x] `start.sh` (fish-only) removido. `start-universal.sh` renomeado para `start.sh` (bash universal). README e START_GUIDE atualizados.
 
 ---
 
