@@ -65,7 +65,7 @@ O FSRS já adapta por card. O próximo nível:
 
 ## Débito técnico
 
-- [ ] `CoursePlatform.jsx` ainda tem ~830 linhas — dá pra extrair `CoursesGrid`, `CoursesHeader`, `LessonsView` como components separados.
+- [x] `CoursePlatform.jsx` (901 linhas) quebrado em: `CoursesScreen` (home + modal de config), `LessonsView` (lista de aulas + banner de revisão), `LessonPlayer` (decide entre stepper, HTML/PDF, video legacy, unsupported — com `SidebarSlideout` e `FullscreenSidebar` como subcomponentes locais). `CoursePlatform.jsx` ficou com 355 linhas (hooks + state + handlers + escolha de view).
 - [x] `server.js` separado em `server/routes/*.js`: `courses`, `notes`, `progress`, `flashcards`, `quiz`, `stats`, `ia`. `server/config.js` com get/set do `COURSES_PATH` mutável. `server.js` ficou com 41 linhas (bootstrap + routers).
 - [ ] Avisos de `react/prop-types` e `React unused` em todos os `.jsx` (não bloqueia, mas a lint tá ruidosa). Ou adiciona PropTypes, ou desabilita a regra globalmente.
 - [~] Testes: cobertura crescendo. Cobertos: `server/flashcardParser.js` (15 testes), `server/semanticConfusion.js` (16 testes) e `server/flashcards.js` (14 testes com `db/index.js` e `fs` mockados — reviewCard, getDueCards, getDueSummary, getDeck, importDeck com dedup + _ia priority + recursão). **Total: 45 testes.** Falta: parsers do frontend (`quizParser.js`, `examplesParser.js`) e teste de integração com Postgres real (opcional).
