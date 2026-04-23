@@ -26,27 +26,23 @@ Documento vivo do que sobra do plano original (componentização + fixação via
 - [x] Passo só conta como concluído se `score >= 70%`.
 - [x] Questões erradas viram flashcards extras no deck da aula (endpoint `/wrong-to-flashcards`, `card_type='quiz_wrong'`, dedup por front+back, feedback visual ao finalizar).
 
-### 2. Diário técnico por aula — valor médio, esforço baixo
-Os arquivos `*_diario_tecnico_*.md` já existem em cada aula (ex.: `36.-Introduction-716K_diario_tecnico_dub_06.md`) mas não aparecem no stepper.
+### 2. Diário técnico por aula — CONCLUÍDO ✓
+- [x] Step `"diario"` adicionado ao `STEP_CONFIG` do `LessonStepper.jsx` (ícone 📓, cor rose).
+- [x] Editor markdown inline em `TechnicalDiary.jsx` que carrega template do arquivo `*_diario_tecnico_*.md` e persiste conteúdo.
+- [x] Tabela `technical_diary_notes (course_title, lesson_prefix, content, updated_at)` + endpoints `/api/db/diary-tecnico/:course/:prefix`.
 
-- [ ] Adicionar step `"diario"` no `STEP_CONFIG` do `LessonStepper.jsx`.
-- [ ] Editor markdown inline (reaproveitar `PersonalSummary` com template pré-carregado do arquivo).
-- [ ] Persistir em `notes` tabela (tipo `diario_tecnico`).
+### 3. Dashboard de estudo — CONCLUÍDO ✓
+- [x] Heatmap de consistência (90 dias) — agrega `flashcard_review_log.reviewed_at` + `pomodoro_sessions.created_at` por dia.
+- [x] Curva de retenção por curso: acerto rolling 7d vs 30d com contagem de reviews. Cores semânticas (verde ≥ 80%, amarelo 60-79%, vermelho < 60%).
+- [x] Top cards "lapsos" — `flashcards` ordenados por lapses desc com course/lesson.
+- [x] ETA zero backlog — `dueCards ÷ reviews_por_dia_14d` (mostrado em dias).
+- [x] Seção "Perfil cognitivo" agrega streak, hora ótima/fraca, drift D.
+- [x] Seção "Cards confusos" mostra grupos de fronts similares lado a lado (item 6.3).
 
-### 3. Dashboard de estudo — alto valor, esforço médio
-Hoje não há visão agregada. O `DailyReview` já tem um resumo por curso, mas falta:
-
-- [ ] Heatmap de consistência (dias estudados nos últimos 90 dias) — dados já existem em `flashcard_review_log.reviewed_at` e `pomodoro_sessions`.
-- [ ] Curva de retenção real (taxa de acerto rolling 7d vs 30d) por curso.
-- [ ] Top cards "lapsos" — `flashcards` com `lapses > N` ordenados.
-- [ ] Tempo estimado pra zerar backlog (due cards ÷ ritmo atual).
-
-### 4. Pomodoro acoplado ao FSRS — valor médio, esforço baixo
-O `PomodoroTimer` roda isolado. Podia:
-
-- [ ] No fim de um ciclo de foco, sugerir "revise 5 cards vencidos" em vez de só descansar passivamente (active recall na pausa).
-- [ ] Ajustar duração com base em acerto recente: taxa < 60% → diminui foco pra 20min, > 85% → estende pra 45min.
-- [ ] Gravar `pomodoro_sessions.kind = 'focus'|'break_active'|'break_passive'`.
+### 4. Pomodoro acoplado ao FSRS — CONCLUÍDO ✓
+- [x] No fim do ciclo de foco, `choose_break` popup oferece "Revisar 5 cards" (pausa ativa via `fetchDueFlashcards({ limit: 5 })` + mini review com FSRS) ou pausa passiva.
+- [x] Duração adaptativa com base em `accuracy7d` do endpoint `/api/stats/recent`: < 60% → 20min, > 85% → 45min, caso contrário 25min padrão (`adaptiveFocusSeconds` em `PomodoroTimer.jsx`).
+- [x] Coluna `pomodoro_sessions.kind` existe no schema e `savePomodoroSession` aceita `'reflection' | 'break_active' | 'break_passive'` (gravado conforme a escolha do usuário no fim da pausa).
 
 ### 5. Geração automática de conteúdo (IA) — CONCLUÍDO ✓
 Implementado via DeepSeek API (v3 chat, `deepseek-chat`).
@@ -58,12 +54,12 @@ Implementado via DeepSeek API (v3 chat, `deepseek-chat`).
 - [x] Regex `LESSON_SUFFIXES` aceita `_ia` opcional; agrupamento prioriza a variante IA quando existe manual+IA.
 - [x] Smoke test real: gera `_resumo_dub_01_ia.md` em ~17s (1121 tokens, ~$0.003).
 
-### 6. Perfil cognitivo / adaptativo — valor alto, esforço alto
+### 6. Perfil cognitivo / adaptativo — CONCLUÍDO ✓
 O FSRS já adapta por card. O próximo nível:
 
 - [x] `user_profile` com estatísticas agregadas — `/api/stats/profile` retorna streak, hora ótima/fraca (acerto por hora do dia), drift de dificuldade (D médio 7d vs 7-30d), totais. Exposto no Dashboard.
-- [ ] Reorder de módulos: se acerto em módulo X cai, empurra revisão antes de liberar módulo X+1.
-- [ ] Detecção de "confusão semântica": cards com `front` similar + `lapses > N` agrupados pra revisão comparativa.
+- [x] Reorder de módulos: badge de acerto por módulo (verde/amarelo/vermelho) + banner sugerindo revisão quando módulos ficam < 60%. Endpoint `/api/stats/lesson-accuracy` agrega review log; hook `useLessonAccuracy` expõe via CourseContext.
+- [x] Detecção de "confusão semântica": `server/semanticConfusion.js` com tokenização + Jaccard + union-find agrupa cards com `front` similar e `lapses >= 2`. Endpoint `/api/flashcards/confusion`. Nova seção no Dashboard mostra grupos lado a lado.
 
 ---
 
@@ -72,7 +68,7 @@ O FSRS já adapta por card. O próximo nível:
 - [ ] `CoursePlatform.jsx` ainda tem ~830 linhas — dá pra extrair `CoursesGrid`, `CoursesHeader`, `LessonsView` como components separados.
 - [ ] `server.js` é monolítico — separar rotas em `server/routes/*.js` (hoje só `server/flashcards.js` foi quebrado).
 - [ ] Avisos de `react/prop-types` e `React unused` em todos os `.jsx` (não bloqueia, mas a lint tá ruidosa). Ou adiciona PropTypes, ou desabilita a regra globalmente.
-- [~] Testes: cobertura ainda baixa. Parser de flashcards extraído para `server/flashcardParser.js` e coberto por 15 testes Vitest (`flashcardParser.test.js`). Falta: lógica FSRS de `server/flashcards.js` (importDeck, reviewCard, getDueCards) e parsers do frontend (`quizParser.js`, `examplesParser.js`).
+- [~] Testes: cobertura crescendo. Cobertos: `server/flashcardParser.js` (15 testes) e `server/semanticConfusion.js` (16 testes — tokenize, Jaccard, union-find). Falta: lógica FSRS de `server/flashcards.js` (importDeck, reviewCard, getDueCards) e parsers do frontend (`quizParser.js`, `examplesParser.js`).
 - [ ] `video-durations-cache.json` commitado — mover pra `.gitignore` ou pro DB.
 - [ ] `CoursePlatform_bkp.jsx` — se existir no repo, apagar.
 - [ ] `start.sh` assume `fish`; `start-universal.sh` e `start.bat` duplicam intenção — consolidar.

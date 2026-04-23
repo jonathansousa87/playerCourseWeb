@@ -188,6 +188,15 @@ export const fetchLessonAccuracy = (courseTitle, days = 30) =>
     `${API_BASE}/api/stats/lesson-accuracy/${enc(courseTitle)}?days=${days}`,
   ).then(json);
 
+// Grupos de cards com fronts semanticamente similares (confusao)
+export const fetchConfusionGroups = ({ courseTitle, minLapses = 2, threshold = 0.4 } = {}) => {
+  const params = new URLSearchParams();
+  if (courseTitle) params.set("courseTitle", courseTitle);
+  params.set("minLapses", String(minLapses));
+  params.set("threshold", String(threshold));
+  return fetch(`${API_BASE}/api/flashcards/confusion?${params.toString()}`).then(json);
+};
+
 // === Migracao one-shot ===
 export const migrateLocalStorage = (payload) =>
   fetch(`${API_BASE}/api/migrate-localstorage`, {

@@ -15,6 +15,7 @@ import {
 } from './server/flashcards.js';
 import { generateForLesson } from './server/ai/generator.js';
 import { DEFAULT_MODEL as DEEPSEEK_DEFAULT_MODEL } from './server/ai/deepseek.js';
+import { findConfusionGroups } from './server/semanticConfusion.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -783,6 +784,55 @@ app.get('/api/flashcards/summary', async (_req, res) => {
   try {
     const rows = await getDueSummary();
     res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Grupos de cards com fronts similares (confusao semantica). Opcionalmente
+// filtra por curso. Agrupa via Jaccard + union-find. Retorna cards junto com
+// course_title e lesson_prefix pra navegacao.
+app.get('/api/flashcards/confusion', async (req, res) => {
+  try {
+    const courseTitle = req.query.courseTitle || null;
+    const minLapses = Math.max(1, Number(req.query.minLapses) || 2);
+    const threshold = Math.min(0.99, Math.max(0.1, Number(req.query.threshold) || 0.4));
+
+    const params = [minLapses];
+    let where = 'COALESCE(r.lapses, 0) >= $1';
+    if (courseTitle) {
+      params.push(courseTitle);
+      where += ` AND d.course_title = $${params.length}`;
+    }
+    const { rows } = await query(
+      `SELECT c.id, c.front, c.back, COALESCE(r.lapses, 0)::int AS lapses,
+              COALESCE(r.reps, 0)::int AS reps,
+              d.course_title, d.lesson_prefix
+       FROM flashcards c
+       JOIN flashcard_decks d ON d.id = c.deck_id
+       LEFT JOIN flashcard_reviews r ON r.card_id = c.id
+       WHERE ${where}`,
+      params,
+    );
+
+    const groups = findConfusionGroups(rows, { threshold, minLapses });
+    // Serializa pro frontend
+    res.json({
+      threshold,
+      minLapses,
+      groups: groups.map((g) => ({
+        totalLapses: g.totalLapses,
+        cards: g.cards.map((c) => ({
+          id: c.id,
+          front: c.front,
+          back: c.back,
+          lapses: c.lapses,
+          reps: c.reps,
+          courseTitle: c.course_title,
+          lessonPrefix: c.lesson_prefix,
+        })),
+      })),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
