@@ -2,6 +2,9 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { fsrs, generatorParameters, Rating, createEmptyCard } from 'ts-fsrs';
 import { query } from '../db/index.js';
+import { parseAnkiFlashcards } from './flashcardParser.js';
+
+export { parseAnkiFlashcards };
 
 const params = generatorParameters({ enable_fuzz: true, enable_short_term: true });
 const scheduler = fsrs(params);
@@ -22,63 +25,6 @@ const rowToCard = (row, now) => {
   };
 };
 
-const stripHtml = (html) => html.replace(/<[^>]*>/g, '').trim();
-
-// Parser compartilhado com o frontend (suporta tabs, espacos multiplas, e <b>inline)
-export const parseAnkiFlashcards = (text) => {
-  const lines = text.split('\n').filter((l) => l.trim());
-  const cards = [];
-  for (const line of lines) {
-    if (line.startsWith('#')) continue;
-
-    // 1. Tab-separated (formato Anki canônico)
-    const tabParts = line.split('\t');
-    if (tabParts.length >= 2) {
-      cards.push({
-        front: stripHtml(tabParts[0].trim()),
-        back: stripHtml(tabParts[1].trim()),
-      });
-      continue;
-    }
-
-    // 2. Fallback: <b> parcial — modelo pode gerar "pergunta <b>resposta</b> texto extra"
-    const partialBoldMatch = line.match(/^(.+?)<b>(.+?)<\/b>(.*)$/i);
-    if (partialBoldMatch) {
-      const front = stripHtml(partialBoldMatch[1].trim());
-      const back = stripHtml((partialBoldMatch[2] + partialBoldMatch[3]).trim());
-      if (front && back) {
-        cards.push({ front, back });
-        continue;
-      }
-    }
-
-    // 3. Fallback: separacao por 4+ espacos (modelo gera espacos em vez de tab)
-    const multiSpaceMatch = line.match(/^(.+?)\s{4,}(.+)$/);
-    if (multiSpaceMatch) {
-      const front = stripHtml(multiSpaceMatch[1].trim());
-      const back = stripHtml(multiSpaceMatch[2].trim());
-      if (front && back) {
-        cards.push({ front, back });
-        continue;
-      }
-    }
-
-    // 4. Fallback: padrao "Pergunta: resposta" — linha com ":" e texto antes/depois
-    const colonMatch = line.match(/^([^.!?]{5,}?)\s*[:\uff1a]\s*(.+)$/);
-    if (colonMatch) {
-      const front = stripHtml(colonMatch[1].trim());
-      const back = stripHtml(colonMatch[2].trim());
-      if (front.length > 4 && back.length > 2) {
-        cards.push({ front: front.endsWith('?') ? front : front + '?', back });
-        continue;
-      }
-    }
-  }
-  return cards;
-};
-
-// Acha o arquivo *_flashcards_anki_*.txt dado um prefixo de aula, varrendo recursivamente.
-// Prioriza variante _ia quando presente (usuario regerou via pipeline).
 const findFlashcardFile = async (courseRoot, lessonPrefix) => {
   const matches = [];
   const walk = async (dir) => {
