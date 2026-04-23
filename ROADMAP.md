@@ -66,9 +66,9 @@ O FSRS já adapta por card. O próximo nível:
 ## Débito técnico
 
 - [ ] `CoursePlatform.jsx` ainda tem ~830 linhas — dá pra extrair `CoursesGrid`, `CoursesHeader`, `LessonsView` como components separados.
-- [ ] `server.js` é monolítico — separar rotas em `server/routes/*.js` (hoje só `server/flashcards.js` foi quebrado).
+- [x] `server.js` separado em `server/routes/*.js`: `courses`, `notes`, `progress`, `flashcards`, `quiz`, `stats`, `ia`. `server/config.js` com get/set do `COURSES_PATH` mutável. `server.js` ficou com 41 linhas (bootstrap + routers).
 - [ ] Avisos de `react/prop-types` e `React unused` em todos os `.jsx` (não bloqueia, mas a lint tá ruidosa). Ou adiciona PropTypes, ou desabilita a regra globalmente.
-- [~] Testes: cobertura crescendo. Cobertos: `server/flashcardParser.js` (15 testes) e `server/semanticConfusion.js` (16 testes — tokenize, Jaccard, union-find). Falta: lógica FSRS de `server/flashcards.js` (importDeck, reviewCard, getDueCards) e parsers do frontend (`quizParser.js`, `examplesParser.js`).
+- [~] Testes: cobertura crescendo. Cobertos: `server/flashcardParser.js` (15 testes), `server/semanticConfusion.js` (16 testes) e `server/flashcards.js` (14 testes com `db/index.js` e `fs` mockados — reviewCard, getDueCards, getDueSummary, getDeck, importDeck com dedup + _ia priority + recursão). **Total: 45 testes.** Falta: parsers do frontend (`quizParser.js`, `examplesParser.js`) e teste de integração com Postgres real (opcional).
 - [ ] `video-durations-cache.json` commitado — mover pra `.gitignore` ou pro DB.
 - [ ] `CoursePlatform_bkp.jsx` — se existir no repo, apagar.
 - [ ] `start.sh` assume `fish`; `start-universal.sh` e `start.bat` duplicam intenção — consolidar.
