@@ -5,9 +5,7 @@ import LessonsView from "./LessonsView";
 import LessonPlayer from "./LessonPlayer";
 import DailyReview from "./DailyReview";
 import Dashboard from "./Dashboard";
-import WeeklyDiaryModal, {
-  shouldShowDiaryPrompt,
-} from "./WeeklyDiaryModal";
+import { shouldShowDiaryPrompt } from "./WeeklyDiaryModal";
 
 import useCourseData from "../hooks/useCourseData";
 import useCourseProgress from "../hooks/useCourseProgress";

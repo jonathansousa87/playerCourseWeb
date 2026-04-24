@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const MarkdownViewer = ({ fileUrl, title }) => {
+const MarkdownViewer = ({ fileUrl }) => {
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -87,16 +87,12 @@ const MarkdownViewer = ({ fileUrl, title }) => {
                   {children}
                 </ol>
               ),
-              li: ({ children }) => {
-                const isStandalone =
-                  typeof children === "string" && children.trim().length > 0;
-                return (
-                  <li className="flex items-start gap-2.5 text-[15px] mb-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400/60 mt-2.5 flex-shrink-0" />
-                    <span>{children}</span>
-                  </li>
-                );
-              },
+              li: ({ children }) => (
+                <li className="flex items-start gap-2.5 text-[15px] mb-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400/60 mt-2.5 flex-shrink-0" />
+                  <span>{children}</span>
+                </li>
+              ),
               strong: ({ children }) => (
                 <strong className="text-slate-100 font-semibold bg-gradient-to-r from-amber-400/10 to-amber-300/10 px-0.5 py-0 rounded-sm">
                   {children}
@@ -192,7 +188,7 @@ const MarkdownViewer = ({ fileUrl, title }) => {
 
 const stripMarkdown = (children) => {
   if (typeof children !== "string") return children;
-  return children.replace(/[#*`_\[\]()]/g, "").trim();
+  return children.replace(/[#*`_[\]()]/g, "").trim();
 };
 
 export default MarkdownViewer;

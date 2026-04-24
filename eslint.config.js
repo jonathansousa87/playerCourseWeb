@@ -33,6 +33,23 @@ export default [
         'warn',
         { allowConstantExport: true },
       ],
+      // Projeto usa JS vanilla (sem PropTypes nem TypeScript). Validacao
+      // de props fica a cargo de convencoes de codigo e testes, nao da lint.
+      'react/prop-types': 'off',
+      // React 17+ JSX transform nao precisa do import de React.
+      'no-unused-vars': ['error', { varsIgnorePattern: '^React$' }],
+      // Atributos HTML reais pra compatibilidade com players mobile (iOS, X5/QQ).
+      'react/no-unknown-property': [
+        'error',
+        { ignore: ['webkit-playsinline', 'x5-playsinline'] },
+      ],
+    },
+  },
+  // Backend Node (server.js, db/*, server/**) — acesso a process.env, etc.
+  {
+    files: ['server.js', 'db/**/*.js', 'server/**/*.js'],
+    languageOptions: {
+      globals: { ...globals.node },
     },
   },
 ]
