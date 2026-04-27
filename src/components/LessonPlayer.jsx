@@ -1,6 +1,7 @@
 import React from "react";
 import { CourseProvider } from "./CourseContext";
 import ModuleItem from "./ModuleItem";
+import { ArrowLeft, CheckCircle, Circle } from "lucide-react";
 import LessonStepper from "./LessonStepper";
 import VideoPlayer from "./VideoPlayer";
 import HTMLViewer from "./HTMLViewer";
@@ -8,6 +9,7 @@ import PDFViewer from "./PDFViewer";
 import UnsupportedViewer from "./UnsupportedViewer";
 import CourseSidebar from "./CourseSidebar";
 import PomodoroTimer from "./PomodoroTimer";
+import ChatFAB from "./ChatFAB";
 import { findNextLesson } from "../utils/courseUtils";
 import { isVideoFile, isPDFFile, isHTMLFile } from "../utils/fileUtils";
 
@@ -42,6 +44,7 @@ const LessonPlayer = ({
         fullscreen={fullscreen}
         sidebar={sidebar}
         handleStepComplete={handleStepComplete}
+        handleBack={handleBack}
         onLessonComplete={(lesson) => {
           if (!completedLessons[selectedCourse.title]?.[lesson.path]) {
             toggleLessonComplete(
@@ -121,9 +124,11 @@ const LessonPlayer = ({
         fullscreen={fullscreen}
         sidebar={sidebar}
         fileUrl={fileUrl}
+        handleBack={handleBack}
         handleLessonSelect={handleLessonSelect}
         handleToggleLessonComplete={handleToggleLessonComplete}
         buildVideoProps={buildVideoProps}
+        isCompleted={isCompleted}
       />
     );
   }
@@ -151,6 +156,7 @@ const LessonGroupPlayer = ({
   fullscreen,
   sidebar,
   handleStepComplete,
+  handleBack,
   onLessonComplete,
   buildVideoProps,
 }) => {
@@ -177,6 +183,7 @@ const LessonGroupPlayer = ({
             onStepComplete={handleStepComplete}
             onAllStepsComplete={onLessonComplete}
             {...vProps}
+            onBack={handleBack}
             onVideoTimeUpdate={(e) => {
               const video = e.target;
               if (
@@ -208,6 +215,12 @@ const LessonGroupPlayer = ({
           }}
           courseTitle={selectedCourse.title}
         />
+
+        <ChatFAB
+          courseTitle={selectedCourse.title}
+          lessonPrefix={selectedLesson.prefix}
+          lessonTitle={selectedLesson.title}
+        />
       </div>
     </CourseProvider>
   );
@@ -223,9 +236,11 @@ const LegacyVideoPlayer = ({
   fullscreen,
   sidebar,
   fileUrl,
+  handleBack,
   handleLessonSelect,
   handleToggleLessonComplete,
   buildVideoProps,
+  isCompleted,
 }) => {
   const vProps = buildVideoProps(selectedLesson, fileUrl);
 
@@ -238,7 +253,16 @@ const LegacyVideoPlayer = ({
             : ""
         }`}
       >
-        <div className={`${fullscreen.isFullscreen ? "w-full" : "flex-1 min-w-0"} h-full bg-slate-900`}>
+        <div className={`${fullscreen.isFullscreen ? "w-full" : "flex-1 min-w-0"} h-full bg-slate-900 flex flex-col`}>
+          {!fullscreen.isFullscreen && (
+            <LegacyHeader
+              title={selectedLesson.title}
+              isCompleted={isCompleted}
+              onBack={handleBack}
+              onToggleComplete={() => handleToggleLessonComplete(selectedLesson)}
+            />
+          )}
+          <div className="flex-1 min-h-0">
           <VideoPlayer
             {...vProps}
             onTimeUpdate={(e) => {
@@ -259,6 +283,7 @@ const LegacyVideoPlayer = ({
               if (next) handleLessonSelect(next);
             }}
           />
+          </div>
         </div>
 
         {fullscreen.isFullscreen ? (
@@ -345,6 +370,42 @@ const FullscreenSidebar = ({ sidebar }) => (
       />
     </div>
   </>
+);
+
+// Header pra aulas legacy (arquivo solto sem stepper). Mostra Voltar +
+// titulo + Concluir, igual ao topo do LessonStepper pra manter consistencia.
+const LegacyHeader = ({ title, isCompleted, onBack, onToggleComplete }) => (
+  <div className="bg-slate-900/95 border-b border-slate-700/40 px-4 py-2.5 flex items-center gap-3">
+    <button
+      onClick={onBack}
+      title="Voltar para a lista de aulas"
+      className="flex items-center gap-1.5 px-2.5 h-8 rounded-lg bg-slate-800/80 hover:bg-slate-700/80 border border-slate-600/40 text-slate-200 hover:text-white transition-colors flex-shrink-0"
+    >
+      <ArrowLeft className="w-4 h-4" strokeWidth={2.5} />
+      <span className="text-xs font-medium">Voltar</span>
+    </button>
+    <h2
+      className="text-slate-200 font-semibold text-sm flex-1 truncate"
+      title={title}
+    >
+      {title}
+    </h2>
+    <button
+      onClick={onToggleComplete}
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex-shrink-0 ${
+        isCompleted
+          ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/25"
+          : "bg-slate-700/60 hover:bg-slate-600/60 text-slate-300 border border-slate-600/30"
+      }`}
+    >
+      {isCompleted ? (
+        <CheckCircle className="w-3.5 h-3.5" />
+      ) : (
+        <Circle className="w-3.5 h-3.5" />
+      )}
+      {isCompleted ? "Concluido" : "Concluir"}
+    </button>
+  </div>
 );
 
 export default LessonPlayer;

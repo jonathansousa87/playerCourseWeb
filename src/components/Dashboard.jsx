@@ -62,7 +62,7 @@ const Dashboard = ({ onBack }) => {
 
   const header = (
     <div className="border-b border-slate-800/60 bg-slate-900/50 backdrop-blur-sm sticky top-0 z-10">
-      <div className="max-w-5xl mx-auto px-6 py-4 flex items-center gap-4">
+      <div className="w-full px-6 lg:px-10 xl:px-14 py-4 flex items-center gap-4">
         <button
           onClick={onBack}
           className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white"
@@ -106,7 +106,7 @@ const Dashboard = ({ onBack }) => {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       {header}
-      <div className="max-w-5xl mx-auto px-6 py-6 space-y-8">
+      <div className="w-full px-6 lg:px-10 xl:px-14 py-6 space-y-8">
         {/* Backlog */}
         <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
           <h3 className="text-sm uppercase tracking-wider text-slate-400 mb-3">Backlog</h3>

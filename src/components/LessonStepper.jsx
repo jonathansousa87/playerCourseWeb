@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { CheckCircle, Circle, Sparkles } from "lucide-react";
+import { ArrowLeft, CheckCircle, Circle, Sparkles } from "lucide-react";
 import VideoPlayer from "./VideoPlayer";
 import MarkdownViewer from "./MarkdownViewer";
 import FlashcardViewer from "./FlashcardViewer";
@@ -165,6 +165,7 @@ const LessonStepper = ({
       );
     }
 
+
     const material = materials[activeStep];
     if (!material) return null;
     const fileUrl = buildFileUrl(material);
@@ -220,7 +221,6 @@ const LessonStepper = ({
               stepKey={activeStep}
               isCompleted={isStepCompleted(activeStep)}
               onMarkComplete={handleMarkComplete}
-              onBack={onBack}
             />
             <div className="flex-1 overflow-hidden">
               <MarkdownViewer fileUrl={fileUrl} />
@@ -236,7 +236,6 @@ const LessonStepper = ({
               stepKey={activeStep}
               isCompleted={isStepCompleted(activeStep)}
               onMarkComplete={handleMarkComplete}
-              onBack={onBack}
             />
             <div className="flex-1 overflow-hidden">
               <ExamplesViewer fileUrl={fileUrl} />
@@ -252,7 +251,6 @@ const LessonStepper = ({
               stepKey={activeStep}
               isCompleted={isStepCompleted(activeStep)}
               onMarkComplete={handleMarkComplete}
-              onBack={onBack}
             />
             <div className="flex-1 overflow-hidden">
               <QuizViewer
@@ -275,7 +273,6 @@ const LessonStepper = ({
               stepKey={activeStep}
               isCompleted={isStepCompleted("flashcards")}
               onMarkComplete={handleMarkComplete}
-              onBack={onBack}
             />
             <div className="flex-1 overflow-hidden">
               <FlashcardViewer
@@ -309,6 +306,14 @@ const LessonStepper = ({
       {/* Stepper tabs - hidden during fullscreen video */}
       <div className={`bg-slate-900/95 border-b border-slate-700/40 px-4 py-2.5 ${hideStepperTabs ? "hidden" : ""}`}>
         <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={onBack}
+            title="Voltar para a lista de aulas"
+            className="flex items-center gap-1.5 px-2.5 h-8 rounded-lg bg-slate-800/80 hover:bg-slate-700/80 border border-slate-600/40 text-slate-200 hover:text-white transition-colors flex-shrink-0"
+          >
+            <ArrowLeft className="w-4 h-4" strokeWidth={2.5} />
+            <span className="text-xs font-medium">Voltar</span>
+          </button>
           <h2
             className="text-slate-200 font-semibold text-sm mr-2 truncate max-w-xs"
             title={lessonGroup.title}
@@ -370,33 +375,26 @@ const LessonStepper = ({
   );
 };
 
-// Small header for non-video steps
-const StepHeader = ({ title, stepKey, isCompleted, onMarkComplete, onBack }) => (
+// Header pequeno do step. O "Voltar" global mora no topo do stepper —
+// aqui só o titulo do step + botao de marcar como concluido.
+const StepHeader = ({ title, stepKey, isCompleted, onMarkComplete }) => (
   <div className="bg-slate-800/80 py-2 px-4 border-b border-slate-700/40 flex items-center justify-between">
     <h3 className="text-slate-200 font-medium text-sm">{title}</h3>
-    <div className="flex items-center gap-2">
-      <button
-        onClick={() => onMarkComplete(stepKey)}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-          isCompleted
-            ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/25"
-            : "bg-slate-700/60 hover:bg-slate-600/60 text-slate-300 border border-slate-600/30"
-        }`}
-      >
-        {isCompleted ? (
-          <CheckCircle className="w-3.5 h-3.5" />
-        ) : (
-          <Circle className="w-3.5 h-3.5" />
-        )}
-        {isCompleted ? "Concluido" : "Concluir"}
-      </button>
-      <button
-        onClick={onBack}
-        className="px-3 py-1.5 bg-slate-700/60 hover:bg-slate-600/60 rounded-lg text-xs text-slate-300 transition-colors border border-slate-600/30"
-      >
-        Voltar
-      </button>
-    </div>
+    <button
+      onClick={() => onMarkComplete(stepKey)}
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+        isCompleted
+          ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/25"
+          : "bg-slate-700/60 hover:bg-slate-600/60 text-slate-300 border border-slate-600/30"
+      }`}
+    >
+      {isCompleted ? (
+        <CheckCircle className="w-3.5 h-3.5" />
+      ) : (
+        <Circle className="w-3.5 h-3.5" />
+      )}
+      {isCompleted ? "Concluido" : "Concluir"}
+    </button>
   </div>
 );
 

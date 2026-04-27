@@ -188,6 +188,30 @@ export const fetchLessonAccuracy = (courseTitle, days = 30) =>
     `${API_BASE}/api/stats/lesson-accuracy/${enc(courseTitle)}?days=${days}`,
   ).then(json);
 
+// Chat com IA usando a transcricao da aula como contexto.
+// O backend carrega o historico do DB sozinho — frontend so manda a msg nova.
+export const sendChatMessage = ({ courseTitle, lessonPrefix, message, model }) =>
+  fetch(`${API_BASE}/api/ia/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle, lessonPrefix, message, model }),
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  });
+
+export const fetchChatHistory = (courseTitle, lessonPrefix) =>
+  fetch(
+    `${API_BASE}/api/ia/chat/${enc(courseTitle)}/${enc(lessonPrefix)}`,
+  ).then(json);
+
+export const clearChatHistory = (courseTitle, lessonPrefix) =>
+  fetch(
+    `${API_BASE}/api/ia/chat/${enc(courseTitle)}/${enc(lessonPrefix)}`,
+    { method: "DELETE" },
+  ).then(json);
+
 // Grupos de cards com fronts semanticamente similares (confusao)
 export const fetchConfusionGroups = ({ courseTitle, minLapses = 2, threshold = 0.4 } = {}) => {
   const params = new URLSearchParams();

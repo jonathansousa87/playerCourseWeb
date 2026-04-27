@@ -1,7 +1,6 @@
 import React from "react";
 import VideoControls from "./VideoControls";
 import CourseSidebar from "./CourseSidebar";
-import LessonHeader from "./LessonHeader";
 
 const FullscreenSidebar = ({
   sidebarPosition,
@@ -121,65 +120,17 @@ const VideoPlayer = ({
   onSidebarLock,
   onSidebarUnlock,
   onToggleSidebarPosition,
-  onBack,
   onTimeUpdate,
   onEnded,
 }) => (
   <div className="flex flex-col h-full">
-    <LessonHeader title={selectedLesson.title} onBack={onBack}>
-      <div className="flex items-center space-x-1">
-        {[1, 1.25, 1.5, 1.75].map((rate) => (
-          <button
-            key={rate}
-            onClick={() => onChangePlaybackRate(rate)}
-            className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
-              playbackRate === rate
-                ? "bg-blue-600/80 text-white"
-                : "bg-slate-700/60 hover:bg-slate-600/60 text-slate-300 border border-slate-600/30"
-            }`}
-          >
-            {rate}x
-          </button>
-        ))}
-      </div>
-      <button
-        onClick={isFullscreen ? onExitFullscreen : onEnterFullscreen}
-        className="px-2.5 py-1 bg-slate-700/60 hover:bg-slate-600/60 text-slate-300 rounded-lg transition-colors flex items-center text-xs border border-slate-600/30"
-        title={isFullscreen ? "Sair da Tela Cheia" : "Entrar em Tela Cheia"}
-      >
-        <svg
-          className="w-4 h-4 mr-1"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          {isFullscreen ? (
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M9 9l6 6m0-6l-6 6M21 3v6h-6M3 21v-6h6"
-            />
-          ) : (
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"
-            />
-          )}
-        </svg>
-        {isFullscreen ? "Sair" : "Tela Cheia"}
-      </button>
-    </LessonHeader>
-
     <div
       ref={videoContainerRef}
       className="flex-1 bg-black relative group video-container"
     >
       <video
         ref={videoRef}
-        className="w-full h-full cursor-pointer"
+        className="w-full h-full object-contain bg-black cursor-pointer"
         key={selectedLesson.path}
         controls={false}
         disablePictureInPicture

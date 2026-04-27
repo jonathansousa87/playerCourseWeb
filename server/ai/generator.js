@@ -36,7 +36,7 @@ const stripCodeFence = (s) => {
   return fenceMatch ? fenceMatch[1].trim() : trimmed;
 };
 
-const parseVtt = async (filePath) => {
+export const parseVtt = async (filePath) => {
   const raw = await fs.readFile(filePath, 'utf8');
   // VTT: remove cabecalho WEBVTT, linhas com timestamps e linhas em branco redundantes
   const lines = raw.split(/\r?\n/);
@@ -81,7 +81,7 @@ const findFile = async (root, prefix, predicate) => {
   return walk(root);
 };
 
-const findTranscript = (courseRoot, lessonPrefix) =>
+export const findTranscript = (courseRoot, lessonPrefix) =>
   findFile(
     courseRoot,
     lessonPrefix,

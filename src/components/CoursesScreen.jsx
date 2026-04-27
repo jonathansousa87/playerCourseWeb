@@ -35,7 +35,7 @@ const CoursesScreen = ({
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100">
       <header className="border-b border-slate-800/60">
-        <div className="max-w-6xl mx-auto px-6 py-5 flex justify-between items-center">
+        <div className="w-full px-6 lg:px-10 xl:px-14 py-5 flex justify-between items-center">
           <div className="flex items-center gap-4">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
               <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -94,7 +94,7 @@ const CoursesScreen = ({
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-8">
+      <main className="w-full px-6 lg:px-10 xl:px-14 py-8">
         {totalAllLessons > 0 && (
           <div className="mb-8 p-4 bg-slate-800/40 rounded-2xl border border-slate-700/30">
             <div className="flex items-center justify-between mb-2">
@@ -112,7 +112,7 @@ const CoursesScreen = ({
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-5">
           {courses.map((course, index) => {
             const courseProgress = completedLessons[course.title] || {};
             const courseSteps = completedSteps[course.title] || {};

@@ -39,7 +39,7 @@ const LessonsView = ({
     <CourseProvider value={courseContextValue}>
       <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100">
         <div className="border-b border-slate-800/60 bg-slate-900/50 backdrop-blur-sm sticky top-0 z-10">
-          <div className="max-w-4xl mx-auto px-6 py-4">
+          <div className="w-full px-6 lg:px-10 xl:px-14 py-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <button
@@ -97,7 +97,7 @@ const LessonsView = ({
           </div>
         </div>
 
-        <div className="max-w-4xl mx-auto px-6 py-6">
+        <div className="w-full px-6 lg:px-10 xl:px-14 py-6">
           {weakModules > 0 && (
             <div className="mb-5 flex items-center gap-3 bg-red-950/25 border border-red-500/25 rounded-xl px-4 py-3">
               <span className="text-red-300 text-lg">⚠</span>

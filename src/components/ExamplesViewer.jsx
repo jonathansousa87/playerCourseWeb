@@ -56,7 +56,7 @@ const ExamplesViewer = ({ fileUrl }) => {
 
   return (
     <div className="h-full overflow-auto bg-slate-950 px-6 py-6">
-      <div className="max-w-3xl mx-auto">
+      <div className="max-w-4xl mx-auto">
         {cards.map((c) => (
           <div
             key={c.id}
