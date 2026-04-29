@@ -4,7 +4,7 @@
 
 import { join } from 'path';
 import { DEFAULT_MODEL } from './deepseek.js';
-import { parseVtt, findTranscript } from './generator.js';
+import { parseTranscript, findTranscript } from './generator.js';
 
 const SYSTEM_BASE =
   'Voce eh um tutor pessoal que ajuda o aluno a entender uma aula em video. ' +
@@ -33,11 +33,11 @@ export const chatWithLesson = async ({
   const courseRoot = join(coursesPath, courseTitle);
   const transcriptPath = await findTranscript(courseRoot, lessonPrefix);
   if (!transcriptPath) {
-    const err = new Error('transcricao .vtt nao encontrada pra essa aula');
+    const err = new Error('transcricao (.txt ou .vtt) nao encontrada pra essa aula');
     err.code = 'NO_TRANSCRIPT';
     throw err;
   }
-  const transcript = await parseVtt(transcriptPath);
+  const transcript = await parseTranscript(transcriptPath);
   if (transcript.length < 50) {
     const err = new Error('transcricao vazia ou muito curta');
     err.code = 'EMPTY_TRANSCRIPT';

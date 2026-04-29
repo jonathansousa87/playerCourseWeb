@@ -1,10 +1,15 @@
 import React, { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useReadTimer } from "../hooks/useReadTimer";
 
-const MarkdownViewer = ({ fileUrl }) => {
+const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(true);
+
+  // Tempo de leitura (passivo) — alimenta /api/stats/activity-balance.
+  // Sem courseTitle/lessonPrefix, vira no-op (uso fora do contexto de aula).
+  useReadTimer(courseTitle, lessonPrefix, "resumo");
 
   useEffect(() => {
     if (!fileUrl) return;

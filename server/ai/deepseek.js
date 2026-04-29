@@ -1,9 +1,17 @@
 // Cliente minimalista pra DeepSeek API (OpenAI-compatible).
 // Doc: https://api-docs.deepseek.com/api/create-chat-completion
-
+//
+// Modelos:
+//   deepseek-v4-flash : context 1M, $0.14/M input miss, $0.0028/M input cache hit,
+//                       $0.28/M output. Suporta thinking ON/OFF.
+//   deepseek-v4-pro   : 75% mais caro mas raciocina mais (R1-style).
+// Os antigos `deepseek-chat` / `deepseek-reasoner` viraram alias e serao
+// descontinuados. Estamos no v4-flash (non-thinking) por default — barato +
+// rapido + cache 50x mais barato (perfeito pro chat por aula que reusa o
+// system prompt da transcricao).
 const DEEPSEEK_URL = 'https://api.deepseek.com/v1/chat/completions';
 
-export const DEFAULT_MODEL = 'deepseek-chat';
+export const DEFAULT_MODEL = 'deepseek-v4-flash';
 
 export class DeepSeekError extends Error {
   constructor(message, { status, body } = {}) {

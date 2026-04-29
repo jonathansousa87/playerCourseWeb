@@ -57,17 +57,24 @@ export const unmarkStepComplete = (courseTitle, fullKey) => {
 };
 
 // === Resumo pessoal ===
+// Retorna { content, prompts, updated_at }. prompts pode ser null (legacy)
+// ou objeto com chaves { answered, connections, example, unclear } (Fase 7.3).
 export const fetchPersonalNote = (courseTitle, lessonPrefix) =>
   fetch(
     `${API_BASE}/api/db/notes/${enc(courseTitle)}/pessoal/${enc(lessonPrefix)}`,
   ).then(json);
 
-export const savePersonalNote = (courseTitle, lessonPrefix, content) =>
-  fetch(`${API_BASE}/api/db/notes/${enc(courseTitle)}/pessoal`, {
+// content: campo livre. prompts: objeto com respostas estruturadas (opcional).
+// Se prompts === undefined, o backend preserva o que estava no DB.
+export const savePersonalNote = (courseTitle, lessonPrefix, { content, prompts } = {}) => {
+  const body = { lessonPrefix, content: content ?? "" };
+  if (prompts !== undefined) body.prompts = prompts;
+  return fetch(`${API_BASE}/api/db/notes/${enc(courseTitle)}/pessoal`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ lessonPrefix, content }),
+    body: JSON.stringify(body),
   }).then(json);
+};
 
 // === Pomodoro ===
 export const fetchPomodoroSessions = (courseTitle) =>
@@ -125,12 +132,20 @@ export const fetchFlashcardSummary = () =>
   fetch(`${API_BASE}/api/flashcards/summary`).then(json);
 
 // rating: 1=Again, 2=Hard, 3=Good, 4=Easy
-export const reviewFlashcard = (cardId, rating) =>
+// confidence (opcional): 'high' | 'medium' | 'low' — captura pre-flip
+// pra detectar hypercorrection (Metcalfe 2017)
+export const reviewFlashcard = (cardId, rating, confidence = null) =>
   fetch(`${API_BASE}/api/flashcards/review/${cardId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rating }),
+    body: JSON.stringify({ rating, confidence }),
   }).then(json);
+
+// Cards com confianca='high' que foram errados — Metcalfe 2017
+export const fetchHypercorrection = ({ days = 30, limit = 10 } = {}) =>
+  fetch(
+    `${API_BASE}/api/flashcards/hypercorrection?days=${days}&limit=${limit}`,
+  ).then(json);
 
 // === Dashboard ===
 export const fetchDashboardStats = () =>
@@ -138,6 +153,34 @@ export const fetchDashboardStats = () =>
 
 export const fetchProfileStats = () =>
   fetch(`${API_BASE}/api/stats/profile`).then(json);
+
+// Razao recall (ativo) / leitura (passivo) - Bjork & Bjork 2011
+export const fetchActivityBalance = (days = 30) =>
+  fetch(`${API_BASE}/api/stats/activity-balance?days=${days}`).then(json);
+
+// Badges de retencao de longo prazo - Bahrick & Hall
+export const fetchRetentionBadges = () =>
+  fetch(`${API_BASE}/api/stats/retention-badges`).then(json);
+
+// Salva uma sessao de consumo passivo (video/resumo/exemplos). Usa
+// keepalive: a request continua mesmo quando a aba esta saindo (chamado
+// no unmount / unload).
+export const saveViewSession = ({ courseTitle, lessonPrefix, kind, seconds }) => {
+  const body = JSON.stringify({ courseTitle, lessonPrefix, kind, seconds });
+  // navigator.sendBeacon eh ideal pra unmount mas nao retorna resposta;
+  // fallback pra fetch com keepalive.
+  if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+    const blob = new Blob([body], { type: "application/json" });
+    navigator.sendBeacon(`${API_BASE}/api/stats/view-session`, blob);
+    return Promise.resolve({ saved: true, beacon: true });
+  }
+  return fetch(`${API_BASE}/api/stats/view-session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+    keepalive: true,
+  }).then(json);
+};
 
 // === Diario tecnico ===
 export const fetchTechnicalDiary = (courseTitle, lessonPrefix) =>
@@ -241,3 +284,38 @@ export const generateIa = ({ courseTitle, lessonPrefix, kinds, model }) =>
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
   });
+
+// === Pre-questoes (Carpenter & Toftness 2017) ===
+// Retorna { questions, lastAttempt, generatedAt } ou { questions: null }
+// se ainda nao foi gerado pra essa aula.
+export const fetchPrequestions = (courseTitle, lessonPrefix) =>
+  fetch(
+    `${API_BASE}/api/ia/prequestions/${enc(courseTitle)}/${enc(lessonPrefix)}`,
+  ).then(json);
+
+export const generatePrequestions = ({ courseTitle, lessonPrefix, model }) =>
+  fetch(`${API_BASE}/api/ia/prequestions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle, lessonPrefix, model }),
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  });
+
+export const savePrequestionAttempt = (courseTitle, lessonPrefix, answers) =>
+  fetch(
+    `${API_BASE}/api/ia/prequestions/${enc(courseTitle)}/${enc(lessonPrefix)}/attempts`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answers }),
+    },
+  ).then(json);
+
+export const deletePrequestions = (courseTitle, lessonPrefix) =>
+  fetch(
+    `${API_BASE}/api/ia/prequestions/${enc(courseTitle)}/${enc(lessonPrefix)}`,
+    { method: "DELETE" },
+  ).then(json);

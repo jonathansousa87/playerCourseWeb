@@ -96,16 +96,47 @@ router.get('/api/flashcards/confusion', async (req, res) => {
   }
 });
 
-// Review de um card (rating 1..4)
+// Review de um card (rating 1..4 + confidence opcional)
 router.post('/api/flashcards/review/:cardId', async (req, res) => {
   try {
     const cardId = Number(req.params.cardId);
     if (!Number.isFinite(cardId)) return res.status(400).json({ error: 'cardId invalido' });
     const rating = Number(req.body?.rating);
-    const result = await reviewCard({ cardId, rating });
+    const confidence = req.body?.confidence || null;
+    const result = await reviewCard({ cardId, rating, confidence });
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// Cards com hypercorrection: confianca='high' + rating <= 2 nas ultimas
+// reviews. Esses sao os mais valiosos pra revisar (Metcalfe 2017).
+router.get('/api/flashcards/hypercorrection', async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(365, Number(req.query.days) || 30));
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 10));
+    const { rows } = await query(
+      `SELECT c.id, c.front, c.back, d.course_title, d.lesson_prefix,
+              COUNT(*) FILTER (WHERE l.confidence = 'high' AND l.rating <= 2)::int AS surprise_errors,
+              COUNT(*) FILTER (WHERE l.confidence = 'high')::int AS high_conf_attempts,
+              MAX(l.reviewed_at) FILTER (WHERE l.confidence = 'high' AND l.rating <= 2) AS last_surprise,
+              COALESCE(r.lapses, 0)::int AS total_lapses,
+              COALESCE(r.reps, 0)::int AS total_reps
+       FROM flashcards c
+       JOIN flashcard_decks d ON d.id = c.deck_id
+       LEFT JOIN flashcard_reviews r ON r.card_id = c.id
+       JOIN flashcard_review_log l ON l.card_id = c.id
+       WHERE l.reviewed_at >= NOW() - $1::interval
+       GROUP BY c.id, c.front, c.back, d.course_title, d.lesson_prefix, r.lapses, r.reps
+       HAVING COUNT(*) FILTER (WHERE l.confidence = 'high' AND l.rating <= 2) > 0
+       ORDER BY surprise_errors DESC, last_surprise DESC
+       LIMIT $2`,
+      [`${days} days`, limit],
+    );
+    res.json({ days, count: rows.length, cards: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

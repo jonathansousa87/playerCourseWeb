@@ -7,9 +7,14 @@ import QuizViewer from "./QuizViewer";
 import ExamplesViewer from "./ExamplesViewer";
 import TechnicalDiary from "./TechnicalDiary";
 import PersonalSummary from "./PersonalSummary";
+import PreQuiz from "./PreQuiz";
 import AIGenerateModal from "./AIGenerateModal";
 
+// "requiresVideo": step depende de transcricao (.txt/.vtt) que so existe
+// se a aula tem video. Aparece sempre que materials.video existir.
+// "always": step nao depende de arquivos da aula.
 const STEP_CONFIG = [
+  { key: "prequiz", label: "Pre-Quiz", icon: "🎯", color: "yellow", requiresVideo: true },
   { key: "video", label: "Video", icon: "▶", color: "blue" },
   { key: "resumo", label: "Resumo", icon: "📄", color: "emerald" },
   { key: "exemplos", label: "Exemplos", icon: "💡", color: "amber" },
@@ -24,6 +29,7 @@ const StepTab = ({ step, isActive, isCompleted, onClick }) => {
     blue: { active: "bg-blue-600/90 border-blue-500/60 text-white shadow-blue-500/15", completed: "text-blue-400 border-blue-500/20 bg-blue-500/8" },
     emerald: { active: "bg-emerald-600/90 border-emerald-500/60 text-white shadow-emerald-500/15", completed: "text-emerald-400 border-emerald-500/20 bg-emerald-500/8" },
     amber: { active: "bg-amber-600/90 border-amber-500/60 text-white shadow-amber-500/15", completed: "text-amber-400 border-amber-500/20 bg-amber-500/8" },
+    yellow: { active: "bg-yellow-500/90 border-yellow-400/60 text-white shadow-yellow-500/15", completed: "text-yellow-300 border-yellow-500/20 bg-yellow-500/8" },
     purple: { active: "bg-purple-600/90 border-purple-500/60 text-white shadow-purple-500/15", completed: "text-purple-400 border-purple-500/20 bg-purple-500/8" },
     cyan: { active: "bg-cyan-600/90 border-cyan-500/60 text-white shadow-cyan-500/15", completed: "text-cyan-400 border-cyan-500/20 bg-cyan-500/8" },
     rose: { active: "bg-rose-600/90 border-rose-500/60 text-white shadow-rose-500/15", completed: "text-rose-400 border-rose-500/20 bg-rose-500/8" },
@@ -98,15 +104,21 @@ const LessonStepper = ({
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const materials = lessonGroup.materials || {};
 
-  // Available steps: from materials + "pessoal" always present
-  const availableSteps = STEP_CONFIG.filter(
-    (step) => step.always || materials[step.key]
-  );
+  // Steps disponiveis:
+  // - always: step "pessoal" (sempre)
+  // - requiresVideo: step "prequiz" (so quando ha video — implica que ha transcricao)
+  // - default: precisa do material correspondente
+  const availableSteps = STEP_CONFIG.filter((step) => {
+    if (step.always) return true;
+    if (step.requiresVideo) return !!materials.video;
+    return !!materials[step.key];
+  });
 
-  // Reset active step when lesson changes
+  // Reset active step when lesson changes. Pre-Quiz vem ANTES do video
+  // pra forcar tentativa de recuperacao (Carpenter & Toftness 2017).
   useEffect(() => {
     if (materials.video) {
-      setActiveStep("video");
+      setActiveStep("prequiz");
     } else {
       const first = availableSteps[0];
       if (first) setActiveStep(first.key);
@@ -165,6 +177,17 @@ const LessonStepper = ({
       );
     }
 
+    // Pre-quiz: nao depende de material em disco — gera via IA on-demand
+    if (activeStep === "prequiz") {
+      return (
+        <PreQuiz
+          courseTitle={courseTitle}
+          lessonPrefix={lessonGroup.prefix}
+          isCompleted={isStepCompleted("prequiz")}
+          onMarkComplete={handleMarkComplete}
+        />
+      );
+    }
 
     const material = materials[activeStep];
     if (!material) return null;
@@ -210,6 +233,8 @@ const LessonStepper = ({
             onBack={onBack}
             onTimeUpdate={onVideoTimeUpdate}
             onEnded={handleVideoEnded}
+            courseTitle={courseTitle}
+            lessonPrefix={lessonGroup.prefix}
           />
         );
 
@@ -223,7 +248,11 @@ const LessonStepper = ({
               onMarkComplete={handleMarkComplete}
             />
             <div className="flex-1 overflow-hidden">
-              <MarkdownViewer fileUrl={fileUrl} />
+              <MarkdownViewer
+                fileUrl={fileUrl}
+                courseTitle={courseTitle}
+                lessonPrefix={lessonGroup.prefix}
+              />
             </div>
           </div>
         );
@@ -238,7 +267,11 @@ const LessonStepper = ({
               onMarkComplete={handleMarkComplete}
             />
             <div className="flex-1 overflow-hidden">
-              <ExamplesViewer fileUrl={fileUrl} />
+              <ExamplesViewer
+                fileUrl={fileUrl}
+                courseTitle={courseTitle}
+                lessonPrefix={lessonGroup.prefix}
+              />
             </div>
           </div>
         );

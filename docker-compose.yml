@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: playercourse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: playercourse
+      POSTGRES_USER: playercourse
+      POSTGRES_PASSWORD: playercourse_dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - playercourse_pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U playercourse -d playercourse"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  playercourse_pgdata:

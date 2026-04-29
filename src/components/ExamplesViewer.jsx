@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { parseExemplosHtml } from "../utils/examplesParser";
+import { useReadTimer } from "../hooks/useReadTimer";
 
-const ExamplesViewer = ({ fileUrl }) => {
+const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   const [cards, setCards] = useState([]);
   const [status, setStatus] = useState("loading");
+
+  useReadTimer(courseTitle, lessonPrefix, "exemplos");
 
   useEffect(() => {
     if (!fileUrl) return;

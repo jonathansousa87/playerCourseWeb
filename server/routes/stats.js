@@ -197,6 +197,274 @@ router.get('/api/stats/profile', async (_req, res) => {
   }
 });
 
+// Razao recall (ativo) vs leitura (passivo) — Bjork & Bjork 2011, "desirable
+// difficulties". Estimativa baseada em eventos persistidos. Tempo de cada
+// atividade eh um valor medio razoavel — instrumentacao mais fina (timer no
+// player/markdown) fica pra evolucao.
+const SECS = {
+  flashcardReview: 10,        // por review (ver pergunta + flip + rating)
+  quizQuestion: 30,           // por questao do quiz (ler + decidir)
+  prequizQuestion: 25,        // por questao de pre-quiz (chutar)
+  videoStep: 8 * 60,          // 8 min por video assistido (fallback — ver baixo)
+  resumoStep: 4 * 60,         // 4 min lendo resumo
+  exemplosStep: 6 * 60,       // 6 min lendo exemplos
+};
+
+// POST: salva uma sessao de consumo passivo (video/resumo/exemplos).
+// Frontend chama on-unmount ou ao terminar uma sessao. seconds < 5
+// eh ignorado (ruido — usuario abriu por engano).
+router.post('/api/stats/view-session', async (req, res) => {
+  try {
+    const { courseTitle, lessonPrefix, kind, seconds } = req.body || {};
+    if (!courseTitle || !lessonPrefix || !kind) {
+      return res.status(400).json({ error: 'courseTitle, lessonPrefix, kind obrigatorios' });
+    }
+    if (!['video', 'resumo', 'exemplos'].includes(kind)) {
+      return res.status(400).json({ error: 'kind invalido' });
+    }
+    const secs = Math.floor(Number(seconds) || 0);
+    if (secs < 5) {
+      // Ruido — nem registra. UI nao precisa saber.
+      return res.json({ saved: false, reason: 'too-short' });
+    }
+    // Cap razoavel: 4h. Se passar disso, o user esqueceu a aba aberta.
+    const capped = Math.min(secs, 4 * 60 * 60);
+    await query(
+      `INSERT INTO view_sessions (course_title, lesson_prefix, kind, seconds)
+       VALUES ($1, $2, $3, $4)`,
+      [courseTitle, lessonPrefix, kind, capped],
+    );
+    res.json({ saved: true, seconds: capped });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/api/stats/activity-balance', async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(365, Number(req.query.days) || 30));
+    const interval = `${days} days`;
+
+    // === ATIVO (testing / recall) ===
+    const reviews = await query(
+      `SELECT COUNT(*)::int AS n
+       FROM flashcard_review_log
+       WHERE reviewed_at >= NOW() - $1::interval`,
+      [interval],
+    );
+    const quizzes = await query(
+      `SELECT COUNT(*)::int AS n, COALESCE(SUM(total), 0)::int AS questions
+       FROM quiz_attempts
+       WHERE answered_at >= NOW() - $1::interval`,
+      [interval],
+    );
+    const prequiz = await query(
+      `SELECT COUNT(*)::int AS n, COALESCE(SUM(total), 0)::int AS questions
+       FROM prequestion_attempts
+       WHERE attempted_at >= NOW() - $1::interval`,
+      [interval],
+    );
+
+    // === PASSIVO (consumo) ===
+    // Prefere tempo REAL agregado de view_sessions. Pra cada kind onde
+    // ha dados rastreados no periodo, usa a soma; se nao ha dados, cai
+    // pra estimativa baseada em step_completions.
+    const tracked = await query(
+      `SELECT kind, COUNT(*)::int AS sessions, COALESCE(SUM(seconds), 0)::int AS total_seconds
+       FROM view_sessions
+       WHERE started_at >= NOW() - $1::interval
+       GROUP BY kind`,
+      [interval],
+    );
+    const trackedByKind = { video: null, resumo: null, exemplos: null };
+    for (const row of tracked.rows) {
+      trackedByKind[row.kind] = { sessions: row.sessions, seconds: row.total_seconds };
+    }
+
+    const passiveSteps = await query(
+      `SELECT step_key, COUNT(*)::int AS n
+       FROM step_completions
+       WHERE step_key IN ('video', 'resumo', 'exemplos')
+         AND completed_at >= NOW() - $1::interval
+       GROUP BY step_key`,
+      [interval],
+    );
+    const stepCounts = { video: 0, resumo: 0, exemplos: 0 };
+    for (const row of passiveSteps.rows) stepCounts[row.step_key] = row.n;
+
+    const activeBreakdown = {
+      flashcards: {
+        count: reviews.rows[0].n,
+        seconds: reviews.rows[0].n * SECS.flashcardReview,
+      },
+      quiz: {
+        count: quizzes.rows[0].n,
+        questions: quizzes.rows[0].questions,
+        seconds: quizzes.rows[0].questions * SECS.quizQuestion,
+      },
+      prequiz: {
+        count: prequiz.rows[0].n,
+        questions: prequiz.rows[0].questions,
+        seconds: prequiz.rows[0].questions * SECS.prequizQuestion,
+      },
+    };
+    const activeSeconds =
+      activeBreakdown.flashcards.seconds +
+      activeBreakdown.quiz.seconds +
+      activeBreakdown.prequiz.seconds;
+
+    // Helper: pra cada kind, decide entre tracked e estimado.
+    const buildPassiveEntry = (kind, fallbackPerStep) => {
+      if (trackedByKind[kind]) {
+        return {
+          count: trackedByKind[kind].sessions,
+          seconds: trackedByKind[kind].seconds,
+          source: 'tracked',
+        };
+      }
+      return {
+        count: stepCounts[kind],
+        seconds: stepCounts[kind] * fallbackPerStep,
+        source: 'estimated',
+      };
+    };
+
+    const passiveBreakdown = {
+      video: buildPassiveEntry('video', SECS.videoStep),
+      resumo: buildPassiveEntry('resumo', SECS.resumoStep),
+      exemplos: buildPassiveEntry('exemplos', SECS.exemplosStep),
+    };
+    const passiveSeconds =
+      passiveBreakdown.video.seconds +
+      passiveBreakdown.resumo.seconds +
+      passiveBreakdown.exemplos.seconds;
+    const allTracked = Object.values(passiveBreakdown).every((v) => v.source === 'tracked' || v.count === 0);
+    const passiveSource = allTracked ? 'tracked' : 'mixed';
+
+    const ratio = passiveSeconds > 0 ? activeSeconds / passiveSeconds : null;
+
+    // Recomendacao textual baseada no ratio. ratio = active/passive.
+    // Bjork: 1:1 minimo, 2:1 ideal pra real learning.
+    let recommendation;
+    let level; // 'good' | 'ok' | 'warning' | 'bad' | 'no-data'
+    if (activeSeconds === 0 && passiveSeconds === 0) {
+      level = 'no-data';
+      recommendation = 'Sem atividade nos ultimos dias — comece por uma aula ou revisao.';
+    } else if (passiveSeconds === 0) {
+      level = 'good';
+      recommendation = 'So testando, sem consumo passivo. Otimo pra retencao, mas nao deixe de estudar conteudo novo.';
+    } else if (ratio >= 1) {
+      level = 'good';
+      recommendation = `Razao ${ratio.toFixed(1)}:1 (recall:leitura). Voce esta testando mais que consumindo — ideal pra fixar.`;
+    } else if (ratio >= 0.5) {
+      level = 'ok';
+      recommendation = `Razao ${ratio.toFixed(1)}:1. OK, mas tente subir pra ~1:1 — fluencia (ler) nao eh aprendizado.`;
+    } else if (ratio >= 0.25) {
+      level = 'warning';
+      recommendation = `Razao ${ratio.toFixed(1)}:1. Voce esta consumindo ${Math.round(1 / ratio)}x mais que testando. Agende mais revisoes/quiz.`;
+    } else {
+      level = 'bad';
+      recommendation = `Razao ${ratio.toFixed(2)}:1. Quase so consumo passivo. Cards e quiz precisam virar prioridade — fluencia ≠ aprendizado.`;
+    }
+
+    res.json({
+      days,
+      active: {
+        totalSeconds: activeSeconds,
+        totalMinutes: Math.round(activeSeconds / 60),
+        breakdown: activeBreakdown,
+      },
+      passive: {
+        totalSeconds: passiveSeconds,
+        totalMinutes: Math.round(passiveSeconds / 60),
+        breakdown: passiveBreakdown,
+        source: passiveSource,
+      },
+      ratio: ratio != null ? Number(ratio.toFixed(3)) : null,
+      level,
+      recommendation,
+      assumedSeconds: SECS,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Badges de retencao de longo prazo (Bahrick & Hall — successful relearning).
+// Conta cards "maduros" por tier de tempo desde o primeiro review, exigindo
+// state FSRS = 2 (Review estavel — sem lapsing recente). Reaprendizado
+// espacado mantem retencao por DECADAS, mas marcos visiveis motivam.
+const BADGE_TIERS = [
+  { key: '1w', days: 7, label: '1 semana' },
+  { key: '1m', days: 30, label: '1 mes' },
+  { key: '3m', days: 90, label: '3 meses' },
+  { key: '6m', days: 180, label: '6 meses' },
+  { key: '1y', days: 365, label: '1 ano' },
+  { key: '2y', days: 730, label: '2 anos' },
+];
+
+router.get('/api/stats/retention-badges', async (_req, res) => {
+  try {
+    // Pra cada card, computa first_review (MIN reviewed_at). Mature cards
+    // = state=2 (Review). Tier = maior threshold em dias que first_review
+    // ja ultrapassou.
+    const { rows: cards } = await query(
+      `SELECT c.id, c.front, d.course_title, d.lesson_prefix,
+              cf.first_review,
+              EXTRACT(EPOCH FROM (NOW() - cf.first_review)) / 86400 AS age_days,
+              fr.lapses, fr.reps
+       FROM flashcards c
+       JOIN flashcard_decks d ON d.id = c.deck_id
+       JOIN flashcard_reviews fr ON fr.card_id = c.id AND fr.state = 2
+       JOIN (
+         SELECT card_id, MIN(reviewed_at) AS first_review
+         FROM flashcard_review_log
+         GROUP BY card_id
+       ) cf ON cf.card_id = c.id`,
+    );
+
+    // Conta cards por tier (cumulativo decrescente: tier maior eh subset do menor).
+    const byTier = BADGE_TIERS.map((t) => ({
+      key: t.key,
+      label: t.label,
+      thresholdDays: t.days,
+      count: cards.filter((c) => Number(c.age_days) >= t.days).length,
+    }));
+
+    // Marcos recentes: cards que cruzaram um tier nos ultimos 7 dias.
+    // Pra cada tier, pega cards onde first_review esta no intervalo:
+    // [tier_days a tier_days+7] dias atras (acabou de bater o marco).
+    const milestones = [];
+    for (const t of BADGE_TIERS) {
+      for (const c of cards) {
+        const age = Number(c.age_days);
+        if (age >= t.days && age < t.days + 7) {
+          milestones.push({
+            cardId: c.id,
+            front: c.front,
+            courseTitle: c.course_title,
+            lessonPrefix: c.lesson_prefix,
+            tier: t.key,
+            tierLabel: t.label,
+            firstReview: c.first_review,
+            ageDays: Math.floor(age),
+          });
+        }
+      }
+    }
+    // Mais novos primeiro (acabou de bater)
+    milestones.sort((a, b) => b.ageDays - a.ageDays);
+
+    res.json({
+      tiers: byTier,
+      recentMilestones: milestones.slice(0, 20),
+      totalMature: cards.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Acerto por aula dentro de um curso — badges/banner do ModuleItem.
 router.get('/api/stats/lesson-accuracy/:courseTitle', async (req, res) => {
   try {

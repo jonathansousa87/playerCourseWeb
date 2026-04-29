@@ -12,6 +12,7 @@ export const SYSTEM_PROMPTS = {
   flashcards: SYSTEM_BASE,
   diario: SYSTEM_BASE,
   exemplos: SYSTEM_BASE,
+  prequestions: SYSTEM_BASE,
 };
 
 const trunc = (text, max = 20000) =>
@@ -213,6 +214,45 @@ ${trunc(transcript)}
 ---
 
 Retorne APENAS o HTML completo, sem fences de codigo.`.trim();
+
+// Pre-questoes (Carpenter & Toftness 2017): perguntas geradas ANTES do
+// video, pra forcar tentativa de recuperacao. O retorno DEVE ser JSON
+// puro pra o backend parsear sem regex maluco.
+export const buildPrequestionsPrompt = ({ lessonTitle, transcript }) => `
+Gere perguntas de PRE-AULA sobre o conteudo abaixo. O aluno respondera ANTES de assistir,
+pra ativar tentativa de recuperacao (efeito de pre-questao). Errar eh OK — o ato de tentar
+adivinhar prepara a codificacao.
+
+Regras:
+- Gere EXATAMENTE 3 perguntas de multipla escolha (4 alternativas cada, 1 correta).
+- Foque nos conceitos MAIS centrais da aula (nao em exemplos passageiros).
+- Distratores plausiveis (nao absurdos), pra exigir pensamento real.
+- Pergunta clara, sem pronomes ambiguos, autocontida.
+- Explicacao curta (1-2 frases) por que a correta esta certa.
+
+Formato obrigatorio: JSON puro, SEM fences, SEM texto antes/depois. Schema EXATO:
+{
+  "questions": [
+    {
+      "question": "string",
+      "options": ["string", "string", "string", "string"],
+      "correct_idx": 0,
+      "explanation": "string"
+    },
+    ...
+  ]
+}
+
+Onde correct_idx eh 0,1,2 ou 3 (indice em options).
+
+Titulo da aula: ${lessonTitle}
+
+Transcricao:
+---
+${trunc(transcript)}
+---
+
+Retorne APENAS o JSON.`.trim();
 
 export const buildDiarioPrompt = ({ lessonTitle, transcript, weekLabel }) => `
 Gere um template de diario tecnico em Markdown pra aula abaixo. Use EXATAMENTE este formato, preenchendo APENAS a parte do "O que aprendi" com 3 a 5 bullets de sintese; os outros campos deixe em branco (o aluno preenche depois).

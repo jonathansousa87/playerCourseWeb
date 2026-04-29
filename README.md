@@ -264,7 +264,7 @@ Dentro de uma aula:
 - [dotenv](https://github.com/motdotla/dotenv) 17
 
 ### IA
-- DeepSeek API v3 (`deepseek-chat` por padrão; `deepseek-reasoner` opcional)
+- DeepSeek API v4 (`deepseek-v4-flash` por padrão, context 1M; `deepseek-v4-pro` opcional pra raciocínio profundo)
 - Compatibilidade futura com Groq (suporte ao GROQ_API_KEY no `.env.example`)
 
 ### Dev tools
@@ -299,16 +299,69 @@ Para usar "Gerar IA" e o Chat IA:
 3. Gere chave em https://platform.deepseek.com/api_keys
 4. Cole no `.env` (passo 3 do setup)
 
-**Custo aproximado** (deepseek-chat, abr/2026):
-- Resumo de aula 25min: ~$0.003
-- Quiz com 10 questões: ~$0.005
-- Flashcards (15 cards): ~$0.004
-- Pacote completo (resumo + quiz + flashcards + diário + exemplos): ~$0.015-0.025
-- Mensagem de chat: ~$0.001-0.003
+**Custo aproximado** (deepseek-v4-flash, abr/2026 — $0.14/M input miss, $0.0028/M cache hit, $0.28/M output):
+- Resumo de aula 25min: ~$0.001
+- Quiz com 10 questões: ~$0.0015
+- Flashcards (15 cards): ~$0.0012
+- Pacote completo (resumo + quiz + flashcards + diário + exemplos + pre-quiz): ~$0.005-0.008
+- Mensagem de chat: ~$0.00003 (cache hit ~95% no system prompt — transcrição reusada)
 
 ---
 
 ## Setup completo
+
+### Modo rápido (recomendado) — script automatizado
+
+Em **Linux / macOS / WSL**:
+
+```bash
+git clone <url-do-repositorio> playerCourseWeb
+cd playerCourseWeb
+./setup.sh
+```
+
+Em **Windows** (PowerShell):
+
+```powershell
+git clone <url-do-repositorio> playerCourseWeb
+cd playerCourseWeb
+.\setup.ps1
+```
+
+Se o Windows reclamar de execution policy:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+O script é **idempotente** (pode rodar várias vezes) e cuida de tudo:
+1. Verifica `node`, `npm`, `docker` (compose v2)
+2. Cria `.env` a partir de `.env.example` e pede `COURSES_PATH` + `DEEPSEEK_API_KEY` interativamente
+3. Sobe Postgres via `docker compose up -d`
+4. Aguarda Postgres ficar healthy
+5. Roda `npm install`
+6. Aplica `db/migrate.js` (schema inicial + todas as migrações aditivas)
+
+Pré-requisitos: **Docker Desktop** (Windows/Mac) ou **Docker Engine + Compose v2** (Linux), **Node.js >= 18**.
+
+Após o setup:
+
+```bash
+# Linux/Mac/WSL
+./start.sh
+
+# Windows ou manualmente em 2 terminais
+npm run server   # backend (3001)
+npm run dev      # frontend (5173)
+```
+
+Acesse `http://localhost:5173`.
+
+---
+
+### Modo manual (passo a passo)
+
+Se preferir entender cada etapa ou customizar.
 
 ### Passo 1 — Clonar o repositório
 
@@ -453,7 +506,7 @@ Aulas que têm material complementar são **agrupadas pelo prefixo**. Sufixos re
 | Sufixo | Tipo de material | Extensão |
 |---|---|---|
 | `_dub` | vídeo | `.mp4`, `.webm`, `.ts`, `.m3u8`, `.mkv` |
-| `_dub` | transcrição | `.vtt` (qualquer locale: `_dub.pt-br.vtt`, `_dub.vtt`) |
+| `_dub` | transcrição | `.txt` ou `.vtt` (locale opcional: `_dub.pt-BR.txt`, `_dub.txt`, `_dub.vtt`) |
 | `_resumo_dub_NN` | resumo | `.md` |
 | `_exemplos_dub_NN` | exemplos práticos | `.html` |
 | `_quiz_dub_NN` | quiz | `.html` |
@@ -538,7 +591,7 @@ DOM │ Cards confusos no dashboard: 3 grupos de conceitos parecidos
 Na lista de aulas, botão **"Gerar IA"** acima da lista abre o modal de lote:
 1. Marca as aulas (checkboxes)
 2. Marca os tipos de material (resumo / quiz / flashcards / exemplos / diário)
-3. Escolhe modelo (deepseek-chat padrão, ou deepseek-reasoner pra raciocínio mais profundo)
+3. Escolhe modelo (deepseek-v4-flash padrão, ou deepseek-v4-pro pra raciocínio mais profundo)
 4. **Gerar** — barra de progresso aula por aula
 
 Útil ao começar um curso novo: gera material de 10-20 aulas de uma vez, deixa rodando, custa ~$0.20-0.50.
@@ -1083,11 +1136,16 @@ Pra trocar:
 
 Mensagem só aparece quando tenta usar **Gerar IA** ou **Chat**. Resto do app funciona. Se quiser usar a IA: cria conta, gera key, cola no `.env`, reinicia o backend.
 
-### "transcrição .vtt não encontrada"
+### "transcrição (.txt ou .vtt) não encontrada"
 
-A IA precisa do `.vtt` pra gerar material e responder no chat. Soluções:
+A IA precisa de um `.txt` (formato preferido, mais enxuto) ou `.vtt` (legado) pra gerar material e responder no chat. Soluções:
 
-- **Whisper** (OpenAI, local):
+- **Whisper / WhisperX** (local), exportando texto puro:
+  ```bash
+  whisper aula.mp4 --output_format txt --language pt
+  # ou whisperx, ambos geram <basename>.txt
+  ```
+- **VTT como fallback** (se já tem):
   ```bash
   whisper aula.mp4 --output_format vtt --language pt
   ```
@@ -1095,7 +1153,9 @@ A IA precisa do `.vtt` pra gerar material e responder no chat. Soluções:
   ```bash
   yt-dlp --write-auto-subs --sub-lang pt --convert-subs vtt URL
   ```
-- O nome precisa terminar com `_dub.vtt` (ex: `aula01_dub.vtt`) pra ser reconhecido
+- Padrão de nome: `<basename_do_video>.txt` ou `<basename_do_video>.<locale>.txt`. Ex: `aula01_dub.pt-BR.txt`. O backend prefere `.txt` quando ambos existem.
+
+> **Importante:** transcrições com mesmo basename do vídeo são automaticamente filtradas da lista de aulas (não aparecem como item clicável). Outros `.txt` com nome diferente (ex: `exercicios_extras.txt`) continuam sendo listados normalmente.
 
 ### Flashcards com 0 cards depois de gerar
 
@@ -1103,7 +1163,7 @@ A IA pode ter saído de formato. O parser tolera 4 fallbacks, mas se sair vazio 
 
 1. Abre o `_flashcards_anki_dub_NN_ia.txt` gerado (mesmo que vazio do ponto de vista do parser, foi salvo? — não, só salva se passar)
 2. Abre o `.vtt` da aula: tem texto suficiente? Tem ao menos 50 chars de transcrição?
-3. Tenta com `deepseek-reasoner` (modal de gerar IA tem o seletor)
+3. Tenta com `deepseek-v4-pro` (modal de gerar IA tem o seletor)
 
 ### Build do frontend lento (> 5s)
 

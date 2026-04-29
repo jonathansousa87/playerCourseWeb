@@ -1,5 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { fetchDashboardStats, fetchProfileStats, fetchConfusionGroups } from "../utils/progressApi";
+import {
+  fetchDashboardStats,
+  fetchProfileStats,
+  fetchConfusionGroups,
+  fetchActivityBalance,
+  fetchHypercorrection,
+  fetchRetentionBadges,
+} from "../utils/progressApi";
 
 const formatHour = (h) => `${String(h).padStart(2, "0")}h`;
 const fmtPct = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
@@ -16,6 +23,9 @@ const Dashboard = ({ onBack }) => {
   const [data, setData] = useState(null);
   const [profile, setProfile] = useState(null);
   const [confusion, setConfusion] = useState(null);
+  const [balance, setBalance] = useState(null);
+  const [hypercorrection, setHypercorrection] = useState(null);
+  const [retentionBadges, setRetentionBadges] = useState(null);
   const [status, setStatus] = useState("loading");
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -23,15 +33,21 @@ const Dashboard = ({ onBack }) => {
     let cancelled = false;
     (async () => {
       try {
-        const [d, p, c] = await Promise.all([
+        const [d, p, c, b, h, r] = await Promise.all([
           fetchDashboardStats(),
           fetchProfileStats().catch(() => null),
           fetchConfusionGroups({ minLapses: 2, threshold: 0.4 }).catch(() => null),
+          fetchActivityBalance(30).catch(() => null),
+          fetchHypercorrection({ days: 30, limit: 8 }).catch(() => null),
+          fetchRetentionBadges().catch(() => null),
         ]);
         if (!cancelled) {
           setData(d);
           setProfile(p);
           setConfusion(c);
+          setBalance(b);
+          setHypercorrection(h);
+          setRetentionBadges(r);
           setStatus("ready");
         }
       } catch (err) {
@@ -107,6 +123,9 @@ const Dashboard = ({ onBack }) => {
     <div className="min-h-screen bg-slate-950 text-slate-100">
       {header}
       <div className="w-full px-6 lg:px-10 xl:px-14 py-6 space-y-8">
+        {/* Recall vs Leitura (desirable difficulties) */}
+        {balance && <ActivityBalanceCard balance={balance} />}
+
         {/* Backlog */}
         <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
           <h3 className="text-sm uppercase tracking-wider text-slate-400 mb-3">Backlog</h3>
@@ -283,6 +302,11 @@ const Dashboard = ({ onBack }) => {
           </section>
         )}
 
+        {/* Conquistas (Bahrick — successful relearning) */}
+        {retentionBadges && retentionBadges.totalMature > 0 && (
+          <RetentionBadgesCard retention={retentionBadges} />
+        )}
+
         {/* Cards confusos (similares entre si) */}
         {confusion && confusion.groups && confusion.groups.length > 0 && (
           <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
@@ -336,6 +360,40 @@ const Dashboard = ({ onBack }) => {
           </section>
         )}
 
+        {/* Hypercorrection: cards de alta confianca + erro (Metcalfe 2017) */}
+        {hypercorrection && hypercorrection.cards && hypercorrection.cards.length > 0 && (
+          <section className="bg-slate-900/60 border border-orange-500/30 rounded-2xl p-5">
+            <h3 className="text-sm uppercase tracking-wider text-orange-300 mb-1">
+              Hypercorrection — embaraco produtivo
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Cards onde voce achou que sabia (confianca alta) mas errou. Sao os mais
+              valiosos pra revisar — erro com surpresa fixa muito mais (Metcalfe 2017).
+            </p>
+            <div className="space-y-2">
+              {hypercorrection.cards.slice(0, 6).map((c) => (
+                <div
+                  key={c.id}
+                  className="flex items-start justify-between gap-4 py-2 border-b border-slate-800/50 last:border-0"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-slate-200 truncate" title={c.front}>
+                      {c.front}
+                    </div>
+                    <div className="text-[10px] text-slate-500 truncate">
+                      {c.course_title} · {c.lesson_prefix}
+                    </div>
+                  </div>
+                  <div className="text-right whitespace-nowrap">
+                    <span className="text-orange-300 font-bold">{c.surprise_errors}</span>
+                    <span className="text-slate-600 text-xs"> erros / {c.high_conf_attempts} altas</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* Top lapsos */}
         <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
           <h3 className="text-sm uppercase tracking-wider text-slate-400 mb-3">
@@ -366,6 +424,237 @@ const Dashboard = ({ onBack }) => {
         </section>
       </div>
     </div>
+  );
+};
+
+// ===========================================
+// Card "Conquistas" - badges de retencao de longo prazo (Bahrick & Hall)
+// Tier de tempo desde primeiro review + lista de marcos recentes (7d).
+// ===========================================
+
+const TIER_STYLES = {
+  "1w": { color: "from-slate-600 to-slate-500", emoji: "·", text: "text-slate-300" },
+  "1m": { color: "from-blue-600 to-blue-500", emoji: "*", text: "text-blue-300" },
+  "3m": { color: "from-cyan-600 to-cyan-500", emoji: "+", text: "text-cyan-300" },
+  "6m": { color: "from-emerald-600 to-emerald-500", emoji: "@", text: "text-emerald-300" },
+  "1y": { color: "from-amber-500 to-orange-500", emoji: "#", text: "text-amber-300" },
+  "2y": { color: "from-rose-500 to-pink-500", emoji: "%", text: "text-rose-300" },
+};
+
+const RetentionBadgesCard = ({ retention }) => {
+  const { tiers, recentMilestones, totalMature } = retention;
+  const earned = tiers.filter((t) => t.count > 0);
+
+  return (
+    <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
+      <div className="flex items-start justify-between mb-3 gap-3 flex-wrap">
+        <div>
+          <h3 className="text-sm uppercase tracking-wider text-slate-400">
+            Conquistas - retencao de longo prazo
+          </h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Cards estaveis (state Review) por tempo desde o 1o review. Bahrick: 5 sessoes
+            espacadas retem por DECADAS.
+          </p>
+        </div>
+        <span className="text-xs text-slate-400 font-mono whitespace-nowrap">
+          {totalMature} maduro{totalMature === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {earned.length === 0 ? (
+        <div className="text-sm text-slate-500 py-4 text-center">
+          Nenhum tier alcancado ainda. Continue revisando — a primeira semana ja vale badge.
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+          {tiers.map((t) => {
+            const style = TIER_STYLES[t.key] || TIER_STYLES["1w"];
+            const active = t.count > 0;
+            return (
+              <div
+                key={t.key}
+                className={`text-center p-3 rounded-xl border ${
+                  active
+                    ? `bg-gradient-to-br ${style.color} bg-opacity-20 border-current/30 ${style.text}`
+                    : "bg-slate-800/30 border-slate-700/30 text-slate-600"
+                }`}
+              >
+                <div className="text-2xl font-bold">{t.count}</div>
+                <div className="text-[10px] uppercase tracking-wider opacity-80 mt-0.5">
+                  {t.label}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {recentMilestones && recentMilestones.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-slate-800/60">
+          <h4 className="text-xs uppercase tracking-wider text-amber-300 mb-2">
+            Marcos batidos nos ultimos 7 dias
+          </h4>
+          <div className="space-y-1.5">
+            {recentMilestones.slice(0, 5).map((m) => {
+              const style = TIER_STYLES[m.tier] || TIER_STYLES["1w"];
+              return (
+                <div
+                  key={m.cardId}
+                  className="flex items-center gap-2 text-sm"
+                >
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded ${style.text} bg-current/10 whitespace-nowrap`}>
+                    {m.tierLabel}
+                  </span>
+                  <span className="text-slate-200 truncate flex-1" title={m.front}>
+                    {m.front}
+                  </span>
+                  <span className="text-[10px] text-slate-500 whitespace-nowrap" title={m.courseTitle}>
+                    {m.courseTitle.length > 25 ? m.courseTitle.slice(0, 25) + "..." : m.courseTitle}
+                  </span>
+                </div>
+              );
+            })}
+            {recentMilestones.length > 5 && (
+              <div className="text-[11px] text-slate-500 text-center pt-1">
+                + {recentMilestones.length - 5} marco{recentMilestones.length - 5 === 1 ? "" : "s"}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+};
+
+// ===========================================
+// Card "Recall vs Leitura" (Bjork & Bjork 2011)
+// Estima minutos ativos vs passivos baseando-se em eventos persistidos.
+// Mostra uma barra dividida em ativo/passivo + ratio + recomendacao.
+// ===========================================
+
+const LEVEL_STYLES = {
+  good: {
+    border: "border-emerald-500/30",
+    badge: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+    label: "Otimo",
+  },
+  ok: {
+    border: "border-blue-500/30",
+    badge: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+    label: "OK",
+  },
+  warning: {
+    border: "border-amber-500/30",
+    badge: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+    label: "Atencao",
+  },
+  bad: {
+    border: "border-red-500/30",
+    badge: "bg-red-500/15 text-red-300 border-red-500/30",
+    label: "Critico",
+  },
+  "no-data": {
+    border: "border-slate-700",
+    badge: "bg-slate-700/40 text-slate-400 border-slate-600/30",
+    label: "Sem dados",
+  },
+};
+
+const ActivityBalanceCard = ({ balance }) => {
+  const { active, passive, ratio, level, recommendation, days } = balance;
+  const total = active.totalSeconds + passive.totalSeconds;
+  const activePct = total > 0 ? (active.totalSeconds / total) * 100 : 0;
+  const passivePct = total > 0 ? (passive.totalSeconds / total) * 100 : 0;
+  const styles = LEVEL_STYLES[level] || LEVEL_STYLES["no-data"];
+
+  return (
+    <section
+      className={`bg-slate-900/60 border ${styles.border} rounded-2xl p-5`}
+    >
+      <div className="flex items-start justify-between mb-3 gap-3 flex-wrap">
+        <div>
+          <h3 className="text-sm uppercase tracking-wider text-slate-400">
+            Recall vs Leitura ({days}d)
+          </h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Tempo ativo (testar) vs passivo (consumir). Bjork & Bjork: ler &ne; aprender.
+          </p>
+        </div>
+        <span
+          className={`text-xs font-semibold px-2.5 py-1 rounded-lg border ${styles.badge}`}
+        >
+          {styles.label}
+          {ratio != null && <span className="ml-2 font-mono">{ratio.toFixed(2)}:1</span>}
+        </span>
+      </div>
+
+      {total === 0 ? (
+        <div className="text-sm text-slate-500 py-4 text-center">
+          Sem atividade nos ultimos {days} dias.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-3xl font-bold text-emerald-300">
+                  {active.totalMinutes}
+                </span>
+                <span className="text-xs text-slate-500">min ativo</span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1 space-y-0.5">
+                <div>{active.breakdown.flashcards.count} flashcards</div>
+                <div>
+                  {active.breakdown.quiz.count} quiz
+                  {active.breakdown.quiz.count > 0 &&
+                    ` (${active.breakdown.quiz.questions} questoes)`}
+                </div>
+                <div>
+                  {active.breakdown.prequiz.count} pre-quiz
+                  {active.breakdown.prequiz.count > 0 &&
+                    ` (${active.breakdown.prequiz.questions} questoes)`}
+                </div>
+              </div>
+            </div>
+            <div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-3xl font-bold text-slate-400">
+                  {passive.totalMinutes}
+                </span>
+                <span className="text-xs text-slate-500">min passivo</span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1 space-y-0.5">
+                <div>{passive.breakdown.video.count} videos assistidos</div>
+                <div>{passive.breakdown.resumo.count} resumos lidos</div>
+                <div>{passive.breakdown.exemplos.count} exemplos lidos</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="h-3 rounded-full bg-slate-800/60 overflow-hidden flex">
+            <div
+              className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all"
+              style={{ width: `${activePct}%` }}
+              title={`Ativo: ${active.totalMinutes} min (${Math.round(activePct)}%)`}
+            />
+            <div
+              className="h-full bg-gradient-to-r from-slate-600 to-slate-500 transition-all"
+              style={{ width: `${passivePct}%` }}
+              title={`Passivo: ${passive.totalMinutes} min (${Math.round(passivePct)}%)`}
+            />
+          </div>
+
+          <p className="text-xs text-slate-300 mt-3 leading-relaxed">
+            {recommendation}
+          </p>
+
+          <p className="text-[10px] text-slate-600 mt-2">
+            Estimativa: ~10s/flashcard, ~30s/questao quiz, ~25s/questao pre-quiz, ~8min/video, ~4min/resumo, ~6min/exemplo.
+          </p>
+        </>
+      )}
+    </section>
   );
 };
 

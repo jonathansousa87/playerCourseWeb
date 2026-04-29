@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useEffect } from "react";
 import VideoControls from "./VideoControls";
 import CourseSidebar from "./CourseSidebar";
+import { useWatchTimer } from "../hooks/useWatchTimer";
 
 const FullscreenSidebar = ({
   sidebarPosition,
@@ -122,7 +123,36 @@ const VideoPlayer = ({
   onToggleSidebarPosition,
   onTimeUpdate,
   onEnded,
-}) => (
+  courseTitle,
+  lessonPrefix,
+}) => {
+  // Tempo real assistido — alimenta /api/stats/activity-balance.
+  // Sem courseTitle/lessonPrefix vira no-op.
+  useWatchTimer(videoRef, courseTitle, lessonPrefix);
+
+  // Garante que playbackRate eh aplicado quando o componente eh remontado
+  // (ex: usuario voltou pro tab "video" depois de visitar pre-quiz/resumo).
+  // O setupVideoListeners no useVideoPlayer so roda quando selectedLesson
+  // muda, nao quando o <video> elemento eh recriado.
+  // Aplica em mount + loadedmetadata + ratechange (caso o browser resete).
+  useEffect(() => {
+    const video = videoRef?.current;
+    if (!video) return;
+    const apply = () => {
+      if (video.playbackRate !== playbackRate) {
+        video.playbackRate = playbackRate;
+      }
+    };
+    apply();
+    video.addEventListener("loadedmetadata", apply);
+    video.addEventListener("loadeddata", apply);
+    return () => {
+      video.removeEventListener("loadedmetadata", apply);
+      video.removeEventListener("loadeddata", apply);
+    };
+  }, [videoRef, playbackRate, fileUrl]);
+
+  return (
   <div className="flex flex-col h-full">
     <div
       ref={videoContainerRef}
@@ -187,6 +217,7 @@ const VideoPlayer = ({
       )}
     </div>
   </div>
-);
+  );
+};
 
 export default VideoPlayer;

@@ -122,10 +122,14 @@ router.delete('/api/progress/:courseTitle/steps', async (req, res) => {
 router.get('/api/db/notes/:courseTitle/pessoal/:lessonPrefix', async (req, res) => {
   try {
     const { rows } = await query(
-      'SELECT content, updated_at FROM personal_notes WHERE course_title = $1 AND lesson_prefix = $2',
+      'SELECT content, prompts, updated_at FROM personal_notes WHERE course_title = $1 AND lesson_prefix = $2',
       [dec(req.params.courseTitle), dec(req.params.lessonPrefix)],
     );
-    res.json({ content: rows[0]?.content || '', updated_at: rows[0]?.updated_at || null });
+    res.json({
+      content: rows[0]?.content || '',
+      prompts: rows[0]?.prompts || null,
+      updated_at: rows[0]?.updated_at || null,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -133,15 +137,30 @@ router.get('/api/db/notes/:courseTitle/pessoal/:lessonPrefix', async (req, res) 
 
 router.post('/api/db/notes/:courseTitle/pessoal', async (req, res) => {
   try {
-    const { lessonPrefix, content } = req.body;
+    const { lessonPrefix, content, prompts } = req.body;
     if (!lessonPrefix) return res.status(400).json({ error: 'lessonPrefix obrigatorio' });
-    await query(
-      `INSERT INTO personal_notes (course_title, lesson_prefix, content, updated_at)
-       VALUES ($1, $2, $3, NOW())
-       ON CONFLICT (course_title, lesson_prefix)
-       DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
-      [dec(req.params.courseTitle), lessonPrefix, content ?? ''],
-    );
+
+    // 'prompts' so eh atualizado se foi explicitamente enviado no body.
+    // Sem essa chave (clientes legados): mantem o que ja esta no DB.
+    const hasPrompts = Object.prototype.hasOwnProperty.call(req.body, 'prompts');
+
+    if (hasPrompts) {
+      await query(
+        `INSERT INTO personal_notes (course_title, lesson_prefix, content, prompts, updated_at)
+         VALUES ($1, $2, $3, $4::jsonb, NOW())
+         ON CONFLICT (course_title, lesson_prefix)
+         DO UPDATE SET content = EXCLUDED.content, prompts = EXCLUDED.prompts, updated_at = NOW()`,
+        [dec(req.params.courseTitle), lessonPrefix, content ?? '', JSON.stringify(prompts)],
+      );
+    } else {
+      await query(
+        `INSERT INTO personal_notes (course_title, lesson_prefix, content, updated_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (course_title, lesson_prefix)
+         DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
+        [dec(req.params.courseTitle), lessonPrefix, content ?? ''],
+      );
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

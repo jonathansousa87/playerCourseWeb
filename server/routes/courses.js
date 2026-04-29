@@ -7,6 +7,7 @@ import { createReadStream } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getCoursesPath, setCoursesPath } from '../config.js';
+import { isTranscriptOfVideo } from '../transcriptDetect.js';
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
@@ -20,6 +21,8 @@ const isLessonFile = (filename) => {
   const validExtensions = ['.mp4', '.webm', '.ts', '.m3u8', '.mkv', '.pdf', '.html', '.md', '.txt'];
   return validExtensions.some((ext) => filename.toLowerCase().endsWith(ext));
 };
+
+const VIDEO_EXTENSIONS = /\.(mp4|webm|ts|m3u8|mkv)$/i;
 
 const getContentType = (filename) => {
   const ext = filename.toLowerCase().split('.').pop();
@@ -136,6 +139,17 @@ const decodeFileName = (fileName) => {
 async function readCourseContent(path, basePath = '') {
   try {
     const items = await fs.readdir(path, { withFileTypes: true });
+
+    // Pre-passa: coleta basenames dos videos da pasta. Usado pra filtrar
+    // .txt/.vtt que sao transcricoes (mesmo nome do video) de aulas .txt
+    // de verdade.
+    const videoBasenames = new Set();
+    for (const item of items) {
+      if (!item.isDirectory() && VIDEO_EXTENSIONS.test(item.name)) {
+        videoBasenames.add(item.name.replace(VIDEO_EXTENSIONS, ''));
+      }
+    }
+
     const content = [];
     for (const item of items) {
       const fullPath = join(path, item.name);
@@ -151,6 +165,9 @@ async function readCourseContent(path, basePath = '') {
           });
         }
       } else if (isLessonFile(item.name)) {
+        // Ignora transcricoes (txt/vtt com mesmo basename do video).
+        // Outros .txt (com nome diferente) seguem como aulas.
+        if (isTranscriptOfVideo(item.name, videoBasenames)) continue;
         content.push({
           type: 'lesson',
           title: decodeFileName(item.name),

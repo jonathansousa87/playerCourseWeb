@@ -36,27 +36,35 @@ const stripCodeFence = (s) => {
   return fenceMatch ? fenceMatch[1].trim() : trimmed;
 };
 
-export const parseVtt = async (filePath) => {
+// Le e normaliza uma transcricao. Aceita .vtt (formato WebVTT — descarta
+// cabecalho/timestamps/cue numbers) e .txt (texto puro do Whisper, mais
+// enxuto, menos tokens). Para ambos: dedup de linhas adjacentes + colapso
+// de whitespace.
+export const parseTranscript = async (filePath) => {
   const raw = await fs.readFile(filePath, 'utf8');
-  // VTT: remove cabecalho WEBVTT, linhas com timestamps e linhas em branco redundantes
+  const isVtt = /\.vtt$/i.test(filePath);
   const lines = raw.split(/\r?\n/);
   const out = [];
   for (const line of lines) {
     const t = line.trim();
     if (!t) continue;
-    if (t === 'WEBVTT') continue;
-    if (/^\d+$/.test(t)) continue; // cue number
-    if (/-->/.test(t)) continue; // timestamp
-    if (/^NOTE\b/i.test(t)) continue;
+    if (isVtt) {
+      if (t === 'WEBVTT') continue;
+      if (/^\d+$/.test(t)) continue;     // cue number
+      if (/-->/.test(t)) continue;       // timestamp
+      if (/^NOTE\b/i.test(t)) continue;
+    }
     out.push(t);
   }
-  // Remove duplicatas adjacentes (comum em legendas dub)
   const dedup = [];
   for (const line of out) {
     if (dedup[dedup.length - 1] !== line) dedup.push(line);
   }
   return dedup.join(' ').replace(/\s+/g, ' ').trim();
 };
+
+// Alias mantido pra compatibilidade. Usar `parseTranscript` em codigo novo.
+export const parseVtt = parseTranscript;
 
 // Caminha na arvore do curso ate achar um arquivo que comeca com o prefixo e casa o predicate.
 const findFile = async (root, prefix, predicate) => {
@@ -81,12 +89,24 @@ const findFile = async (root, prefix, predicate) => {
   return walk(root);
 };
 
-export const findTranscript = (courseRoot, lessonPrefix) =>
-  findFile(
+// Aceita .txt (formato novo, mais enxuto) ou .vtt (legado), com locale
+// opcional. Se houver os dois na mesma pasta, prioriza o .txt.
+export const findTranscript = async (courseRoot, lessonPrefix) => {
+  const txt = await findFile(
+    courseRoot,
+    lessonPrefix,
+    (name) => /_dub(?:\.[a-z]{2,3}(?:-[a-zA-Z]{2,4})?)?\.txt$/i.test(name)
+      // Exclui materiais que casariam o regex amplo demais (mas terminam em
+      // _flashcards_anki_dub_NN.txt etc, que nao sao transcricao).
+      && !/_(?:flashcards_anki|resumo|exemplos|quiz|diario_tecnico)_dub_\d+/i.test(name),
+  );
+  if (txt) return txt;
+  return findFile(
     courseRoot,
     lessonPrefix,
     (name) => /_dub(?:\.[a-z-]+)?\.vtt$/i.test(name),
   );
+};
 
 // Encontra um arquivo de referencia (pra herdar o numero NN de _dub_NN)
 // Ex: "001 1 Download e Instalacoes_resumo_dub_02.md" -> retorna "02"
@@ -146,12 +166,12 @@ export const generateForLesson = async ({
   const transcriptPath = await findTranscript(courseRoot, lessonPrefix);
   if (!transcriptPath) {
     const err = new Error(
-      'transcricao .vtt nao encontrada pra essa aula. Gere o .vtt (Whisper) antes.',
+      'transcricao (.txt ou .vtt) nao encontrada pra essa aula. Gere a transcricao com Whisper antes.',
     );
     err.code = 'NO_TRANSCRIPT';
     throw err;
   }
-  const transcript = await parseVtt(transcriptPath);
+  const transcript = await parseTranscript(transcriptPath);
   if (transcript.length < 50) {
     const err = new Error('transcricao vazia ou muito curta');
     err.code = 'EMPTY_TRANSCRIPT';

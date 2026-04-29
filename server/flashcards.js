@@ -147,10 +147,13 @@ export const getDueCards = async ({ courseTitle = null, limit = 50 } = {}) => {
   return rows;
 };
 
-export const reviewCard = async ({ cardId, rating, now = new Date() }) => {
+export const reviewCard = async ({ cardId, rating, confidence = null, now = new Date() }) => {
   const ratingMap = { 1: Rating.Again, 2: Rating.Hard, 3: Rating.Good, 4: Rating.Easy };
   const fsrsRating = ratingMap[rating];
   if (!fsrsRating) throw new Error('rating invalido (use 1..4)');
+  if (confidence != null && !['high', 'medium', 'low'].includes(confidence)) {
+    throw new Error('confidence invalido (use high|medium|low|null)');
+  }
 
   const prev = await query(
     'SELECT * FROM flashcard_reviews WHERE card_id = $1',
@@ -195,8 +198,8 @@ export const reviewCard = async ({ cardId, rating, now = new Date() }) => {
 
   await query(
     `INSERT INTO flashcard_review_log
-      (card_id, rating, state_before, state_after, elapsed_days, scheduled_days, stability, difficulty, reviewed_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      (card_id, rating, state_before, state_after, elapsed_days, scheduled_days, stability, difficulty, confidence, reviewed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [
       cardId,
       rating,
@@ -206,6 +209,7 @@ export const reviewCard = async ({ cardId, rating, now = new Date() }) => {
       log.scheduled_days,
       c.stability,
       c.difficulty,
+      confidence,
       now,
     ],
   );

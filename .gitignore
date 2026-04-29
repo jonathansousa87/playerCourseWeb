@@ -27,3 +27,11 @@ dist-ssr
 video-durations-cache.json
 *.backup
 *.bak
+
+# Variaveis de ambiente
+.env
+.env.local
+.env.*.local
+
+# Notas de pesquisa pessoais (nao versionadas)
+pesquisa*.txt
