@@ -4,8 +4,10 @@ import { query } from '../db/index.js';
 // plataforma na tabela user_settings (JSONB). O servidor lê tudo de
 // process.env, entao no startup copiamos esses valores do banco para o
 // process.env — assim nao e preciso repetir as credenciais no .env de cada
-// maquina (Windows, etc.). Um valor do banco so sobrescreve o .env quando
-// existir e nao for vazio.
+// maquina (Windows, etc.). PRIORIDADE: o .env vence; o banco so PREENCHE o que
+// estiver ausente/vazio no process.env. Isso evita sobrescrever credenciais boas
+// do .env (ex.: o GOOGLE_REFRESH_TOKEN renovado pelo callback OAuth) por valores
+// antigos guardados no banco.
 const DB_TO_ENV = {
   google_client_id: 'GOOGLE_CLIENT_ID',
   google_client_secret: 'GOOGLE_CLIENT_SECRET',
@@ -26,6 +28,8 @@ export const loadCredsFromDB = async () => {
     const s = rows[0].settings || {};
     let count = 0;
     for (const [dbKey, envKey] of Object.entries(DB_TO_ENV)) {
+      // So preenche se o .env nao tiver esse valor (env vence o banco).
+      if (process.env[envKey] && process.env[envKey].trim()) continue;
       const val = typeof s[dbKey] === 'string' ? s[dbKey].trim() : s[dbKey];
       if (val) {
         process.env[envKey] = val;
