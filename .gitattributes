@@ -1,0 +1,25 @@
+# Finais de linha consistentes entre Linux e Windows.
+# Padrao: normaliza para LF no repositorio (e no working tree).
+* text=auto eol=lf
+
+# Scripts de shell SEMPRE LF — com CRLF o Linux quebra:
+#   /bin/bash^M: bad interpreter
+*.sh text eol=lf
+
+# Scripts do Windows SEMPRE CRLF no checkout.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binarios — nunca normalizar finais de linha.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.mp4  binary
+*.webm binary
+*.mkv  binary
+*.woff  binary
+*.woff2 binary
