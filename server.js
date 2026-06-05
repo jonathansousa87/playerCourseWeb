@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './server/load-env.js';
 import express from 'express';
 import cors from 'cors';
 import { ensureReady } from './db/index.js';

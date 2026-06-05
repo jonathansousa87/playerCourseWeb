@@ -11,8 +11,10 @@ export const setCoursesPath = (p) => {
   return _coursesPath;
 };
 
-// COURSE_SOURCE: 'filesystem' (padrao) | 'drive'
-export const getCourseSource = () => process.env.COURSE_SOURCE || 'filesystem';
+// COURSE_SOURCE: 'filesystem' (padrao) | 'drive'.
+// .trim() protege contra \r de .env salvo com CRLF (copiado de outro SO) e
+// espacos acidentais — senao "drive\r" !== "drive" cai no filesystem por engano.
+export const getCourseSource = () => (process.env.COURSE_SOURCE || 'filesystem').trim();
 
 // ID da pasta raiz de cursos no Google Drive
-export const getDriveFolderId = () => process.env.DRIVE_COURSES_FOLDER_ID || '';
+export const getDriveFolderId = () => (process.env.DRIVE_COURSES_FOLDER_ID || '').trim();

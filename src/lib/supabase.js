@@ -11,7 +11,11 @@ export const supabase = createClient(url, anonKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    detectSessionInUrl: false,
+    // Precisa ser true para os fluxos de link por e-mail (recuperacao de senha
+    // e confirmacao): o token chega no hash da URL (#access_token&type=recovery)
+    // e so dispara PASSWORD_RECOVERY se o cliente fizer o parse. O OAuth do
+    // Drive volta para o backend (/api/drive/callback), entao nao ha conflito.
+    detectSessionInUrl: true,
   },
 });
 
