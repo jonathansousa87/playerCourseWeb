@@ -1,12 +1,17 @@
 import express from 'express';
 import { google } from 'googleapis';
 import { readFileSync, writeFileSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { clearCache, isConfigured } from '../drive/index.js';
+import { query } from '../../db/index.js';
+
+// .env na RAIZ do projeto (server/routes -> ../../), nao em process.cwd() — assim
+// funciona mesmo iniciando o server de outra pasta.
+const ENV_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '.env');
 
 // Persiste GOOGLE_REFRESH_TOKEN no .env e atualiza process.env em runtime.
 // Assim o reconect via UI não exige reiniciar o servidor manualmente.
-const ENV_PATH = resolve(process.cwd(), '.env');
 const persistRefreshToken = (token) => {
   process.env.GOOGLE_REFRESH_TOKEN = token;
   try {
@@ -20,6 +25,25 @@ const persistRefreshToken = (token) => {
     console.log('[Drive] Refresh token atualizado no .env e em runtime.');
   } catch (e) {
     console.warn('[Drive] Nao foi possivel gravar .env — token ativo apenas em runtime:', e.message);
+  }
+};
+
+// Salva o refresh token tambem no banco (user_settings), mantendo o banco como
+// fonte confiavel para outras maquinas (ex.: Windows). O callback OAuth nao e
+// autenticado, entao atualiza a linha mais recente (uso local single-user).
+const saveRefreshTokenToDB = async (token) => {
+  try {
+    const r = await query(
+      `UPDATE user_settings
+          SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb),
+                                   '{google_refresh_token}', to_jsonb($1::text), true),
+              updated_at = NOW()
+        WHERE user_id = (SELECT user_id FROM user_settings ORDER BY updated_at DESC LIMIT 1)`,
+      [token],
+    );
+    if (r.rowCount) console.log('[Drive] Refresh token tambem salvo no banco (user_settings).');
+  } catch (e) {
+    console.warn('[Drive] Nao foi possivel salvar token no banco:', e.message);
   }
 };
 
@@ -56,6 +80,7 @@ router.get('/api/drive/callback', async (req, res) => {
     const rt = tokens.refresh_token;
     if (rt) {
       persistRefreshToken(rt);
+      await saveRefreshTokenToDB(rt);
     }
     clearCache();
     res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
