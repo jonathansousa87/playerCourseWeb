@@ -2,7 +2,8 @@ import './server/load-env.js';
 import express from 'express';
 import cors from 'cors';
 import { ensureReady } from './db/index.js';
-import { getCoursesPath } from './server/config.js';
+import { getCoursesPath, getCourseSource, getDriveFolderId } from './server/config.js';
+import { loadCredsFromDB } from './server/load-creds-from-db.js';
 import { requireAuth } from './server/auth.js';
 
 import driveRouter from './server/routes/drive.js';
@@ -50,7 +51,16 @@ app.use(typingRouter);
 const PORT = Number(process.env.PORT) || 3001;
 app.listen(PORT, async () => {
   console.log(`Servidor rodando na porta ${PORT}`);
-  console.log(`Pasta de cursos: ${getCoursesPath()}`);
   const ok = await ensureReady();
   console.log(ok ? 'Postgres conectado.' : 'AVISO: Postgres indisponivel (usando fallback).');
+
+  // Carrega credenciais salvas pela UI (user_settings) para o process.env.
+  if (ok) await loadCredsFromDB();
+
+  const source = getCourseSource();
+  if (source === 'drive') {
+    console.log(`Fonte de cursos: Drive (pasta ${getDriveFolderId() || 'NAO CONFIGURADA'})`);
+  } else {
+    console.log(`Fonte de cursos: filesystem (${getCoursesPath()})`);
+  }
 });
