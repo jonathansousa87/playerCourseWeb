@@ -7,7 +7,12 @@ const connectionString =
   process.env.DATABASE_URL ||
   'postgres://playercourse:playercourse_dev@localhost:5433/playercourse';
 
-export const pool = new Pool({ connectionString });
+// SSL obrigatorio para Supabase (e qualquer host remoto)
+const ssl = connectionString.includes('.supabase.co')
+  ? { rejectUnauthorized: false }
+  : false;
+
+export const pool = new Pool({ connectionString, ssl });
 
 pool.on('error', (err) => {
   console.error('Erro inesperado no pool Postgres:', err);

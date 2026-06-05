@@ -1,13 +1,23 @@
 <!DOCTYPE html>
-<html lang="pt_br">
+<html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/image_fx_.jpg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Cursos</title>
+    <title>Meus Cursos</title>
+    <script>
+      // Aplica tema antes do React montar para evitar flash de cor.
+      try {
+        var t = localStorage.getItem('pcw.theme');
+        if (t !== 'petrol' && t !== 'forest' && t !== 'slate') t = 'slate';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'slate');
+      }
+    </script>
   </head>
-  <body class="m-auto bg-slate-950">
-    <div id="root" class="m-auto"></div>
+  <body class="bg-slate-950">
+    <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { generateIa, generatePrequestions } from "../utils/progressApi";
 
 // "prequiz" eh especial: nao gera arquivo no disco, salva no Postgres
@@ -7,6 +8,7 @@ const KIND_OPTIONS = [
   { key: "prequiz", label: "Pre-Quiz (perguntas-iscas)", icon: "🎯", color: "yellow" },
   { key: "resumo", label: "Resumo", icon: "📄", color: "emerald" },
   { key: "exemplos", label: "Exemplos praticos", icon: "💡", color: "amber" },
+  { key: "piada", label: "Piada da aula", icon: "😄", color: "pink" },
   { key: "quiz", label: "Quiz", icon: "❓", color: "purple" },
   { key: "flashcards", label: "Flashcards", icon: "🔁", color: "cyan" },
   { key: "diario", label: "Diario tecnico", icon: "📓", color: "rose" },
@@ -24,6 +26,7 @@ const COLOR_CLASSES = {
   purple: "border-purple-500/40 bg-purple-500/10 text-purple-200",
   cyan: "border-cyan-500/40 bg-cyan-500/10 text-cyan-200",
   rose: "border-rose-500/40 bg-rose-500/10 text-rose-200",
+  pink: "border-pink-500/40 bg-pink-500/10 text-pink-200",
 };
 
 const fmtTime = (ms) => {
@@ -147,9 +150,10 @@ const AIGenerateModal = ({
           <button
             onClick={handleClose}
             disabled={loading}
-            className="text-slate-500 hover:text-slate-300 text-xl leading-none disabled:opacity-40"
+            aria-label="Fechar"
+            className="text-slate-500 hover:text-slate-300 leading-none disabled:opacity-40"
           >
-            ×
+            <X className="w-5 h-5" />
           </button>
         </div>
 

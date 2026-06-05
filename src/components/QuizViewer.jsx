@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { parseQuizHtml } from "../utils/quizParser";
+import { parseQuiz } from "../utils/quizParser";
 import {
   fetchQuizAttempts,
   saveQuizAttempt,
@@ -19,7 +19,7 @@ const QuizViewer = ({ fileUrl, courseTitle, lessonPrefix, onPass }) => {
   const load = useCallback(async () => {
     setStatus("loading");
     try {
-      const [htmlRes, attempts] = await Promise.all([
+      const [rawContent, attempts] = await Promise.all([
         fetch(fileUrl).then((r) => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.text();
@@ -28,7 +28,7 @@ const QuizViewer = ({ fileUrl, courseTitle, lessonPrefix, onPass }) => {
           ? fetchQuizAttempts(courseTitle, lessonPrefix).catch(() => [])
           : Promise.resolve([]),
       ]);
-      const parsed = parseQuizHtml(htmlRes);
+      const parsed = parseQuiz(rawContent);
       if (parsed.length === 0) {
         setStatus("empty");
         return;
@@ -146,8 +146,8 @@ const QuizViewer = ({ fileUrl, courseTitle, lessonPrefix, onPass }) => {
   }
 
   return (
-    <div className="h-full overflow-auto bg-slate-950 px-6 py-6">
-      <div className="max-w-4xl mx-auto">
+    <div className="h-full overflow-auto bg-slate-950 px-6 lg:px-12 xl:px-20 py-6">
+      <div className="w-full">
         <div className="flex items-center justify-between mb-6">
           <div>
             <div className="text-sm text-slate-400">

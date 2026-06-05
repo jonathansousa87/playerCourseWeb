@@ -6,6 +6,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Save, CheckCircle, Lightbulb } from "lucide-react";
 import { fetchPersonalNote, savePersonalNote } from "../utils/progressApi";
+import { LoadingState } from "./StateViews";
 
 // Chaves persistidas em personal_notes.prompts (JSONB).
 const PROMPT_FIELDS = [
@@ -111,17 +112,13 @@ const PersonalSummary = ({ courseTitle, lessonPrefix, onMarkComplete, isComplete
     .filter(Boolean).length;
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full text-slate-500">
-        Carregando...
-      </div>
-    );
+    return <LoadingState />;
   }
 
   return (
     <div className="h-full flex flex-col bg-slate-900 overflow-hidden">
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl w-full mx-auto px-6 lg:px-10 py-8">
+        <div className="w-full px-4 lg:px-8 py-8">
           <div className="mb-6">
             <h2 className="text-lg font-semibold text-slate-100 mb-1 flex items-center gap-2">
               <Lightbulb className="w-5 h-5 text-orange-300" />

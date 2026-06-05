@@ -8,7 +8,7 @@ import { getCoursesPath } from '../config.js';
 
 const router = express.Router();
 
-const ALLOWED_KINDS = new Set(['resumo', 'quiz', 'flashcards', 'diario', 'exemplos']);
+const ALLOWED_KINDS = new Set(['resumo', 'quiz', 'flashcards', 'diario', 'exemplos', 'piada']);
 
 router.post('/api/ia/generate', async (req, res) => {
   try {
@@ -27,6 +27,7 @@ router.post('/api/ia/generate', async (req, res) => {
       return res.status(500).json({ error: 'DEEPSEEK_API_KEY nao configurada no .env' });
     }
     const out = await generateForLesson({
+      userId: req.userId,
       coursesPath: getCoursesPath(),
       courseTitle,
       lessonPrefix,
@@ -45,16 +46,16 @@ router.post('/api/ia/generate', async (req, res) => {
   }
 });
 
-// Histórico do chat de uma aula (ordem cronológica)
+// Histórico do chat de uma aula (ordem cronológica) — escopado por usuario.
 router.get('/api/ia/chat/:courseTitle/:lessonPrefix', async (req, res) => {
   try {
     const { courseTitle, lessonPrefix } = req.params;
     const { rows } = await query(
       `SELECT id, role, content, created_at
        FROM lesson_chats
-       WHERE course_title = $1 AND lesson_prefix = $2
+       WHERE user_id = $1 AND course_title = $2 AND lesson_prefix = $3
        ORDER BY created_at ASC, id ASC`,
-      [decodeURIComponent(courseTitle), decodeURIComponent(lessonPrefix)],
+      [req.userId, decodeURIComponent(courseTitle), decodeURIComponent(lessonPrefix)],
     );
     res.json(rows);
   } catch (err) {
@@ -62,13 +63,13 @@ router.get('/api/ia/chat/:courseTitle/:lessonPrefix', async (req, res) => {
   }
 });
 
-// Limpa todo o historico do chat dessa aula
+// Limpa todo o historico do chat dessa aula (do usuario logado).
 router.delete('/api/ia/chat/:courseTitle/:lessonPrefix', async (req, res) => {
   try {
     const { courseTitle, lessonPrefix } = req.params;
     await query(
-      `DELETE FROM lesson_chats WHERE course_title = $1 AND lesson_prefix = $2`,
-      [decodeURIComponent(courseTitle), decodeURIComponent(lessonPrefix)],
+      `DELETE FROM lesson_chats WHERE user_id = $1 AND course_title = $2 AND lesson_prefix = $3`,
+      [req.userId, decodeURIComponent(courseTitle), decodeURIComponent(lessonPrefix)],
     );
     res.json({ success: true });
   } catch (err) {
@@ -90,12 +91,11 @@ router.post('/api/ia/chat', async (req, res) => {
       return res.status(400).json({ error: 'message vazia' });
     }
 
-    // Carrega historico previo do DB
     const prev = await query(
       `SELECT role, content FROM lesson_chats
-       WHERE course_title = $1 AND lesson_prefix = $2
+       WHERE user_id = $1 AND course_title = $2 AND lesson_prefix = $3
        ORDER BY created_at ASC, id ASC`,
-      [courseTitle, lessonPrefix],
+      [req.userId, courseTitle, lessonPrefix],
     );
 
     const messages = [
@@ -111,19 +111,17 @@ router.post('/api/ia/chat', async (req, res) => {
       model: model || DEEPSEEK_DEFAULT_MODEL,
     });
 
-    // Persiste pergunta + resposta. Se a chamada da IA falhou, o catch
-    // abaixo captura e nada eh salvo — o usuario tenta de novo.
     const userInsert = await query(
-      `INSERT INTO lesson_chats (course_title, lesson_prefix, role, content)
-       VALUES ($1, $2, 'user', $3)
+      `INSERT INTO lesson_chats (user_id, course_title, lesson_prefix, role, content)
+       VALUES ($1, $2, $3, 'user', $4)
        RETURNING id, role, content, created_at`,
-      [courseTitle, lessonPrefix, userContent],
+      [req.userId, courseTitle, lessonPrefix, userContent],
     );
     const assistantInsert = await query(
-      `INSERT INTO lesson_chats (course_title, lesson_prefix, role, content)
-       VALUES ($1, $2, 'assistant', $3)
+      `INSERT INTO lesson_chats (user_id, course_title, lesson_prefix, role, content)
+       VALUES ($1, $2, $3, 'assistant', $4)
        RETURNING id, role, content, created_at`,
-      [courseTitle, lessonPrefix, out.reply],
+      [req.userId, courseTitle, lessonPrefix, out.reply],
     );
 
     res.json({
@@ -145,9 +143,10 @@ router.post('/api/ia/chat', async (req, res) => {
 });
 
 // === Pre-questoes (Carpenter & Toftness 2017) ===
+// Cache de questoes (lesson_prequestions) e' GLOBAL — uma vez geradas,
+// todos os usuarios da plataforma reusam (economia de tokens). Apenas as
+// tentativas (prequestion_attempts) sao por usuario.
 
-// GET: retorna perguntas cacheadas + ultima tentativa (se houver). Front
-// usa pra decidir se mostra "Gerar perguntas" ou as perguntas em si.
 router.get('/api/ia/prequestions/:courseTitle/:lessonPrefix', async (req, res) => {
   try {
     const courseTitle = decodeURIComponent(req.params.courseTitle);
@@ -167,10 +166,10 @@ router.get('/api/ia/prequestions/:courseTitle/:lessonPrefix', async (req, res) =
     const lastAttempt = await query(
       `SELECT id, answers, score, total, attempted_at
        FROM prequestion_attempts
-       WHERE course_title = $1 AND lesson_prefix = $2
+       WHERE user_id = $1 AND course_title = $2 AND lesson_prefix = $3
        ORDER BY attempted_at DESC, id DESC
        LIMIT 1`,
-      [courseTitle, lessonPrefix],
+      [req.userId, courseTitle, lessonPrefix],
     );
 
     res.json({
@@ -184,8 +183,7 @@ router.get('/api/ia/prequestions/:courseTitle/:lessonPrefix', async (req, res) =
   }
 });
 
-// POST: gera perguntas via IA + faz upsert no cache. Substitui as
-// perguntas anteriores se ja existirem (regeneracao explicita).
+// Geracao das perguntas — escreve no cache global, nao tem user_id.
 router.post('/api/ia/prequestions', async (req, res) => {
   try {
     const { courseTitle, lessonPrefix, model } = req.body || {};
@@ -230,7 +228,6 @@ router.post('/api/ia/prequestions', async (req, res) => {
   }
 });
 
-// Salva uma tentativa do aluno. answers: [{question_idx, selected_idx, is_correct}]
 router.post('/api/ia/prequestions/:courseTitle/:lessonPrefix/attempts', async (req, res) => {
   try {
     const courseTitle = decodeURIComponent(req.params.courseTitle);
@@ -241,7 +238,6 @@ router.post('/api/ia/prequestions/:courseTitle/:lessonPrefix/attempts', async (r
       return res.status(400).json({ error: 'answers precisa ser array nao-vazio' });
     }
 
-    // Validacao basica de shape
     for (const a of answers) {
       if (!Number.isInteger(a.question_idx) || !Number.isInteger(a.selected_idx)) {
         return res.status(400).json({ error: 'cada answer precisa de question_idx e selected_idx inteiros' });
@@ -252,10 +248,10 @@ router.post('/api/ia/prequestions/:courseTitle/:lessonPrefix/attempts', async (r
     const total = answers.length;
 
     const inserted = await query(
-      `INSERT INTO prequestion_attempts (course_title, lesson_prefix, answers, score, total)
-       VALUES ($1, $2, $3::jsonb, $4, $5)
+      `INSERT INTO prequestion_attempts (user_id, course_title, lesson_prefix, answers, score, total)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6)
        RETURNING id, answers, score, total, attempted_at`,
-      [courseTitle, lessonPrefix, JSON.stringify(answers), score, total],
+      [req.userId, courseTitle, lessonPrefix, JSON.stringify(answers), score, total],
     );
 
     res.json(inserted.rows[0]);
@@ -264,7 +260,7 @@ router.post('/api/ia/prequestions/:courseTitle/:lessonPrefix/attempts', async (r
   }
 });
 
-// Apaga perguntas + tentativas (regenerar do zero)
+// Apaga perguntas (cache global) + tentativas do usuario logado.
 router.delete('/api/ia/prequestions/:courseTitle/:lessonPrefix', async (req, res) => {
   try {
     const courseTitle = decodeURIComponent(req.params.courseTitle);
@@ -274,8 +270,8 @@ router.delete('/api/ia/prequestions/:courseTitle/:lessonPrefix', async (req, res
       [courseTitle, lessonPrefix],
     );
     await query(
-      `DELETE FROM prequestion_attempts WHERE course_title = $1 AND lesson_prefix = $2`,
-      [courseTitle, lessonPrefix],
+      `DELETE FROM prequestion_attempts WHERE user_id = $1 AND course_title = $2 AND lesson_prefix = $3`,
+      [req.userId, courseTitle, lessonPrefix],
     );
     res.json({ success: true });
   } catch (err) {

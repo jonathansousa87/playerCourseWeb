@@ -1,8 +1,9 @@
 #root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  width: 100%;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  text-align: left;
 }
 
 .logo {
@@ -274,26 +275,13 @@ body:fullscreen {
   cursor: pointer !important;
 }
 
-/* For Webkit browsers */
-.video-container:fullscreen::-webkit-media-controls-fullscreen-button {
-  display: none !important;
-}
-
 /* For Firefox */
 .video-container:fullscreen:-moz-full-screen {
   cursor: none !important;
 }
 
-/* Remove native fullscreen indicators */
-.video-container:fullscreen *::-webkit-media-controls,
-.video-container:fullscreen video::-webkit-media-controls-panel,
-.video-container:fullscreen video::-webkit-media-controls-play-button,
-.video-container:fullscreen video::-webkit-media-controls-fullscreen-button {
-  display: none !important;
-  -webkit-appearance: none;
-  opacity: 0 !important;
-  visibility: hidden !important;
-}
+/* Os controles nativos já são ocultados globalmente pela regra
+   `video::-webkit-media-controls*` mais acima — vale também em fullscreen. */
 
 /* Garantir que os controles customizados sejam visíveis */
 .video-container:fullscreen button,
@@ -301,16 +289,6 @@ body:fullscreen {
 .video-container:-moz-full-screen button {
   cursor: pointer !important;
   display: block !important;
-}
-
-/* Esconder completamente controles nativos do vídeo */
-video::-webkit-media-controls,
-video::-webkit-media-controls-enclosure {
-  display: none !important;
-}
-
-video::-moz-media-controls {
-  display: none !important;
 }
 
 /* Timeline customizada elegante */

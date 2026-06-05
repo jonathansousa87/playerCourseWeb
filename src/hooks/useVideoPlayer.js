@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { supabase } from "../lib/supabase";
 
 const useVideoPlayer = () => {
   const [playbackRate, setPlaybackRate] = useState(1);
@@ -9,16 +10,33 @@ const useVideoPlayer = () => {
   const [isDragging, setIsDragging] = useState(false);
   const clickCountRef = useRef(0);
   const clickTimeoutRef = useRef(null);
+  const isDraggingRef = useRef(false);
   const videoRef = useRef(null);
   const playbackRateRef = useRef(1);
 
   useEffect(() => {
-    const savedRate = localStorage.getItem("preferredPlaybackRate");
-    if (savedRate) {
-      const rate = parseFloat(savedRate);
+    isDraggingRef.current = isDragging;
+  }, [isDragging]);
+
+  useEffect(() => {
+    // Cache local primeiro pra resposta sincrona; depois sobrescreve com a do Supabase
+    const cached = localStorage.getItem("preferredPlaybackRate");
+    if (cached) {
+      const rate = parseFloat(cached);
       setPlaybackRate(rate);
       playbackRateRef.current = rate;
     }
+    // user_settings.video_playback_rate e o source of truth (compartilhado com mobile)
+    supabase.from("user_settings").select("settings").maybeSingle()
+      .then(({ data }) => {
+        const remote = parseFloat(data?.settings?.video_playback_rate);
+        if (remote && remote > 0 && remote !== playbackRateRef.current) {
+          setPlaybackRate(remote);
+          playbackRateRef.current = remote;
+          localStorage.setItem("preferredPlaybackRate", String(remote));
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Keep ref in sync with state
@@ -39,12 +57,24 @@ const useVideoPlayer = () => {
     []
   );
 
-  const changePlaybackRate = useCallback((rate) => {
+  const changePlaybackRate = useCallback(async (rate) => {
     setPlaybackRate(rate);
     playbackRateRef.current = rate;
     const video = videoRef.current;
     if (video) video.playbackRate = rate;
-    localStorage.setItem("preferredPlaybackRate", rate);
+    localStorage.setItem("preferredPlaybackRate", String(rate));
+    // Persiste no Supabase pra sincronizar com mobile
+    try {
+      const { data: u } = await supabase.auth.getUser();
+      const userId = u?.user?.id;
+      if (!userId) return;
+      const { data: cur } = await supabase.from("user_settings")
+        .select("settings").eq("user_id", userId).maybeSingle();
+      const merged = { ...(cur?.settings ?? {}), video_playback_rate: rate };
+      await supabase.from("user_settings").upsert({
+        user_id: userId, settings: merged, updated_at: new Date().toISOString(),
+      }, { onConflict: "user_id" });
+    } catch {}
   }, []);
 
   const togglePlayPause = useCallback(() => {
@@ -134,18 +164,18 @@ const useVideoPlayer = () => {
     [duration]
   );
 
+  const handleTimeUpdate = useCallback((e) => {
+    const video = e.target;
+    if (!isDraggingRef.current && video) {
+      setCurrentTime(video.currentTime);
+    }
+  }, []);
+
   const setupVideoListeners = useCallback(
     (selectedLesson) => {
       const video = videoRef.current;
       if (!video || !selectedLesson) return;
 
-      // Reset time states for the new video
-      setCurrentTime(0);
-      setDuration(0);
-
-      const updateTime = () => {
-        if (!isDragging) setCurrentTime(video.currentTime);
-      };
       const updateDuration = () => {
         setDuration(video.duration);
         applyPlaybackRate(video);
@@ -153,29 +183,23 @@ const useVideoPlayer = () => {
       const handlePlay = () => setIsPlaying(true);
       const handlePause = () => setIsPlaying(false);
       const handleVolumeChange = () => setVolume(video.volume);
-
       const handleCanPlay = () => applyPlaybackRate(video);
 
-      video.addEventListener("timeupdate", updateTime);
       video.addEventListener("loadedmetadata", updateDuration);
       video.addEventListener("canplay", handleCanPlay);
       video.addEventListener("play", handlePlay);
       video.addEventListener("pause", handlePause);
       video.addEventListener("volumechange", handleVolumeChange);
 
-      // If metadata is already loaded (e.g. cached), grab duration immediately
-      if (video.readyState >= 1 && video.duration) {
-        setDuration(video.duration);
+      if (video.readyState >= 1) {
+        if (video.duration) setDuration(video.duration);
         setCurrentTime(video.currentTime);
+        if (!video.paused) setIsPlaying(true);
       }
 
-      video.play().catch((error) => {
-        console.log("Autoplay foi impedido:", error);
-      });
       applyPlaybackRate(video);
 
       return () => {
-        video.removeEventListener("timeupdate", updateTime);
         video.removeEventListener("loadedmetadata", updateDuration);
         video.removeEventListener("canplay", handleCanPlay);
         video.removeEventListener("play", handlePlay);
@@ -183,7 +207,7 @@ const useVideoPlayer = () => {
         video.removeEventListener("volumechange", handleVolumeChange);
       };
     },
-    [isDragging, applyPlaybackRate]
+    [applyPlaybackRate]
   );
 
   return {
@@ -200,6 +224,7 @@ const useVideoPlayer = () => {
     handleVideoClick,
     handleTimelineClick,
     handleTimelineDrag,
+    handleTimeUpdate,
     changeVolume,
     seekRelative,
     setupVideoListeners,

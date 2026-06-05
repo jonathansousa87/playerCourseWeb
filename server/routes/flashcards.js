@@ -17,6 +17,7 @@ const dec = (s) => decodeURIComponent(s);
 router.post('/api/flashcards/:courseTitle/:lessonPrefix/import', async (req, res) => {
   try {
     const result = await importDeck({
+      userId: req.userId,
       coursesPath: getCoursesPath(),
       courseTitle: dec(req.params.courseTitle),
       lessonPrefix: dec(req.params.lessonPrefix),
@@ -34,16 +35,16 @@ router.get('/api/flashcards/due', async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     const courseTitle = req.query.courseTitle ? dec(req.query.courseTitle) : null;
-    const cards = await getDueCards({ courseTitle, limit });
+    const cards = await getDueCards({ userId: req.userId, courseTitle, limit });
     res.json({ count: cards.length, cards });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-router.get('/api/flashcards/summary', async (_req, res) => {
+router.get('/api/flashcards/summary', async (req, res) => {
   try {
-    const rows = await getDueSummary();
+    const rows = await getDueSummary({ userId: req.userId });
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -57,8 +58,8 @@ router.get('/api/flashcards/confusion', async (req, res) => {
     const minLapses = Math.max(1, Number(req.query.minLapses) || 2);
     const threshold = Math.min(0.99, Math.max(0.1, Number(req.query.threshold) || 0.4));
 
-    const params = [minLapses];
-    let where = 'COALESCE(r.lapses, 0) >= $1';
+    const params = [minLapses, req.userId];
+    let where = 'COALESCE(r.lapses, 0) >= $1 AND d.user_id = $2';
     if (courseTitle) {
       params.push(courseTitle);
       where += ` AND d.course_title = $${params.length}`;
@@ -103,10 +104,11 @@ router.post('/api/flashcards/review/:cardId', async (req, res) => {
     if (!Number.isFinite(cardId)) return res.status(400).json({ error: 'cardId invalido' });
     const rating = Number(req.body?.rating);
     const confidence = req.body?.confidence || null;
-    const result = await reviewCard({ cardId, rating, confidence });
+    const result = await reviewCard({ userId: req.userId, cardId, rating, confidence });
     res.json(result);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    const code = err.code === 'CARD_NOT_FOUND' ? 404 : 400;
+    res.status(code).json({ error: err.message });
   }
 });
 
@@ -127,12 +129,13 @@ router.get('/api/flashcards/hypercorrection', async (req, res) => {
        JOIN flashcard_decks d ON d.id = c.deck_id
        LEFT JOIN flashcard_reviews r ON r.card_id = c.id
        JOIN flashcard_review_log l ON l.card_id = c.id
-       WHERE l.reviewed_at >= NOW() - $1::interval
+       WHERE c.user_id = $3
+         AND l.reviewed_at >= NOW() - $1::interval
        GROUP BY c.id, c.front, c.back, d.course_title, d.lesson_prefix, r.lapses, r.reps
        HAVING COUNT(*) FILTER (WHERE l.confidence = 'high' AND l.rating <= 2) > 0
        ORDER BY surprise_errors DESC, last_surprise DESC
        LIMIT $2`,
-      [`${days} days`, limit],
+      [`${days} days`, limit, req.userId],
     );
     res.json({ days, count: rows.length, cards: rows });
   } catch (err) {
@@ -145,6 +148,7 @@ router.get('/api/flashcards/hypercorrection', async (req, res) => {
 router.get('/api/flashcards/:courseTitle/:lessonPrefix', async (req, res) => {
   try {
     const deck = await getDeck({
+      userId: req.userId,
       courseTitle: dec(req.params.courseTitle),
       lessonPrefix: dec(req.params.lessonPrefix),
     });

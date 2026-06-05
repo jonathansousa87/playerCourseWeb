@@ -1,21 +1,46 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { processCourseStructure } from "../utils/courseUtils";
+import { getMediaUrl } from "../utils/fileUtils";
+import { DEFAULT_COURSES_PATH } from "../config";
 
 const useCourseData = () => {
   const [courses, setCourses] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [coursesPath, setCoursesPath] = useState(
-    "/mnt/nvme2/kadabra/Downloads/cursos/"
-  );
+  const [coursesPath, setCoursesPath] = useState(DEFAULT_COURSES_PATH);
   const [videoDurations, setVideoDurations] = useState({});
   const [loadingVideos, setLoadingVideos] = useState(new Set());
+
+  const reloadCourses = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/courses");
+      const courseData = await response.json();
+
+      courseData.forEach((course) => {
+        processCourseStructure(course);
+      });
+
+      setCourses(courseData);
+
+      try {
+        const durationsResponse = await fetch("/api/video-durations");
+        const cachedDurations = await durationsResponse.json();
+        setVideoDurations(cachedDurations);
+      } catch (error) {
+        console.error("Erro ao carregar cache de durações:", error);
+      }
+
+      setLoading(false);
+    } catch (error) {
+      console.error("Erro ao carregar cursos:", error);
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     const loadCoursesPath = async () => {
       try {
-        const response = await fetch(
-          "http://localhost:3001/api/config/courses-path"
-        );
+        const response = await fetch("/api/config/courses-path");
         const data = await response.json();
         setCoursesPath(data.path);
       } catch (error) {
@@ -23,37 +48,9 @@ const useCourseData = () => {
       }
     };
 
-    const loadCourses = async () => {
-      try {
-        const response = await fetch("http://localhost:3001/api/courses");
-        const courseData = await response.json();
-
-        courseData.forEach((course) => {
-          processCourseStructure(course);
-        });
-
-        setCourses(courseData);
-
-        try {
-          const durationsResponse = await fetch(
-            "http://localhost:3001/api/video-durations"
-          );
-          const cachedDurations = await durationsResponse.json();
-          setVideoDurations(cachedDurations);
-        } catch (error) {
-          console.error("Erro ao carregar cache de durações:", error);
-        }
-
-        setLoading(false);
-      } catch (error) {
-        console.error("Erro ao carregar cursos:", error);
-        setLoading(false);
-      }
-    };
-
     loadCoursesPath();
-    loadCourses();
-  }, []);
+    reloadCourses();
+  }, [reloadCourses]);
 
   const loadVideoDuration = async (videoPath, courseTitle) => {
     if (videoDurations[videoPath] !== undefined || loadingVideos.has(videoPath)) {
@@ -65,9 +62,7 @@ const useCourseData = () => {
     try {
       const video = document.createElement("video");
       video.preload = "metadata";
-      video.src = `http://localhost:3001/cursos/${encodeURIComponent(
-        courseTitle
-      )}/${encodeURIComponent(videoPath)}`;
+      video.src = getMediaUrl(courseTitle, videoPath);
 
       await new Promise((resolve) => {
         const cleanup = () => {
@@ -82,7 +77,7 @@ const useCourseData = () => {
 
           try {
             await fetch(
-              `http://localhost:3001/api/video-durations/${encodeURIComponent(
+              `/api/video-durations/${encodeURIComponent(
                 videoPath
               )}`,
               {
@@ -132,7 +127,7 @@ const useCourseData = () => {
   const saveCoursesPath = async (newPath) => {
     try {
       const response = await fetch(
-        "http://localhost:3001/api/config/courses-path",
+        "/api/config/courses-path",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -142,7 +137,7 @@ const useCourseData = () => {
 
       if (response.ok) {
         setCoursesPath(newPath);
-        window.location.reload();
+        await reloadCourses();
       } else {
         alert("Erro ao salvar configuração");
       }
@@ -162,6 +157,7 @@ const useCourseData = () => {
     loadingVideos,
     loadVideoDuration,
     saveCoursesPath,
+    reloadCourses,
   };
 };
 

@@ -159,7 +159,7 @@ const Dashboard = ({ onBack }) => {
                   <div
                     key={cell.day}
                     title={`${cell.day}: ${cell.reviews} reviews + ${cell.pomodoros} pomodoros`}
-                    className={`w-3 h-3 rounded-sm ${heatmapColor(cell.total)}`}
+                    className={`w-4 h-4 sm:w-3 sm:h-3 rounded-sm ${heatmapColor(cell.total)}`}
                   />
                 ))}
               </div>

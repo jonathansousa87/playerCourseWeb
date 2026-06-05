@@ -5,6 +5,7 @@ import {
   reviewFlashcard,
 } from "../utils/progressApi";
 import WhyErrorOverlay from "./WhyErrorOverlay";
+import { LoadingState, ErrorState } from "./StateViews";
 
 const RATINGS = [
   { rating: 1, label: "Errei", key: "1", color: "red", helper: "Nao lembrei" },
@@ -156,27 +157,15 @@ const FlashcardViewer = ({ courseTitle, lessonPrefix }) => {
   }, [flipped, showSummary, erroredCard, confidence, submitRating]);
 
   if (status === "loading") {
-    return (
-      <div className="flex items-center justify-center h-full text-slate-400">
-        <div className="text-lg">Carregando flashcards...</div>
-      </div>
-    );
+    return <LoadingState message="Carregando flashcards..." />;
   }
 
   if (status === "error") {
     return (
-      <div className="flex items-center justify-center h-full text-slate-400">
-        <div className="text-center">
-          <div className="text-lg text-red-400 mb-2">Erro ao carregar</div>
-          <div className="text-sm text-slate-500">{errorMsg}</div>
-          <button
-            onClick={loadDeck}
-            className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-xl text-white text-sm"
-          >
-            Tentar novamente
-          </button>
-        </div>
-      </div>
+      <ErrorState
+        message={errorMsg || "Erro ao carregar flashcards."}
+        onRetry={loadDeck}
+      />
     );
   }
 

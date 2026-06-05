@@ -1,14 +1,16 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 import CoursesScreen from "./CoursesScreen";
 import LessonsView from "./LessonsView";
 import LessonPlayer from "./LessonPlayer";
 import DailyReview from "./DailyReview";
 import Dashboard from "./Dashboard";
+import TypingCourse from "./typing/TypingCourse";
 import { shouldShowDiaryPrompt } from "./WeeklyDiaryModal";
 
 import useCourseData from "../hooks/useCourseData";
 import useCourseProgress from "../hooks/useCourseProgress";
+import useTypingProgress from "../hooks/useTypingProgress";
 import useVideoPlayer from "../hooks/useVideoPlayer";
 import useFullscreen from "../hooks/useFullscreen";
 import useSidebar from "../hooks/useSidebar";
@@ -18,8 +20,10 @@ import {
   findNextLesson,
   findPreviousLesson,
   moduleContainsLesson,
+  flattenCourseContent,
 } from "../utils/courseUtils";
 import { isVideoFile } from "../utils/fileUtils";
+import { clearCourseMaterials } from "../utils/progressApi";
 
 const MainComponent = () => {
   const [view, setView] = useState("courses");
@@ -28,6 +32,7 @@ const MainComponent = () => {
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [expandedModules, setExpandedModules] = useState({});
   const [showDiaryModal, setShowDiaryModal] = useState(false);
+  const activeStepRef = useRef("video");
   const [diaryAutoPrompted, setDiaryAutoPrompted] = useState(false);
   const [showBulkAIModal, setShowBulkAIModal] = useState(false);
 
@@ -43,6 +48,7 @@ const MainComponent = () => {
     loadingVideos,
     loadVideoDuration,
     saveCoursesPath,
+    reloadCourses,
   } = courseData;
 
   const videoPlayer = useVideoPlayer();
@@ -55,6 +61,27 @@ const MainComponent = () => {
     toggleLessonComplete,
     toggleStepComplete,
   } = useCourseProgress();
+
+  const typing = useTypingProgress();
+
+  // Após reloadCourses() (ex.: pós-geração de IA), o array `courses` traz
+  // objetos novos. Re-resolve a seleção atual a partir dos dados frescos para
+  // que materiais recém-gerados apareçam sem recarregar a página inteira.
+  useEffect(() => {
+    if (!selectedCourse) return;
+    const freshCourse = courses.find((c) => c.title === selectedCourse.title);
+    if (!freshCourse || freshCourse === selectedCourse) return;
+    setSelectedCourse(freshCourse);
+
+    if (selectedLesson) {
+      const freshLesson = flattenCourseContent(freshCourse.content).find((l) =>
+        selectedLesson.type === "lesson-group"
+          ? l.prefix === selectedLesson.prefix
+          : l.path === selectedLesson.path
+      );
+      if (freshLesson) setSelectedLesson(freshLesson);
+    }
+  }, [courses, selectedCourse, selectedLesson]);
 
   // Prompt do diario semanal quando aplicavel.
   useEffect(() => {
@@ -153,30 +180,33 @@ const MainComponent = () => {
   }, [selectedCourse?.title]);
 
   // Atalhos globais de teclado (seek/navegacao/fullscreen).
+  // Atalhos de seek e navegação de aula só disparam quando o step ativo é "video".
   useEffect(() => {
     if (!selectedLesson || !selectedCourse) return;
     const handleKeyDown = (e) => {
       const video = videoPlayer.videoRef.current;
-      switch (e.key) {
-        case "ArrowLeft":
-          e.preventDefault();
-          videoPlayer.seekRelative(-10);
-          break;
-        case "ArrowRight":
-          e.preventDefault();
-          videoPlayer.seekRelative(10);
-          break;
-        case "ArrowUp": {
-          e.preventDefault();
-          const prev = findPreviousLesson(selectedCourse.content, selectedLesson.path);
-          if (prev) handleLessonSelect(prev);
-          break;
-        }
-        case "ArrowDown": {
-          e.preventDefault();
-          const next = findNextLesson(selectedCourse.content, selectedLesson.path);
-          if (next) handleLessonSelect(next);
-          break;
+      if (activeStepRef.current === "video") {
+        switch (e.key) {
+          case "ArrowLeft":
+            e.preventDefault();
+            videoPlayer.seekRelative(-10);
+            break;
+          case "ArrowRight":
+            e.preventDefault();
+            videoPlayer.seekRelative(10);
+            break;
+          case "ArrowUp": {
+            e.preventDefault();
+            const prev = findPreviousLesson(selectedCourse.content, selectedLesson.path);
+            if (prev) handleLessonSelect(prev);
+            break;
+          }
+          case "ArrowDown": {
+            e.preventDefault();
+            const next = findNextLesson(selectedCourse.content, selectedLesson.path);
+            if (next) handleLessonSelect(next);
+            break;
+          }
         }
       }
       if (fullscreen.isFullscreen) {
@@ -201,6 +231,26 @@ const MainComponent = () => {
     setSelectedCourse(course);
     setView("lessons");
     setDiaryAutoPrompted(false);
+  };
+
+  const handleClearMaterials = async (course) => {
+    const ok = window.confirm(
+      `Apagar TODO o material gerado por IA de "${course.title}"?\n\n` +
+        "Remove resumos, quizzes, exemplos, flashcards, diario e pre-quiz do banco. " +
+        "Nao apaga seu progresso nem os arquivos do curso no Drive.",
+    );
+    if (!ok) return;
+    try {
+      const res = await clearCourseMaterials(course.title);
+      const { materials = 0, flashcardDecks = 0, prequestions = 0 } = res.deleted || {};
+      await reloadCourses();
+      window.alert(
+        `Material removido: ${materials} materiais, ${flashcardDecks} decks de flashcards, ${prequestions} pre-quiz.`,
+      );
+    } catch (err) {
+      console.error("Erro ao limpar materiais:", err);
+      window.alert(`Falha ao limpar materiais: ${err.message}`);
+    }
   };
 
   const handleLessonSelect = (lesson) => setSelectedLesson(lesson);
@@ -257,10 +307,12 @@ const MainComponent = () => {
     onSidebarHover: () => sidebar.setSidebarHovered(true),
     onSidebarLeave: () => sidebar.setSidebarHovered(false),
     onSidebarLock: () => sidebar.setSidebarLocked(true),
-    onSidebarUnlock: () => sidebar.setSidebarLocked(false),
+    onSidebarUnlock: () => sidebar.setSidebarUnlock(false),
     onToggleSidebarPosition: sidebar.toggleSidebarPosition,
+    onSetupListeners: videoPlayer.setupVideoListeners,
+    onInternalTimeUpdate: videoPlayer.handleTimeUpdate,
     onBack: handleBack,
-  });
+    });
 
   const courseContextValue = {
     selectedCourse,
@@ -295,6 +347,17 @@ const MainComponent = () => {
     return <Dashboard onBack={() => setView("courses")} />;
   }
 
+  if (view === "typing") {
+    return (
+      <TypingCourse
+        progress={typing.progress}
+        saveResult={typing.saveResult}
+        completedCount={typing.completedCount}
+        onBack={() => setView("courses")}
+      />
+    );
+  }
+
   if (view === "lessons" && selectedCourse && !selectedLesson) {
     return (
       <LessonsView
@@ -309,6 +372,7 @@ const MainComponent = () => {
         showBulkAIModal={showBulkAIModal}
         setShowBulkAIModal={setShowBulkAIModal}
         courseContextValue={courseContextValue}
+        onMaterialsChanged={reloadCourses}
       />
     );
   }
@@ -330,6 +394,8 @@ const MainComponent = () => {
         handleLessonSelect={handleLessonSelect}
         toggleLessonComplete={toggleLessonComplete}
         buildVideoProps={buildVideoProps}
+        onStepChange={(step) => { activeStepRef.current = step; }}
+        onMaterialsChanged={reloadCourses}
       />
     );
   }
@@ -339,12 +405,16 @@ const MainComponent = () => {
       courses={courses}
       completedLessons={completedLessons}
       completedSteps={completedSteps}
+      videoDurations={videoDurations}
       coursesPath={coursesPath}
       setCoursesPath={setCoursesPath}
       saveCoursesPath={saveCoursesPath}
       showConfigModal={showConfigModal}
       setShowConfigModal={setShowConfigModal}
       onSelectCourse={handleCourseSelect}
+      onClearMaterials={handleClearMaterials}
+      onOpenTyping={() => setView("typing")}
+      typingCompleted={typing.completedCount}
       onView={setView}
     />
   );

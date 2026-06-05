@@ -7,27 +7,12 @@ import {
   buildQuizPrompt,
   buildDiarioPrompt,
   buildExemplosPrompt,
+  buildPiadaPrompt,
   SYSTEM_PROMPTS,
 } from './prompts.js';
-import { importDeck, parseAnkiFlashcards } from '../flashcards.js';
+import { importDeckFromContent, parseAnkiFlashcards } from '../flashcards.js';
+import { query } from '../../db/index.js';
 
-// Extensao esperada por tipo
-const KIND_EXT = {
-  resumo: 'md',
-  quiz: 'html',
-  flashcards: 'txt',
-  diario: 'md',
-  exemplos: 'html',
-};
-
-// Base do sufixo (antes do numero). Reflete o que o usuario ja tem no disco.
-const KIND_BASE_SUFFIX = {
-  resumo: '_resumo_dub',
-  quiz: '_quiz_dub',
-  flashcards: '_flashcards_anki_dub',
-  diario: '_diario_tecnico_dub',
-  exemplos: '_exemplos_dub',
-};
 
 // Remove tags/fences se o modelo retornar envolto em ```lang...```
 const stripCodeFence = (s) => {
@@ -36,13 +21,8 @@ const stripCodeFence = (s) => {
   return fenceMatch ? fenceMatch[1].trim() : trimmed;
 };
 
-// Le e normaliza uma transcricao. Aceita .vtt (formato WebVTT — descarta
-// cabecalho/timestamps/cue numbers) e .txt (texto puro do Whisper, mais
-// enxuto, menos tokens). Para ambos: dedup de linhas adjacentes + colapso
-// de whitespace.
-export const parseTranscript = async (filePath) => {
-  const raw = await fs.readFile(filePath, 'utf8');
-  const isVtt = /\.vtt$/i.test(filePath);
+// Normaliza o texto bruto de uma transcricao (puro ou VTT).
+const parseTranscriptRaw = (raw, isVtt = false) => {
   const lines = raw.split(/\r?\n/);
   const out = [];
   for (const line of lines) {
@@ -50,8 +30,8 @@ export const parseTranscript = async (filePath) => {
     if (!t) continue;
     if (isVtt) {
       if (t === 'WEBVTT') continue;
-      if (/^\d+$/.test(t)) continue;     // cue number
-      if (/-->/.test(t)) continue;       // timestamp
+      if (/^\d+$/.test(t)) continue;
+      if (/-->/.test(t)) continue;
       if (/^NOTE\b/i.test(t)) continue;
     }
     out.push(t);
@@ -61,6 +41,45 @@ export const parseTranscript = async (filePath) => {
     if (dedup[dedup.length - 1] !== line) dedup.push(line);
   }
   return dedup.join(' ').replace(/\s+/g, ' ').trim();
+};
+
+// Le e normaliza a partir de um caminho local.
+export const parseTranscript = async (filePath) => {
+  const raw = await fs.readFile(filePath, 'utf8');
+  return parseTranscriptRaw(raw, /\.vtt$/i.test(filePath));
+};
+
+// Carrega a transcricao de uma aula independente da fonte (filesystem ou Drive).
+// Retorna { text, ref, lessonTitle } — ref e o caminho local ou fileId no Drive.
+export const loadTranscriptForLesson = async ({ courseTitle, lessonPrefix, coursesPath }) => {
+  if (process.env.COURSE_SOURCE === 'drive') {
+    const { findTranscriptInDrive, getFileContent } = await import('../drive/index.js');
+    const result = await findTranscriptInDrive(courseTitle, lessonPrefix);
+    if (!result) {
+      const err = new Error('transcricao nao encontrada no Drive para essa aula');
+      err.code = 'NO_TRANSCRIPT';
+      throw err;
+    }
+    const raw = await getFileContent(result.fileId);
+    return {
+      text: parseTranscriptRaw(raw, /\.vtt$/i.test(result.name)),
+      ref: result.fileId,
+      lessonTitle: result.name.replace(/_dub.*$/i, '').trim(),
+    };
+  }
+  // Modo filesystem (padrao)
+  const courseRoot = join(coursesPath, courseTitle);
+  const transcriptPath = await findTranscript(courseRoot, lessonPrefix);
+  if (!transcriptPath) {
+    const err = new Error('transcricao (.txt ou .vtt) nao encontrada. Gere com Whisper antes.');
+    err.code = 'NO_TRANSCRIPT';
+    throw err;
+  }
+  return {
+    text: await parseTranscript(transcriptPath),
+    ref: transcriptPath,
+    lessonTitle: basename(transcriptPath).replace(/_dub.*$/i, '').trim(),
+  };
 };
 
 // Alias mantido pra compatibilidade. Usar `parseTranscript` em codigo novo.
@@ -153,40 +172,42 @@ const promptBuilders = {
   quiz: buildQuizPrompt,
   diario: buildDiarioPrompt,
   exemplos: buildExemplosPrompt,
+  piada: buildPiadaPrompt,
 };
 
 export const generateForLesson = async ({
+  userId,
   coursesPath,
   courseTitle,
   lessonPrefix,
   kinds,
   model = DEFAULT_MODEL,
 }) => {
-  const courseRoot = join(coursesPath, courseTitle);
-  const transcriptPath = await findTranscript(courseRoot, lessonPrefix);
-  if (!transcriptPath) {
-    const err = new Error(
-      'transcricao (.txt ou .vtt) nao encontrada pra essa aula. Gere a transcricao com Whisper antes.',
-    );
-    err.code = 'NO_TRANSCRIPT';
-    throw err;
-  }
-  const transcript = await parseTranscript(transcriptPath);
+  if (!userId) throw new Error('generateForLesson: userId obrigatorio');
+  const { text: transcript, ref: transcriptPath, lessonTitle: lessonTitleFromTranscript } =
+    await loadTranscriptForLesson({ courseTitle, lessonPrefix, coursesPath });
+
   if (transcript.length < 50) {
     const err = new Error('transcricao vazia ou muito curta');
     err.code = 'EMPTY_TRANSCRIPT';
     throw err;
   }
 
-  const lessonDir = await findLessonDir(courseRoot, lessonPrefix);
-  if (!lessonDir) {
+  // Em modo Drive nao ha diretorio local — lessonDir e usado so pra log/retorno
+  const courseRoot = join(coursesPath || '', courseTitle);
+  const lessonDir = process.env.COURSE_SOURCE === 'drive'
+    ? null
+    : await findLessonDir(courseRoot, lessonPrefix);
+  if (!lessonDir && process.env.COURSE_SOURCE !== 'drive') {
     const err = new Error('diretorio da aula nao encontrado');
     err.code = 'NO_LESSON_DIR';
     throw err;
   }
 
-  const refNumber = await findReferenceNumber(courseRoot, lessonPrefix);
-  const lessonTitle = basename(transcriptPath).replace(/_dub.*$/i, '').trim();
+  const refNumber = process.env.COURSE_SOURCE === 'drive'
+    ? '01'
+    : await findReferenceNumber(courseRoot, lessonPrefix);
+  const lessonTitle = lessonTitleFromTranscript;
 
   const now = new Date();
   const weekNumber = Math.ceil(
@@ -220,33 +241,31 @@ export const generateForLesson = async ({
         }
       }
       if (kind === 'quiz') {
-        if (!cleaned.includes('question-card') || !cleaned.includes('answer-btn')) {
-          results.push({ kind, ok: false, error: 'Quiz: HTML gerado nao contem a estrutura esperada (.question-card / .answer-btn).' });
+        const questionCount = (cleaned.match(/^## \d+\./gm) || []).length;
+        if (questionCount < 3 || !cleaned.includes('- [x]')) {
+          results.push({ kind, ok: false, error: `Quiz: ${questionCount} questoes detectadas / sem alternativa [x]. Modelo nao seguiu o formato Markdown.` });
           continue;
         }
       }
 
-      const filename = `${lessonPrefix}${KIND_BASE_SUFFIX[kind]}_${refNumber}_ia.${KIND_EXT[kind]}`;
-      const outPath = join(lessonDir, filename);
-      await fs.writeFile(outPath, cleaned, 'utf8');
+      const entry = { kind, ok: true, usage, model: usedModel, storage: 'db' };
 
-      const entry = {
-        kind,
-        ok: true,
-        file: filename,
-        path: outPath,
-        usage,
-        model: usedModel,
-      };
-
-      // Apos gerar flashcards, importa no deck FSRS (dedup por front+back).
       if (kind === 'flashcards') {
+        // Importa direto da string — sem gravar arquivo em disco.
         try {
-          const deck = await importDeck({ coursesPath, courseTitle, lessonPrefix });
-          entry.deck = deck;
+          entry.deck = await importDeckFromContent(cleaned, { userId, courseTitle, lessonPrefix });
         } catch (err) {
           entry.deckError = err.message;
         }
+      } else {
+        // resumo | quiz | exemplos | diario — salva no banco.
+        await query(
+          `INSERT INTO lesson_materials (course_title, lesson_prefix, kind, content)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (course_title, lesson_prefix, kind)
+           DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
+          [courseTitle, lessonPrefix, kind, cleaned],
+        );
       }
 
       results.push(entry);

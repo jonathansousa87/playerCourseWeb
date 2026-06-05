@@ -10,3 +10,9 @@ export const setCoursesPath = (p) => {
   _coursesPath = p.endsWith('/') ? p : p + '/';
   return _coursesPath;
 };
+
+// COURSE_SOURCE: 'filesystem' (padrao) | 'drive'
+export const getCourseSource = () => process.env.COURSE_SOURCE || 'filesystem';
+
+// ID da pasta raiz de cursos no Google Drive
+export const getDriveFolderId = () => process.env.DRIVE_COURSES_FOLDER_ID || '';

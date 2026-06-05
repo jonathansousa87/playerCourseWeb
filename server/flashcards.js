@@ -9,6 +9,10 @@ export { parseAnkiFlashcards };
 const params = generatorParameters({ enable_fuzz: true, enable_short_term: true });
 const scheduler = fsrs(params);
 
+const requireUserId = (userId, fn) => {
+  if (!userId) throw new Error(`${fn}: userId obrigatorio`);
+};
+
 // Converte estado persistido no DB para objeto Card esperado pelo ts-fsrs
 const rowToCard = (row, now) => {
   if (!row) return createEmptyCard(now);
@@ -48,7 +52,8 @@ const findFlashcardFile = async (courseRoot, lessonPrefix) => {
 };
 
 // Importa (ou re-importa) o deck a partir do arquivo .txt
-export const importDeck = async ({ coursesPath, courseTitle, lessonPrefix }) => {
+export const importDeck = async ({ userId, coursesPath, courseTitle, lessonPrefix }) => {
+  requireUserId(userId, 'importDeck');
   const courseRoot = join(coursesPath, courseTitle);
   const filePath = await findFlashcardFile(courseRoot, lessonPrefix);
   if (!filePath) {
@@ -64,18 +69,16 @@ export const importDeck = async ({ coursesPath, courseTitle, lessonPrefix }) => 
     throw err;
   }
 
-  // Upsert do deck
   const deckRes = await query(
-    `INSERT INTO flashcard_decks (course_title, lesson_prefix, source_file)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (course_title, lesson_prefix)
+    `INSERT INTO flashcard_decks (user_id, course_title, lesson_prefix, source_file)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (user_id, course_title, lesson_prefix)
      DO UPDATE SET source_file = EXCLUDED.source_file, imported_at = NOW()
      RETURNING id`,
-    [courseTitle, lessonPrefix, filePath],
+    [userId, courseTitle, lessonPrefix, filePath],
   );
   const deckId = deckRes.rows[0].id;
 
-  // Se ja havia cards, so inserimos os que faltam (match por front+back)
   const existing = await query(
     'SELECT id, front, back FROM flashcards WHERE deck_id = $1',
     [deckId],
@@ -89,8 +92,8 @@ export const importDeck = async ({ coursesPath, courseTitle, lessonPrefix }) => 
     const key = `${card.front}||${card.back}`;
     if (existingSet.has(key)) continue;
     await query(
-      `INSERT INTO flashcards (deck_id, front, back) VALUES ($1, $2, $3)`,
-      [deckId, card.front, card.back],
+      'INSERT INTO flashcards (user_id, deck_id, front, back) VALUES ($1, $2, $3, $4)',
+      [userId, deckId, card.front, card.back],
     );
     inserted++;
   }
@@ -98,11 +101,53 @@ export const importDeck = async ({ coursesPath, courseTitle, lessonPrefix }) => 
   return { deckId, total: cards.length, inserted };
 };
 
-export const getDeck = async ({ courseTitle, lessonPrefix }) => {
+// Versao sem arquivo: importa flashcards diretamente a partir do conteudo em texto.
+// Usado pelo generator apos receber a resposta da IA, sem gravar nada em disco.
+export const importDeckFromContent = async (text, { userId, courseTitle, lessonPrefix }) => {
+  requireUserId(userId, 'importDeckFromContent');
+  const cards = parseAnkiFlashcards(text);
+  if (cards.length === 0) {
+    const err = new Error('nenhum flashcard extraido');
+    err.code = 'EMPTY_DECK';
+    throw err;
+  }
+
+  const deckRes = await query(
+    `INSERT INTO flashcard_decks (user_id, course_title, lesson_prefix, source_file)
+     VALUES ($1, $2, $3, NULL)
+     ON CONFLICT (user_id, course_title, lesson_prefix)
+     DO UPDATE SET source_file = NULL, imported_at = NOW()
+     RETURNING id`,
+    [userId, courseTitle, lessonPrefix],
+  );
+  const deckId = deckRes.rows[0].id;
+
+  const existing = await query(
+    'SELECT front, back FROM flashcards WHERE deck_id = $1',
+    [deckId],
+  );
+  const existingSet = new Set(existing.rows.map((r) => `${r.front}||${r.back}`));
+
+  let inserted = 0;
+  for (const card of cards) {
+    const key = `${card.front}||${card.back}`;
+    if (existingSet.has(key)) continue;
+    await query(
+      'INSERT INTO flashcards (user_id, deck_id, front, back) VALUES ($1, $2, $3, $4)',
+      [userId, deckId, card.front, card.back],
+    );
+    inserted++;
+  }
+
+  return { deckId, total: cards.length, inserted };
+};
+
+export const getDeck = async ({ userId, courseTitle, lessonPrefix }) => {
+  requireUserId(userId, 'getDeck');
   const deckRes = await query(
     `SELECT id, imported_at FROM flashcard_decks
-     WHERE course_title = $1 AND lesson_prefix = $2`,
-    [courseTitle, lessonPrefix],
+     WHERE user_id = $1 AND course_title = $2 AND lesson_prefix = $3`,
+    [userId, courseTitle, lessonPrefix],
   );
   if (deckRes.rows.length === 0) return null;
   const deck = deckRes.rows[0];
@@ -122,15 +167,23 @@ export const getDeck = async ({ courseTitle, lessonPrefix }) => {
   };
 };
 
-// Cards due de um curso (ou de todos os cursos se courseTitle === null)
-export const getDueCards = async ({ courseTitle = null, limit = 50 } = {}) => {
+// Cards due de um curso (ou de todos os cursos do usuario se courseTitle === null)
+export const getDueCards = async ({ userId, courseTitle = null, limit = 50 } = {}) => {
+  requireUserId(userId, 'getDueCards');
   const now = new Date();
-  const params = [now, limit];
-  let where = '(r.due IS NULL OR r.due <= $1)';
+  const params = [now, limit, userId];
+  let where = 'd.user_id = $3 AND (r.due IS NULL OR r.due <= $1)';
   if (courseTitle) {
     params.push(courseTitle);
     where += ` AND d.course_title = $${params.length}`;
   }
+  // Surface only cards de aulas em que o usuario ja iniciou alguma etapa.
+  where += ` AND EXISTS (
+    SELECT 1 FROM step_completions sc
+    WHERE sc.user_id = d.user_id
+      AND sc.course_title = d.course_title
+      AND sc.lesson_prefix = d.lesson_prefix
+  )`;
   const { rows } = await query(
     `SELECT c.id, c.front, c.back, c.tags, c.source_timestamp,
             d.course_title, d.lesson_prefix,
@@ -147,12 +200,24 @@ export const getDueCards = async ({ courseTitle = null, limit = 50 } = {}) => {
   return rows;
 };
 
-export const reviewCard = async ({ cardId, rating, confidence = null, now = new Date() }) => {
+export const reviewCard = async ({ userId, cardId, rating, confidence = null, now = new Date() }) => {
+  requireUserId(userId, 'reviewCard');
   const ratingMap = { 1: Rating.Again, 2: Rating.Hard, 3: Rating.Good, 4: Rating.Easy };
   const fsrsRating = ratingMap[rating];
   if (!fsrsRating) throw new Error('rating invalido (use 1..4)');
   if (confidence != null && !['high', 'medium', 'low'].includes(confidence)) {
     throw new Error('confidence invalido (use high|medium|low|null)');
+  }
+
+  // Garante que o card pertence ao usuario antes de gravar review/log.
+  const ownerCheck = await query(
+    'SELECT 1 FROM flashcards WHERE id = $1 AND user_id = $2',
+    [cardId, userId],
+  );
+  if (ownerCheck.rows.length === 0) {
+    const err = new Error('card nao encontrado');
+    err.code = 'CARD_NOT_FOUND';
+    throw err;
   }
 
   const prev = await query(
@@ -168,9 +233,9 @@ export const reviewCard = async ({ cardId, rating, confidence = null, now = new 
 
   await query(
     `INSERT INTO flashcard_reviews
-      (card_id, state, due, stability, difficulty, elapsed_days, scheduled_days,
+      (card_id, user_id, state, due, stability, difficulty, elapsed_days, scheduled_days,
        reps, lapses, last_review, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
      ON CONFLICT (card_id) DO UPDATE SET
        state = EXCLUDED.state,
        due = EXCLUDED.due,
@@ -184,6 +249,7 @@ export const reviewCard = async ({ cardId, rating, confidence = null, now = new 
        updated_at = NOW()`,
     [
       cardId,
+      userId,
       c.state,
       c.due,
       c.stability,
@@ -198,10 +264,11 @@ export const reviewCard = async ({ cardId, rating, confidence = null, now = new 
 
   await query(
     `INSERT INTO flashcard_review_log
-      (card_id, rating, state_before, state_after, elapsed_days, scheduled_days, stability, difficulty, confidence, reviewed_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      (card_id, user_id, rating, state_before, state_after, elapsed_days, scheduled_days, stability, difficulty, confidence, reviewed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
     [
       cardId,
+      userId,
       rating,
       stateBefore,
       c.state,
@@ -226,8 +293,9 @@ export const reviewCard = async ({ cardId, rating, confidence = null, now = new 
   };
 };
 
-// Contadores rapidos (total / due) para badges na UI
-export const getDueSummary = async () => {
+// Contadores rapidos (total / due) para badges na UI — escopado por usuario.
+export const getDueSummary = async ({ userId } = {}) => {
+  requireUserId(userId, 'getDueSummary');
   const now = new Date();
   const { rows } = await query(
     `SELECT d.course_title,
@@ -236,8 +304,9 @@ export const getDueSummary = async () => {
      FROM flashcards c
      JOIN flashcard_decks d ON d.id = c.deck_id
      LEFT JOIN flashcard_reviews r ON r.card_id = c.id
+     WHERE d.user_id = $2
      GROUP BY d.course_title`,
-    [now],
+    [now, userId],
   );
   return rows;
 };

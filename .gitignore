@@ -34,4 +34,4 @@ video-durations-cache.json
 .env.*.local
 
 # Notas de pesquisa pessoais (nao versionadas)
-pesquisa*.txt
+pesquisa*.txt.transcode-cache/

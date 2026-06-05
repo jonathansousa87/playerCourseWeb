@@ -12,8 +12,8 @@ const PDFViewer = ({ selectedLesson, fileUrl, isCompleted, onToggleComplete, onB
     />
     <div className="flex-1 bg-gray-100 overflow-auto">
       <div
-        className="mx-auto bg-white shadow-xl"
-        style={{ width: "1000px", height: "100vh" }}
+        className="mx-auto bg-white shadow-xl max-w-[1000px] w-full"
+        style={{ height: "100vh" }}
       >
         <object
           data={fileUrl}

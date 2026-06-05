@@ -5,6 +5,7 @@ import {
   fetchConfusionGroups,
   reviewFlashcard,
 } from "../utils/progressApi";
+import { ArrowLeft } from "lucide-react";
 import { buildSessionQueue } from "../utils/sessionOrdering";
 import WhyErrorOverlay from "./WhyErrorOverlay";
 import { ConfidenceButtons } from "./FlashcardViewer";
@@ -181,9 +182,7 @@ const DailyReview = ({ onBack }) => {
             className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white"
             title="Voltar"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
+            <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
             <h2 className="text-lg font-bold text-slate-100 leading-tight">

@@ -197,8 +197,8 @@ const PreQuiz = ({ courseTitle, lessonPrefix, isCompleted, onMarkComplete }) => 
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-6">
-        <div className="max-w-3xl mx-auto space-y-4">
+      <div className="flex-1 overflow-auto px-6 lg:px-12 xl:px-20 py-6">
+        <div className="w-full space-y-4">
           {hasPriorAttempt && (
             <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl px-4 py-3 text-blue-200 text-sm">
               Voce ja respondeu antes ({lastAttempt.score}/{lastAttempt.total}). Tente de novo

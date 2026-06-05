@@ -1,59 +1,79 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { ArrowLeft, CheckCircle, Circle, Sparkles } from "lucide-react";
+import {
+  CheckCircle, Circle, Sparkles, ArrowLeft, Check,
+  Target, Play, FileText, Lightbulb, Coffee, HelpCircle, Repeat, PenLine,
+} from "lucide-react";
+import { getMediaUrl } from "../utils/fileUtils";
 import VideoPlayer from "./VideoPlayer";
 import MarkdownViewer from "./MarkdownViewer";
 import FlashcardViewer from "./FlashcardViewer";
 import QuizViewer from "./QuizViewer";
 import ExamplesViewer from "./ExamplesViewer";
-import TechnicalDiary from "./TechnicalDiary";
 import PersonalSummary from "./PersonalSummary";
 import PreQuiz from "./PreQuiz";
 import AIGenerateModal from "./AIGenerateModal";
+import { API_BASE } from "../config";
 
 // "requiresVideo": step depende de transcricao (.txt/.vtt) que so existe
 // se a aula tem video. Aparece sempre que materials.video existir.
 // "always": step nao depende de arquivos da aula.
 const STEP_CONFIG = [
-  { key: "prequiz", label: "Pre-Quiz", icon: "🎯", color: "yellow", requiresVideo: true },
-  { key: "video", label: "Video", icon: "▶", color: "blue" },
-  { key: "resumo", label: "Resumo", icon: "📄", color: "emerald" },
-  { key: "exemplos", label: "Exemplos", icon: "💡", color: "amber" },
-  { key: "quiz", label: "Quiz", icon: "❓", color: "purple" },
-  { key: "flashcards", label: "Flashcards", icon: "🔁", color: "cyan" },
-  { key: "diario", label: "Diario", icon: "📓", color: "rose" },
-  { key: "pessoal", label: "Meu Resumo", icon: "✏️", color: "orange", always: true },
+  { key: "prequiz", label: "Pre-Quiz", Icon: Target, requiresVideo: true },
+  { key: "video", label: "Video", Icon: Play },
+  { key: "resumo", label: "Resumo", Icon: FileText },
+  { key: "exemplos", label: "Exemplos", Icon: Lightbulb },
+  { key: "piada", label: "Pausa", Icon: Coffee },
+  { key: "quiz", label: "Quiz", Icon: HelpCircle },
+  { key: "flashcards", label: "Flashcards", Icon: Repeat },
+  { key: "pessoal", label: "Meu Resumo", Icon: PenLine, always: true },
 ];
 
-const StepTab = ({ step, isActive, isCompleted, onClick }) => {
-  const colorMap = {
-    blue: { active: "bg-blue-600/90 border-blue-500/60 text-white shadow-blue-500/15", completed: "text-blue-400 border-blue-500/20 bg-blue-500/8" },
-    emerald: { active: "bg-emerald-600/90 border-emerald-500/60 text-white shadow-emerald-500/15", completed: "text-emerald-400 border-emerald-500/20 bg-emerald-500/8" },
-    amber: { active: "bg-amber-600/90 border-amber-500/60 text-white shadow-amber-500/15", completed: "text-amber-400 border-amber-500/20 bg-amber-500/8" },
-    yellow: { active: "bg-yellow-500/90 border-yellow-400/60 text-white shadow-yellow-500/15", completed: "text-yellow-300 border-yellow-500/20 bg-yellow-500/8" },
-    purple: { active: "bg-purple-600/90 border-purple-500/60 text-white shadow-purple-500/15", completed: "text-purple-400 border-purple-500/20 bg-purple-500/8" },
-    cyan: { active: "bg-cyan-600/90 border-cyan-500/60 text-white shadow-cyan-500/15", completed: "text-cyan-400 border-cyan-500/20 bg-cyan-500/8" },
-    rose: { active: "bg-rose-600/90 border-rose-500/60 text-white shadow-rose-500/15", completed: "text-rose-400 border-rose-500/20 bg-rose-500/8" },
-    orange: { active: "bg-orange-600/90 border-orange-500/60 text-white shadow-orange-500/15", completed: "text-orange-400 border-orange-500/20 bg-orange-500/8" },
-  };
+// Nó da linha temporal com ícone de linha (lucide). Ativo e concluído usam a
+// MESMA cor (accent do tema); o ativo ganha um anel e o concluído um selo de
+// check sobre o ícone do passo. Futuro = apagado.
+const TimelineNode = ({ step, isActive, isCompleted, onClick }) => {
+  const Icon = step.Icon;
+  const accentStyle = isActive || isCompleted;
 
-  const colors = colorMap[step.color];
+  const circleStyle = accentStyle
+    ? {
+        background: "var(--accent-soft)",
+        borderColor: "var(--accent)",
+        boxShadow: isActive ? "0 0 0 3px var(--accent-soft)" : "none",
+      }
+    : { background: "var(--surface-2)", borderColor: "var(--border-strong)" };
+
+  const iconColor = accentStyle ? "var(--accent)" : "var(--text-muted)";
+  const labelColor = accentStyle ? "var(--accent)" : "var(--text-muted)";
 
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all duration-200 border ${
-        isActive
-          ? `${colors.active} shadow-lg`
-          : isCompleted
-          ? `${colors.completed}`
-          : "bg-slate-800/40 border-slate-700/40 text-slate-400 hover:bg-slate-700/50 hover:text-slate-200 hover:border-slate-600/50"
-      }`}
+      title={step.label}
+      className="flex items-center gap-2 shrink-0 focus:outline-none"
     >
-      <span className="text-sm">{step.icon}</span>
-      <span>{step.label}</span>
-      {isCompleted && !isActive && (
-        <CheckCircle className="w-3.5 h-3.5 ml-0.5 opacity-70" />
-      )}
+      <span
+        className={`relative flex items-center justify-center rounded-full border-2 transition-all duration-200 ${
+          isActive ? "w-9 h-9" : "w-8 h-8"
+        }`}
+        style={circleStyle}
+      >
+        <Icon className={isActive ? "w-4 h-4" : "w-3.5 h-3.5"} style={{ color: iconColor }} />
+        {isCompleted && (
+          <span
+            className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full flex items-center justify-center border"
+            style={{ background: "var(--accent)", borderColor: "var(--surface)" }}
+          >
+            <Check className="w-2.5 h-2.5" strokeWidth={3} style={{ color: "var(--accent-contrast)" }} />
+          </span>
+        )}
+      </span>
+      <span
+        className="text-xs whitespace-nowrap transition-colors hidden lg:inline"
+        style={{ color: labelColor, fontWeight: isActive ? 700 : 500 }}
+      >
+        {step.label}
+      </span>
     </button>
   );
 };
@@ -62,6 +82,8 @@ const LessonStepper = ({
   lessonGroup,
   courseTitle,
   completedSteps,
+  isLessonComplete = false,
+  onMarkLessonComplete,
   onStepComplete,
   onAllStepsComplete,
   // Video props
@@ -99,6 +121,10 @@ const LessonStepper = ({
   onBack,
   onVideoTimeUpdate,
   onVideoEnded,
+  onSetupListeners,
+  onInternalTimeUpdate,
+  onStepChange = () => {},
+  onMaterialsChanged,
 }) => {
   const [activeStep, setActiveStep] = useState("video");
   const [aiModalOpen, setAiModalOpen] = useState(false);
@@ -117,12 +143,15 @@ const LessonStepper = ({
   // Reset active step when lesson changes. Pre-Quiz vem ANTES do video
   // pra forcar tentativa de recuperacao (Carpenter & Toftness 2017).
   useEffect(() => {
+    let step;
     if (materials.video) {
-      setActiveStep("prequiz");
+      step = "prequiz";
     } else {
       const first = availableSteps[0];
-      if (first) setActiveStep(first.key);
+      step = first ? first.key : "video";
     }
+    setActiveStep(step);
+    onStepChange(step);
   }, [lessonGroup.prefix]);
 
   const isStepCompleted = (key) =>
@@ -143,7 +172,10 @@ const LessonStepper = ({
 
   const buildFileUrl = (material) => {
     if (!material) return "";
-    return `http://localhost:3001/cursos/${encodeURIComponent(courseTitle)}/${encodeURIComponent(material.path)}`;
+    if (material.path === "__db__") {
+      return `${API_BASE}/api/materials/${encodeURIComponent(courseTitle)}/${encodeURIComponent(lessonGroup.prefix)}/${material.kind}`;
+    }
+    return getMediaUrl(courseTitle, material.path);
   };
 
   const handleMarkComplete = (stepKey) => {
@@ -154,9 +186,11 @@ const LessonStepper = ({
   const advanceToNextStep = useCallback(() => {
     const currentIdx = availableSteps.findIndex((s) => s.key === activeStep);
     if (currentIdx < availableSteps.length - 1) {
-      setActiveStep(availableSteps[currentIdx + 1].key);
+      const next = availableSteps[currentIdx + 1].key;
+      setActiveStep(next);
+      onStepChange(next);
     }
-  }, [activeStep, availableSteps]);
+  }, [activeStep, availableSteps, onStepChange]);
 
   // Handle video ended: mark complete + auto-advance to resumo
   const handleVideoEnded = useCallback(() => {
@@ -233,6 +267,8 @@ const LessonStepper = ({
             onBack={onBack}
             onTimeUpdate={onVideoTimeUpdate}
             onEnded={handleVideoEnded}
+            onSetupListeners={onSetupListeners}
+            onInternalTimeUpdate={onInternalTimeUpdate}
             courseTitle={courseTitle}
             lessonPrefix={lessonGroup.prefix}
           />
@@ -316,15 +352,29 @@ const LessonStepper = ({
           </div>
         );
 
-      case "diario":
+      case "piada":
         return (
-          <TechnicalDiary
-            courseTitle={courseTitle}
-            lessonPrefix={lessonGroup.prefix}
-            templateUrl={fileUrl}
-            isCompleted={isStepCompleted("diario")}
-            onMarkComplete={handleMarkComplete}
-          />
+          <div className="flex flex-col h-full">
+            <StepHeader
+              title={
+                <>
+                  😄 Intervalo Descontraído
+                  <span className="ml-2 text-xs text-pink-400 font-normal">piada sobre o assunto da aula</span>
+                </>
+              }
+              stepKey="piada"
+              isCompleted={isStepCompleted("piada")}
+              onMarkComplete={handleMarkComplete}
+              borderClass="border-pink-500/20"
+            />
+            <div className="flex-1 overflow-hidden">
+              <MarkdownViewer
+                fileUrl={fileUrl}
+                courseTitle={courseTitle}
+                lessonPrefix={lessonGroup.prefix}
+              />
+            </div>
+          </div>
         );
 
       default:
@@ -335,65 +385,110 @@ const LessonStepper = ({
   const hideStepperTabs = activeStep === "video" && isFullscreen;
 
   return (
-    <div className="flex flex-col h-full bg-slate-900">
+    <div className="flex flex-col h-full" style={{ background: "var(--bg)" }}>
       {/* Stepper tabs - hidden during fullscreen video */}
-      <div className={`bg-slate-900/95 border-b border-slate-700/40 px-4 py-2.5 ${hideStepperTabs ? "hidden" : ""}`}>
-        <div className="flex items-center gap-2 flex-wrap">
+      <div
+        className={`px-4 py-2.5 border-b ${hideStepperTabs ? "hidden" : ""}`}
+        style={{
+          background: "var(--surface)",
+          borderColor: "var(--border)",
+          backdropFilter: "blur(8px)",
+        }}
+      >
+        <div className="flex items-center gap-2">
           <button
             onClick={onBack}
             title="Voltar para a lista de aulas"
-            className="flex items-center gap-1.5 px-2.5 h-8 rounded-lg bg-slate-800/80 hover:bg-slate-700/80 border border-slate-600/40 text-slate-200 hover:text-white transition-colors flex-shrink-0"
+            className="flex items-center gap-1.5 px-2.5 h-8 rounded-lg border transition-colors flex-shrink-0 hover:bg-[var(--surface-hover)]"
+            style={{
+              background: "var(--surface-2)",
+              borderColor: "var(--border)",
+              color: "var(--text)",
+            }}
           >
             <ArrowLeft className="w-4 h-4" strokeWidth={2.5} />
             <span className="text-xs font-medium">Voltar</span>
           </button>
           <h2
-            className="text-slate-200 font-semibold text-sm mr-2 truncate max-w-xs"
+            className="font-semibold text-sm truncate max-w-[8rem] xl:max-w-[12rem] flex-shrink-0"
+            style={{ color: "var(--text)" }}
             title={lessonGroup.title}
           >
             {lessonGroup.title}
           </h2>
-          <div className="w-px h-5 bg-slate-700/50 mr-1" />
-          {availableSteps.map((step) => (
-            <StepTab
-              key={step.key}
-              step={step}
-              isActive={activeStep === step.key}
-              isCompleted={isStepCompleted(step.key)}
-              onClick={() => setActiveStep(step.key)}
-            />
-          ))}
-          <div className="ml-auto flex items-center gap-2">
+          <div className="w-px h-5 flex-shrink-0" style={{ background: "var(--border)" }} />
+
+          {/* Linha temporal dos steps — inline, ocupa o meio */}
+          <div className="flex items-center flex-1 min-w-0 overflow-x-auto px-1">
+            {availableSteps.map((step, i) => (
+              <React.Fragment key={step.key}>
+                {i > 0 && (
+                  <div
+                    className="flex-1 h-0.5 min-w-[1.25rem] mx-1.5 rounded-full transition-colors duration-300"
+                    style={{
+                      background: isStepCompleted(availableSteps[i - 1].key) ? "var(--accent)" : "var(--border-strong)",
+                    }}
+                  />
+                )}
+                <TimelineNode
+                  step={step}
+                  isActive={activeStep === step.key}
+                  isCompleted={isStepCompleted(step.key)}
+                  onClick={() => { setActiveStep(step.key); onStepChange(step.key); }}
+                />
+              </React.Fragment>
+            ))}
+          </div>
+
+          {/* Acoes */}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {onMarkLessonComplete && (
+              <button
+                onClick={onMarkLessonComplete}
+                title={
+                  isLessonComplete
+                    ? "Aula marcada como concluida — clique para desmarcar"
+                    : "Marcar a aula inteira como concluida (sem precisar fazer o pre-quiz nem gerar materiais)"
+                }
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                  isLessonComplete
+                    ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                    : "bg-slate-700/60 hover:bg-slate-600/60 text-slate-300 border-slate-600/40"
+                }`}
+              >
+                {isLessonComplete ? (
+                  <CheckCircle className="w-3.5 h-3.5" />
+                ) : (
+                  <Circle className="w-3.5 h-3.5" />
+                )}
+                {isLessonComplete ? "Aula concluida" : "Concluir aula"}
+              </button>
+            )}
             <button
               onClick={() => setAiModalOpen(true)}
               title="Gerar resumo/quiz/flashcards/diario com IA (DeepSeek)"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 border border-blue-500/30 transition-all"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all hover:brightness-110"
+              style={{
+                background: "var(--accent-soft)",
+                borderColor: "var(--accent-soft-strong)",
+                color: "var(--accent)",
+              }}
             >
               <Sparkles className="w-3.5 h-3.5" />
               Gerar IA
             </button>
-            <div className="flex items-center gap-1.5">
-              {availableSteps.map((step) => (
-                <div
-                  key={step.key}
-                  className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${
-                    isStepCompleted(step.key) ? "bg-emerald-400" : "bg-slate-700"
-                  }`}
-                />
-              ))}
-            </div>
-            <span className="text-xs text-slate-500 tabular-nums ml-1">
+            <span className="text-xs tabular-nums ml-1" style={{ color: "var(--text-subtle)" }}>
               {completedCount}/{availableSteps.length}
             </span>
             {allComplete && (
-              <CheckCircle className="w-4 h-4 text-emerald-400 animate-pulse" />
+              <CheckCircle className="w-4 h-4 animate-pulse" style={{ color: "var(--accent)" }} />
             )}
           </div>
         </div>
       </div>
 
       {/* Active content */}
-      <div className="flex-1 overflow-hidden">{renderActiveContent()}</div>
+      <div className="flex-1 min-h-0 overflow-y-auto">{renderActiveContent()}</div>
 
       <AIGenerateModal
         open={aiModalOpen}
@@ -401,7 +496,7 @@ const LessonStepper = ({
         courseTitle={courseTitle}
         lessonPrefix={lessonGroup.prefix}
         onGenerated={() => {
-          setTimeout(() => window.location.reload(), 800);
+          onMaterialsChanged?.();
         }}
       />
     </div>
@@ -409,9 +504,17 @@ const LessonStepper = ({
 };
 
 // Header pequeno do step. O "Voltar" global mora no topo do stepper —
-// aqui só o titulo do step + botao de marcar como concluido.
-const StepHeader = ({ title, stepKey, isCompleted, onMarkComplete }) => (
-  <div className="bg-slate-800/80 py-2 px-4 border-b border-slate-700/40 flex items-center justify-between">
+// aqui só o titulo do step + botao de marcar como concluido. `title` aceita
+// texto ou nodes (ex.: titulo com subtitulo) e `borderClass` permite o realce
+// de cor por step (ex.: a "pausa" usa borda rosa).
+const StepHeader = ({
+  title,
+  stepKey,
+  isCompleted,
+  onMarkComplete,
+  borderClass = "border-slate-700/40",
+}) => (
+  <div className={`bg-slate-800/80 py-2 px-4 border-b ${borderClass} flex items-center justify-between`}>
     <h3 className="text-slate-200 font-medium text-sm">{title}</h3>
     <button
       onClick={() => onMarkComplete(stepKey)}

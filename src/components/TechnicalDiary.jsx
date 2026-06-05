@@ -4,6 +4,7 @@ import {
   fetchTechnicalDiary,
   saveTechnicalDiary,
 } from "../utils/progressApi";
+import { LoadingState } from "./StateViews";
 
 const TechnicalDiary = ({
   courseTitle,
@@ -69,16 +70,12 @@ const TechnicalDiary = ({
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full text-slate-500">
-        Carregando...
-      </div>
-    );
+    return <LoadingState />;
   }
 
   return (
     <div className="h-full flex flex-col bg-slate-900">
-      <div className="max-w-3xl w-full mx-auto flex flex-col flex-1 px-10 py-8">
+      <div className="w-full flex flex-col flex-1 px-4 lg:px-8 py-8">
         <div className="mb-6">
           <h2 className="text-lg font-semibold text-slate-100 mb-1">Diario Tecnico</h2>
           <p className="text-slate-500 text-sm">
@@ -115,17 +112,19 @@ const TechnicalDiary = ({
               {saved ? <CheckCircle className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
               {saving ? "Salvando..." : saved ? "Salvo!" : "Salvar"}
             </button>
-            <button
-              onClick={() => onMarkComplete("diario")}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium transition-all ${
-                isCompleted
-                  ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/25"
-                  : "bg-slate-700/60 hover:bg-slate-600/60 text-slate-300 border border-slate-600/30"
-              }`}
-            >
-              {isCompleted ? <CheckCircle className="w-3.5 h-3.5" /> : <span className="w-3.5 h-3.5 rounded-full border border-current inline-block" />}
-              {isCompleted ? "Concluido" : "Concluir"}
-            </button>
+            {onMarkComplete && (
+              <button
+                onClick={() => onMarkComplete("diario")}
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium transition-all ${
+                  isCompleted
+                    ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/25"
+                    : "bg-slate-700/60 hover:bg-slate-600/60 text-slate-300 border border-slate-600/30"
+                }`}
+              >
+                {isCompleted ? <CheckCircle className="w-3.5 h-3.5" /> : <span className="w-3.5 h-3.5 rounded-full border border-current inline-block" />}
+                {isCompleted ? "Concluido" : "Concluir"}
+              </button>
+            )}
           </div>
         </div>
       </div>

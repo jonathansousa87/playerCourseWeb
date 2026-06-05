@@ -1,0 +1,4 @@
+project_id = "vqhimjlooxnbrnapcebk"
+
+[functions.drive-proxy]
+verify_jwt = false

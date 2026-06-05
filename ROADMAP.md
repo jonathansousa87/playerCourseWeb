@@ -63,6 +63,23 @@ O FSRS já adapta por card. O próximo nível:
 
 ---
 
+## Bugs e correções
+
+### B.1. "Revisar" só deve considerar aulas já assistidas — CONCLUÍDO ✓
+- [x] Filtro adicionado em `getDueCards` (`server/flashcards.js`): `EXISTS (SELECT 1 FROM step_completions sc WHERE sc.course_title = d.course_title AND sc.lesson_prefix = d.lesson_prefix)`. Cards de aulas sem nenhum step concluído não aparecem na fila de revisão.
+
+**Por que:** revisar conteúdo que o usuário ainda nem expôs uma vez quebra o ciclo *encoding → retrieval* (não há traço de memória pra recuperar, vira leitura passiva).
+
+### B.2. Controles de teclado do vídeo ativos fora da aba "Vídeo" — CONCLUÍDO ✓
+- [x] `LessonStepper.jsx` recebe prop `onStepChange` e notifica o pai a cada mudança de aba (click, auto-avanço, reset de aula).
+- [x] `activeStepRef` em `CoursePlatform.jsx` rastreia o step sem re-render; o handler de `keydown` envolve `ArrowLeft/Right/Up/Down` em `if (activeStepRef.current === 'video')` — seek e navegação de aula só disparam na aba de vídeo.
+- [x] Fullscreen shortcuts (`Escape`, `F`, `Space`) permanecem globais (já estavam dentro de `if (fullscreen.isFullscreen)`).
+- [x] Thread completo: `CoursePlatform` → `LessonPlayer` → `LessonGroupPlayer` → `LessonStepper`.
+
+**Por que:** usuário tentando digitar em campos de texto ou navegar na UI aciona controles do player involuntariamente — UX quebrada em qualquer aba que não seja a de vídeo.
+
+---
+
 ## Fase 7 — Neurociência aplicada (pesquisa 2017-2024)
 
 Baseado em `pesquisa2.txt`. O FSRS já é estado-da-arte (Ye 2023, ~30% melhor que SM-2 do Anki) e o testing effect que usamos tem g = 0.56 em meta-análise de 308 experimentos (Adesope 2017, Yang 2021). Os itens abaixo são **avanços recentes** que valem incorporar, ordenados por **valor × esforço**.
@@ -160,6 +177,113 @@ Baseado em `pesquisa2.txt`. O FSRS já é estado-da-arte (Ye 2023, ~30% melhor q
 
 ---
 
+## Fase 8 — Nuvem + multi-plataforma (auth, Supabase, Drive, Android)
+
+Bloco de mudanças que tira a plataforma do "single-user local + filesystem" e abre caminho pro app Android online. Os itens são bem acoplados — recomendado fazer na ordem 8.1 → 8.2 → 8.3 → 8.4 → 8.5, porque cada um depende do anterior.
+
+### 8.1. Autenticação — SUBSTITUÍDA POR SUPABASE AUTH ✓
+JWT próprio + tabela `users` local foram **descontinuados**. Plataforma agora usa **Supabase Auth** end-to-end (`auth.users`, signIn/signUp/signOut nativo, JWT ECC P-256, refresh automático). Detalhes na seção "Migração Supabase Auth + RLS" abaixo.
+
+- [x] `server/auth.js`: `requireAuth` valida JWT do Supabase via JWKS público (lib `jose`). Header `Authorization: Bearer` ou query `?t=` para `<video>`.
+- [x] `server/auth.supabase.js`: `verifySupabaseJWT()` usando `createRemoteJWKSet` — sem secret no servidor, valida offline com cache.
+- [x] Frontend: `src/lib/supabase.js` expõe `supabase` (createClient) + `getCurrentAccessToken()` (cache sincrono atualizado via `onAuthStateChange`).
+- [x] `src/contexts/AuthContext.jsx`: reescrito sobre `supabase.auth.{signIn,signUp,signOut}`, listener `onAuthStateChange`. `LoginScreen.jsx` mantido (mesma API).
+- [x] `src/utils/fetchAuth.js`: interceptor pega token via `getCurrentAccessToken()`. Streaming de vídeo (`getMediaUrl`) também usa essa função.
+- [x] **Removidos:** tabela `public.users`, `bcryptjs`, `jsonwebtoken`, `cookie-parser`, `JWT_SECRET`, `server/routes/auth.js`, `db/reset-password.js`.
+
+### 8.2. Materiais gerados como Markdown puro — CONCLUÍDO ✓
+- [x] `buildQuizPrompt` reescrito: formato `## N. Pergunta? / - [ ] / - [x] / > Explicação` — sem HTML, sem CSS, sem JS.
+- [x] `buildExemplosPrompt` reescrito: formato `## N. Conceito / **Explicação:** / blocos de código` — Markdown puro com seções por `##`.
+- [x] Validação do quiz atualizada para checar `^## \d+\.` e `- [x]` em vez de `.question-card`.
+- [x] `parseQuizMd` adicionado em `quizParser.js`; função `parseQuiz` auto-detecta HTML vs MD pelo conteúdo e despacha pro parser certo.
+- [x] `parseExemplosMd` adicionado em `examplesParser.js`; divide por `## ` headings, cada seção vira um card.
+- [x] `ExamplesViewer` e `QuizViewer`: parsers com auto-detect transparente para legado HTML e MD novo.
+- [x] **Sem `.md` em disco**: superado pelo 8.3 — gerador grava direto em `lesson_materials` (banco). Flashcards via `importDeckFromContent` (sem arquivo). Backward compat HTML/`__db__` mantido para cursos legados no filesystem.
+
+**Por que:** HTML estruturado custa ~1.5-2× mais tokens que MD pelo overhead de tags; MD é mais barato pro DeepSeek, mais portável (Android/Drive) e mais simples de armazenar como TEXT no banco.
+
+### 8.3. Migrar Postgres local → Supabase (free tier) — CONCLUÍDO ✓
+- [x] Schema aplicado no Supabase via `node db/migrate.js` com `SUPABASE_DATABASE_URL`.
+- [x] `db/index.js`: SSL automático quando `DATABASE_URL` aponta para `.supabase.co`.
+- [x] `db/migrate-to-supabase.js`: script Node.js que copia todas as 16 tabelas do local → Supabase, respeitando ordem de FK, truncando antes de inserir (idempotente), serializando JSONB e resetando sequences. Resultado: 10 lesson_progress, 33 step_completions, 230 flashcards, 64 reviews, 19 decks, 13 prequestions, 85 review_log etc.
+- [x] `DATABASE_URL` no `.env` trocada para Supabase; `DATABASE_URL_LOCAL` mantida como fallback offline.
+- [x] `SUPABASE_URL` e `SUPABASE_SERVICE_KEY` documentados no `.env` e `.env.example` para uso futuro (Storage, Auth).
+- [x] Servidor testado: "Postgres conectado." via Supabase, auth funcionando, rotas protegidas ok.
+- [x] **RLS** (Row Level Security) por `user_id` — habilitado em 16 tabelas (14 user + 2 globais). 58 policies (`auth.uid() = user_id` em SELECT/INSERT/UPDATE/DELETE para tabelas de usuário; `lesson_materials` e `lesson_prequestions` apenas SELECT público para `authenticated`). Backend usa `service_role` (bypass) + filtros `user_id` manuais (defesa em profundidade). Validado: cliente Supabase JS direto com JWT do user vê só seus dados; spoof `INSERT user_id=outro` é bloqueado (42501 / WITH CHECK).
+- [x] **Supabase Auth** ativo em substituição ao JWT próprio.
+- [x] **Materiais no banco, não no disco**: nova tabela `lesson_materials (course_title, lesson_prefix, kind, content TEXT)` substitui arquivos `.md` no filesystem. `generator.js` salva direto no banco + apaga arquivo local. `.txt` de flashcards apagados após `importDeck`. Migração `db/migrate-files-to-db.js` processou 70 materiais / 87 arquivos apagados. Endpoint `GET /api/materials/:course/:prefix/:kind` serve o conteúdo. `courses.js` augmenta grupos com materiais do banco (`__db__` path). `buildFileUrl` em `LessonStepper` resolve `__db__` para o endpoint da API. **Supabase Storage não usado** — banco de texto é suficiente e mais simples.
+- [ ] **Vídeo NÃO entra no Supabase** — confirmado; continua no filesystem/Drive.
+
+**Por que:** habilita acesso remoto ao banco (Android app futuramente), elimina dependência do Docker para o banco em produção, free tier cobre o uso individual (DB ~5MB atualmente).
+
+### 8.4. Consumir cursos do Google Drive (multi-usuário controlado por compartilhamento) — CONCLUÍDO ✓ (ativo em produção)
+
+**Modelo de acesso:** owner compartilha a pasta de cursos no Google Drive com os emails permitidos (UI do próprio Drive). Servidor usa o token do owner para servir vídeos, mas verifica o email do usuário logado contra a lista de permissões do Drive antes de cada stream. Quem não está na lista recebe 403 — sem painel de admin extra.
+
+- [x] `googleapis` instalado.
+- [x] `server/drive/index.js`: cliente OAuth2 singleton + cache em memória (TTL 5min). Funções: `listFolders`, `listFilesRecursive`, `flattenFiles`, `getFileContent`, `streamFile` (Range proxy), `getSharedEmails` (lê permissões da pasta → `Set<email>`, cacheado), `findTranscriptInDrive`, `clearCache`.
+- [x] `server/routes/drive.js`: `GET /api/drive/auth` (OAuth redirect), `GET /api/drive/callback` (exibe refresh_token no HTML), `GET /api/drive/status`, `POST /api/drive/cache/clear`.
+- [x] `server/config.js`: `getCourseSource()` e `getDriveFolderId()`.
+- [x] `server/routes/courses.js`: branch Drive em `/cursos/:file` (stream com check de email via `getSharedEmails`) e `/api/courses` (listagem retorna `[]` se email sem acesso). `buildDriveContent()` converte árvore Drive → formato de `readCourseContent` com `path = fileId`.
+- [x] `server/ai/generator.js`: `loadTranscriptForLesson()` — carrega transcrição do Drive ou filesystem conforme `COURSE_SOURCE`. `chat.js` e `prequestions.js` atualizados.
+- [x] `server.js`: `driveRouter` montado antes de `requireAuth`.
+- [x] `src/components/ConfigModal.jsx`: seção Drive com status de conexão e botão de autorização.
+- [x] `.env` preenchido com credenciais reais; `COURSE_SOURCE=drive`, `/api/drive/status` retorna `configured:true, connected:true`. Cursos do Drive aparecem na plataforma — fluxo end-to-end validado em uso real.
+
+**Por que (multi-usuário):** owner gerencia acesso direto no Drive (share/unshare); servidor serve com token do owner mas só para emails autorizados — controle centralizado, zero painel extra.
+
+### 8.4b. Migração para Supabase Auth + RLS — CONCLUÍDO ✓
+
+Bloco de 9 etapas (002–005 em `db/migrations/`) aplicado para preparar terreno do app Android (que vai falar direto com Supabase via `@supabase/supabase-js`).
+
+- [x] **Etapa 1** (`002_add_user_id.sql`): coluna `user_id UUID REFERENCES auth.users ON DELETE CASCADE` em 14 tabelas (nullable). 13 índices compostos `(user_id, ...)` criados.
+- [x] **Etapa 2** (`003_backfill_user_id.sql`): backfill associando todas as linhas existentes ao usuário criado em `auth.users`. `flashcards.user_id` preenchido via JOIN com `flashcard_decks` (denormalizado pra defesa em profundidade).
+- [x] **Etapa 3** (`004_user_id_not_null_and_unique.sql`): `SET NOT NULL` em todas as 14. Trocados 6 UNIQUE constraints pra incluir `user_id` (mesmo curso/aula em users diferentes não colide).
+- [x] **Etapa 4 (backend auth)**: `server/auth.supabase.js` + `server/auth.js` reescritos. `requireAuth` valida JWT do Supabase via JWKS (`createRemoteJWKSet` da `jose`) — sem secret no server, cache de chave pública. `req.userId` e `req.userEmail` populados do claim.
+- [x] **Etapa 5 (frontend)**: `src/lib/supabase.js` (createClient + cache sincrono de access token via `onAuthStateChange`). `AuthContext` usa `signInWithPassword`/`signUp`/`signOut`. `fetchAuth` interceptor lê `getCurrentAccessToken()`. `getMediaUrl` (vídeo) idem.
+- [x] **Etapa 6 (queries)**: 10 arquivos refatorados — todas as queries filtram por `user_id` (ou usam `req.userEmail` no Drive auth). `progress.js`, `quiz.js`, `flashcards.js` (lib + route), `ia.js`, `stats.js`, `courses.js`. Funções da lib FSRS (`importDeck`, `getDeck`, `getDueCards`, `reviewCard`, `getDueSummary`) recebem `userId` obrigatório (rejeita se ausente). `flashcards.user_id` e `flashcard_review_log.user_id` denormalizados (consistência via JOIN no `reviewCard`'s ownership check).
+- [x] **Etapa 7 (RLS)** (`005_enable_rls.sql`): RLS ON em 16 tabelas. **58 policies** geradas via DO block dinâmico — 14×4 (SELECT/INSERT/UPDATE/DELETE com `auth.uid() = user_id`) + 2×1 (lesson_materials/lesson_prequestions com SELECT TO authenticated USING true). Backend continua via `service_role` (bypass).
+- [x] **Etapa 8 (smoke multi-user)**: validado que cliente Supabase JS direto com JWT do user só vê seus dados; spoof `INSERT user_id=outro` é bloqueado com Postgres erro 42501 (insufficient_privilege). Confirma isolamento futuro do app Android.
+- [x] **Etapa 9 (limpeza)**: deletados `server/routes/auth.js`, `db/reset-password.js`. Removidos `bcryptjs`, `jsonwebtoken`, `cookie-parser` do `package.json`. Apagados `JWT_SECRET` do `.env` e `cookieParser`/`cookies` do `server.js`/`auth.js`. Tabela `public.users` dropada (sem FKs apontando). `db/schema.sql` atualizado (sem CREATE TABLE users). 91/91 testes passando.
+
+**Sistema de migrations versionadas**: novo `db/migrate-versioned.js` rastreia em `schema_migrations (filename, applied_at)`, aplica idempotente. Migrations em `db/migrations/*.sql` (cada arquivo numerado, sem BEGIN/COMMIT — runner controla a transação).
+
+**Atenção / lição aprendida:** `ON DELETE CASCADE` na FK pra `auth.users` significa que **excluir um usuário no dashboard apaga todas as linhas associadas** — não há trigger de "soft delete". Pra dev, é o que se quer; em prod, considerar `ON DELETE RESTRICT` + script de exportação antes de deletar usuários.
+
+**Por que (multi-tenant):** RLS é a base que permite o RN abrir o `@supabase/supabase-js` direto, sem passar pelo Express, e ainda assim cada device só ver dados do seu user. Combinado com a permissão Drive-by-email, fecha o modelo multi-usuário sem painel de admin extra.
+
+### 8.5. App Android nos mesmos moldes da plataforma — EM ANDAMENTO
+
+**Decisão de stack:** React Native + Expo — projeto em `~/Documentos/playerCourseApp`.
+**Decisão de storage:** Supabase direto (sem SQLite offline) — o usuário acessa de outro dispositivo na mesma conta, sem necessidade de sync offline.
+**Decisão de arquitetura:** App **totalmente autônomo** — fala direto com Supabase, Google Drive e DeepSeek. **NÃO depende do servidor Express** (que só roda em casa quando o PC está ligado). Funciona de qualquer rede.
+
+**Credenciais via DB (`user_settings`):** todas as credenciais (Google OAuth, DeepSeek API key, Drive folder ID) ficam na tabela `user_settings` do Supabase, configuradas pela UI de "Configurações" do web app. App mobile lê de lá com RLS — sem `.env` no bundle.
+
+- [x] Stack: **React Native + Expo** (blank template, SDK 53).
+- [x] Auth: `@supabase/supabase-js` + `expo-secure-store` (sessão persistida de forma segura). `AuthContext` idêntico ao web.
+- [x] FSRS client-side: `ts-fsrs` portado em `src/lib/fsrs.js` — replica exatamente `reviewCard` do servidor (mesmos params, upsert `flashcard_reviews` + insert `flashcard_review_log` direto no Supabase via RLS).
+- [x] RPCs no Supabase (`migration 007`): `get_due_cards(limit)`, `get_courses()`, `get_lessons(course_title)` — queries complexas com JOIN executadas no banco, não no cliente.
+- [x] Tela **Login**: email + senha, validação, feedback de erro.
+- [x] Tela **Revisar** (tab): fila FSRS, captura de confiança antes do flip (hypercorrection), ratings 1-4, progresso visual, tela de conclusão.
+- [x] Tela **Cursos** (tab): lista com badge de cards vencidos por curso.
+- [x] Tela **Aulas**: materiais disponíveis por aula (resumo/quiz/exemplos/flashcards/diário/piada) com ícones, steps concluídos.
+- [x] Tela **Material**: renderiza markdown do Supabase com `react-native-markdown-display` (tema escuro consistente com o web).
+- [x] Bundle Android buildado sem erros (921 módulos, 2.85 MB).
+- [x] **Cliente Drive direto** (`src/lib/drive.js`): OAuth refresh-token flow + listFolders/listFilesRecursive/getFileText/getStreamUrl. Cache 5min. Detecção e parse de transcrições .txt/.vtt.
+- [x] **Cliente DeepSeek direto** (`src/lib/deepseek.js`): chamada REST com api key do `user_settings`.
+- [x] **Prompts portados** (`src/lib/prompts.js`): builders de resumo, quiz, exemplos, flashcards, diario, piada — espelho do servidor.
+- [x] **Generator** (`src/lib/generator.js`): pipeline completo Drive transcript → DeepSeek → Supabase (`lesson_materials` ou `flashcard_decks`).
+- [x] **Tela Cursos**: lista cursos do Drive + materiais existentes do Supabase.
+- [x] **Tela Aulas**: navegação por aula, badges de materiais, modal "Gerar IA" funcional.
+- [x] Migração 008 + UI de "Credenciais da plataforma" no `ConfigModal` do web — credenciais salvas no Supabase consumidas pelo mobile.
+- [ ] Notificações pré-sono: `expo-notifications` agendadas com base em `user_profile.bestHour - 4h`.
+- [ ] Distribuição: APK via EAS Build → Internal Testing no Play Console.
+
+**Por que:** ler/revisar no celular fecha o ciclo (revisão pré-sono real, intervalos de fila, deslocamento). Vídeo continua no Drive (não duplica custo); só os materiais leves (`.md` + flashcards + progresso) trafegam.
+
+---
+
 ## Débito técnico
 
 - [x] `CoursePlatform.jsx` (901 linhas) quebrado em: `CoursesScreen` (home + modal de config), `LessonsView` (lista de aulas + banner de revisão), `LessonPlayer` (decide entre stepper, HTML/PDF, video legacy, unsupported — com `SidebarSlideout` e `FullscreenSidebar` como subcomponentes locais). `CoursePlatform.jsx` ficou com 355 linhas (hooks + state + handlers + escolha de view).
@@ -172,8 +296,49 @@ Baseado em `pesquisa2.txt`. O FSRS já é estado-da-arte (Ye 2023, ~30% melhor q
 
 ---
 
+## Fase 9 — UX visual e onboarding completo
+
+Polimento de superfície e fechamento de buracos no fluxo de auth. Itens 9.1 e 9.2 são puramente client-side; 9.3-9.5 dependem de configuração no painel Supabase (email templates + redirectTo URL).
+
+### 9.1. Sistema de temas com paletas baseadas em neurociência — EM ANDAMENTO
+- [ ] CSS variables centralizadas em `src/index.css` para 3 temas: `petrol` (azul-petróleo + accent teal/âmbar — recomendação literatura de leitura prolongada), `forest` (verde-musgo + sage), `slate` (atual refinado).
+- [ ] `src/contexts/ThemeContext.jsx` aplica `data-theme` no `<html>`, persiste em `localStorage` (`pcw.theme`), default `petrol`.
+- [ ] Seletor de tema na `ConfigModal` com preview visual (chip colorido) e descrição curta de cada paleta.
+- [ ] `index.css` define variáveis `--bg`, `--surface`, `--surface-2`, `--surface-hover`, `--border`, `--text`, `--text-muted`, `--accent`, `--accent-soft` por tema. Componentes-chave passam a referenciar via classes Tailwind arbitrárias (`bg-[var(--bg)]`).
+- [ ] Refinamento de opacidades/sombras em todos os modais (`AIGenerateModal`, `BulkAIGenerateModal`, `ConfigModal`, `LoginScreen`) para visual mais coeso e elegante.
+
+**Por que (neurociência aplicada à interface):** comprimentos de onda azul-esverdeados de baixa saturação reduzem fadiga ocular em leitura prolongada (Sheedy 2003); contraste suave com background não-puro-preto evita "halation" e relaxa músculos ciliares; accents quentes (âmbar) em CTAs reduzem o efeito de "alarme" do azul saturado puro. Manter slate puro como opção respeita preferência cognitiva individual.
+
+### 9.2. Menu de aula/materiais reformulado — EM ANDAMENTO
+- [ ] `LessonStepper.jsx`: substituir botões individuais por **segmented control** com indicador deslizante, ícones Lucide consistentes (substituir emojis quando possível) e estados hover/active mais sutis.
+- [ ] `BulkAIGenerateModal.jsx`: tipos de material todos pré-selecionados por padrão (`new Set(KIND_OPTIONS.map(k => k.key))`) — usuário desmarca o que não quer em vez de marcar tudo.
+
+**Por que:** menos clicks no fluxo mais comum (gerar tudo). Lei de Hick: reduzir tempo de decisão pré-selecionando o caso esperado.
+
+### 9.3. Cadastro com nome completo — EM ANDAMENTO
+- [ ] `LoginScreen.jsx`: campo "Nome" obrigatório quando `mode === 'register'`, mínimo 2 caracteres.
+- [ ] `AuthContext.register(email, password, fullName)` passa `{ data: { full_name } }` em `signUp.options` — populando `auth.users.raw_user_meta_data`.
+- [ ] Sem migração de schema: usa metadata nativa do Supabase, acessível via `user.user_metadata.full_name`.
+
+### 9.4. Confirmação de email após cadastro — EM ANDAMENTO
+- [ ] Após `signUp` bem-sucedido (e antes de session ativa), `LoginScreen` muda para estado `mode='verify'` mostrando: "Enviamos um email para X. Verifique sua caixa de entrada e clique no link para ativar a conta." + botão "Reenviar email" (chama `supabase.auth.resend({ type: 'signup', email })`) + link "Voltar para login".
+- [ ] **Configuração manual no painel Supabase**: Authentication → Providers → Email → "Confirm email" ativado. Sem isso, cadastro continua autologin.
+- [ ] Email template default do Supabase é OK (pt-BR opcional editar).
+
+### 9.5. Reset de senha — EM ANDAMENTO
+- [ ] `LoginScreen`: link "Esqueci minha senha" no modo login → muda para `mode='forgot'` com input de email + botão "Enviar link de redefinição" (chama `supabase.auth.resetPasswordForEmail(email, { redirectTo: <APP_URL>/?reset=1 })`).
+- [ ] `App.jsx`: listener em `onAuthStateChange` detecta evento `'PASSWORD_RECOVERY'` e troca para `<ResetPasswordScreen />`.
+- [ ] Novo `src/components/ResetPasswordScreen.jsx`: form com nova senha + confirmação, chama `supabase.auth.updateUser({ password })`. Sucesso → redireciona para login.
+- [ ] **Configuração manual no painel Supabase**: Authentication → URL Configuration → "Site URL" e "Redirect URLs" precisam incluir o domínio do app (em dev: `http://localhost:5173`).
+
+**Por que:** sem fluxo de reset o usuário fica preso ao perder a senha — friction crítico em qualquer plataforma de uso recorrente.
+
+---
+
 ## Decisões em aberto
 
 - **Next.js 16?** A pergunta original (React puro vs Next). Hoje o backend Express + SPA Vite funciona. Migração só vale se quiser SSR pra SEO (improvável nesse caso de uso local) ou para API routes colocadas no mesmo app. **Recomendação: ficar com Vite + Express separados.**
-- **Auth multi-user?** Hoje é single-user local. Se quiser compartilhar a plataforma, precisa `users` + JWT + escopar todas as queries por `user_id`.
-- **Qual LLM pra geração de conteúdo?** Local (Ollama + llama3) vs API (Claude/GPT). Local é gratis mas qualidade menor; API custa mas gera melhor. Decidir antes do item 5.
+- ~~**Auth próprio vs Supabase Auth?**~~ — **decidido**: Supabase Auth (item 8.4b).
+- **`pg` direto vs `@supabase/supabase-js` no backend?** Manter `pg` apontando pra `DATABASE_URL` do Supabase é o caminho de menor refactor (queries existentes funcionam iguais). RLS resolve a parte de autorização sem precisar do client JS.
+- **Stack do app Android: Expo (RN) vs Kotlin nativo?** Expo reaproveita ~70% do JS atual e libera MVP em semanas; Kotlin dá UX nativa melhor mas é retrabalho total. **Recomendação:** começar Expo, migrar pra nativo só se houver dor real de performance.
+- **HTML legado nos cursos atuais (item 8.2):** manter parser de fallback para `_quiz_*.html` e `_exemplos_*.html` por 1-2 ciclos ou regenerar tudo de uma vez via IA? Regerar é mais limpo mas custa tokens — fazer um script "regenerate-all" opcional.

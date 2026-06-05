@@ -1,5 +1,5 @@
 import React from "react";
-import { CheckCircle, ChevronDown, ChevronRight, Circle, AlertTriangle } from "lucide-react";
+import { CheckCircle, ChevronDown, ChevronRight, Circle, AlertTriangle, Clock } from "lucide-react";
 import Collapsible from "react-collapsible";
 import { useCourse } from "./CourseContext";
 import { getFileIcon, formatTime, isVideoFile } from "../utils/fileUtils";
@@ -55,6 +55,36 @@ const STEP_ICONS = {
   pessoal: "✏️",
 };
 
+// Classes do container de uma linha (lição ou lesson-group). Extrair a lógica
+// condicional daqui mantém o JSX legível — antes eram ternários aninhados
+// inline difíceis de seguir.
+const ROW_BASE = "group relative py-3 px-4 transition-all duration-300 cursor-pointer mb-1";
+
+const rowBorderClass = (isInSubModule) =>
+  isInSubModule
+    ? "border-l-2 border-t border-l-slate-600/30 border-t-slate-600/15"
+    : "border-l-2 border-t border-l-transparent border-t-slate-700/15";
+
+const lessonGroupStateClass = ({ isSelected, allDone }) => {
+  if (isSelected)
+    return "bg-gradient-to-r from-blue-600/25 to-blue-500/25 border-l-blue-400/50 shadow-sm";
+  if (allDone)
+    return "bg-gradient-to-r from-emerald-900/15 to-emerald-800/15 border-l-emerald-500/30 hover:from-emerald-900/20 hover:to-emerald-800/20";
+  return "hover:bg-gradient-to-r hover:from-slate-800/20 hover:to-slate-700/20";
+};
+
+const lessonStateClass = ({ isSelected, isCompleted, isInSubModule }) => {
+  if (isSelected)
+    return "bg-gradient-to-r from-blue-600/25 to-blue-500/25 border-l-blue-400/50 shadow-sm";
+  if (isCompleted)
+    return isInSubModule
+      ? "bg-gradient-to-r from-slate-700/20 to-slate-600/20 border-l-slate-500/40 hover:from-slate-700/25 hover:to-slate-600/25"
+      : "bg-gradient-to-r from-slate-800/25 to-slate-700/25 hover:from-slate-800/30 hover:to-slate-700/30";
+  return isInSubModule
+    ? "hover:bg-gradient-to-r hover:from-slate-700/15 hover:to-slate-600/15 hover:border-l-slate-500/40"
+    : "hover:bg-gradient-to-r hover:from-slate-800/20 hover:to-slate-700/20";
+};
+
 const LessonGroupItem = ({ item, level }) => {
   const {
     selectedLesson,
@@ -78,17 +108,7 @@ const LessonGroupItem = ({ item, level }) => {
 
   return (
     <div
-      className={`group relative py-3 px-4 transition-all duration-300 cursor-pointer mb-1 ${
-        isInSubModule
-          ? "border-l-2 border-t border-l-slate-600/30 border-t-slate-600/15"
-          : "border-l-2 border-t border-l-transparent border-t-slate-700/15"
-      } ${
-        isSelected
-          ? "bg-gradient-to-r from-blue-600/25 to-blue-500/25 border-l-blue-400/50 shadow-sm"
-          : allDone
-          ? "bg-gradient-to-r from-emerald-900/15 to-emerald-800/15 border-l-emerald-500/30 hover:from-emerald-900/20 hover:to-emerald-800/20"
-          : "hover:bg-gradient-to-r hover:from-slate-800/20 hover:to-slate-700/20"
-      }`}
+      className={`${ROW_BASE} ${rowBorderClass(isInSubModule)} ${lessonGroupStateClass({ isSelected, allDone })}`}
       onClick={() => onSelectLesson(item)}
     >
       <div className="flex items-start gap-3">
@@ -133,9 +153,7 @@ const LessonGroupItem = ({ item, level }) => {
                     : "bg-slate-800/40 text-slate-300 group-hover:bg-slate-700/50"
                 }`}
               >
-                <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
-                </svg>
+                <Clock className="w-3 h-3 mr-1" />
                 {formatTime(videoDuration)}
               </div>
             )}
@@ -324,21 +342,7 @@ const ModuleItem = ({ item, level = 0 }) => {
   const isInSubModule = level > 0;
   return (
     <div
-      className={`group relative py-3 px-4 transition-all duration-300 cursor-pointer mb-1 ${
-        isInSubModule
-          ? "border-l-2 border-t border-l-slate-600/30 border-t-slate-600/15"
-          : "border-l-2 border-t border-l-transparent border-t-slate-700/15"
-      } ${
-        isSelected
-          ? "bg-gradient-to-r from-blue-600/25 to-blue-500/25 border-l-blue-400/50 shadow-sm"
-          : isCompleted
-          ? isInSubModule
-            ? "bg-gradient-to-r from-slate-700/20 to-slate-600/20 border-l-slate-500/40 hover:from-slate-700/25 hover:to-slate-600/25"
-            : "bg-gradient-to-r from-slate-800/25 to-slate-700/25 hover:from-slate-800/30 hover:to-slate-700/30"
-          : isInSubModule
-          ? "hover:bg-gradient-to-r hover:from-slate-700/15 hover:to-slate-600/15 hover:border-l-slate-500/40"
-          : "hover:bg-gradient-to-r hover:from-slate-800/20 hover:to-slate-700/20"
-      }`}
+      className={`${ROW_BASE} ${rowBorderClass(isInSubModule)} ${lessonStateClass({ isSelected, isCompleted, isInSubModule })}`}
       onClick={() => onSelectLesson(item)}
     >
       <div className="flex items-start gap-3">
@@ -415,17 +419,7 @@ const ModuleItem = ({ item, level = 0 }) => {
                     : "bg-slate-800/40 text-slate-300 group-hover:bg-slate-700/50"
                 }`}
               >
-                <svg
-                  className="w-3 h-3 mr-1"
-                  fill="currentColor"
-                  viewBox="0 0 20 20"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z"
-                    clipRule="evenodd"
-                  />
-                </svg>
+                <Clock className="w-3 h-3 mr-1" />
                 {videoDurations[item.path]
                   ? formatTime(videoDurations[item.path])
                   : loadingVideos.has(item.path)

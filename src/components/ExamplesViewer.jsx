@@ -1,9 +1,13 @@
 import React, { useEffect, useState } from "react";
-import { parseExemplosHtml } from "../utils/examplesParser";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { parseExemplosHtml, parseExemplosMd } from "../utils/examplesParser";
 import { useReadTimer } from "../hooks/useReadTimer";
+import { LoadingState, ErrorState } from "./StateViews";
 
 const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   const [cards, setCards] = useState([]);
+  const [isMd, setIsMd] = useState(false);
   const [status, setStatus] = useState("loading");
 
   useReadTimer(courseTitle, lessonPrefix, "exemplos");
@@ -15,12 +19,11 @@ const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.text();
       })
-      .then((html) => {
-        const parsed = parseExemplosHtml(html);
-        if (parsed.length === 0) {
-          setStatus("empty");
-          return;
-        }
+      .then((text) => {
+        const isHtml = /^\s*<!DOCTYPE|^\s*<html/i.test(text);
+        setIsMd(!isHtml);
+        const parsed = isHtml ? parseExemplosHtml(text) : parseExemplosMd(text);
+        if (parsed.length === 0) { setStatus("empty"); return; }
         setCards(parsed);
         setStatus("ready");
       })
@@ -31,22 +34,11 @@ const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   }, [fileUrl]);
 
   if (status === "loading") {
-    return (
-      <div className="flex items-center justify-center h-full text-slate-400">
-        Carregando exemplos...
-      </div>
-    );
+    return <LoadingState message="Carregando exemplos..." />;
   }
 
   if (status === "error") {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-center">
-          <div className="text-lg text-red-400 mb-2">Erro ao carregar exemplos</div>
-          <div className="text-sm text-slate-500 mb-4">Algo deu errado ao buscar o conteudo.</div>
-        </div>
-      </div>
-    );
+    return <ErrorState message="Erro ao carregar exemplos." />;
   }
 
   if (status === "empty") {
@@ -58,20 +50,80 @@ const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   }
 
   return (
-    <div className="h-full overflow-auto bg-slate-950 px-6 py-6">
-      <div className="max-w-4xl mx-auto">
+    <div className="h-full overflow-auto bg-slate-950 px-4 lg:px-8 py-6">
+      <div className="w-full">
         {cards.map((c) => (
           <div
             key={c.id}
             className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 mb-4"
           >
-            <h2 className="text-slate-100 font-semibold text-lg mb-4">
-              {c.title}
-            </h2>
-            <div
-              className="text-slate-300 text-sm leading-relaxed prose-embedded"
-              dangerouslySetInnerHTML={{ __html: c.content }}
-            />
+            <h2 className="text-slate-100 font-semibold text-lg mb-4">{c.title}</h2>
+            {isMd ? (
+              <div className="text-slate-300 text-sm leading-relaxed">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    p: ({ children }) => (
+                      <p className="text-slate-300 text-sm leading-[1.8] mb-3">{children}</p>
+                    ),
+                    ul: ({ children }) => (
+                      <ul className="space-y-1.5 my-2 pl-1 [&_li]:text-slate-300 [&_li]:text-sm">{children}</ul>
+                    ),
+                    ol: ({ children }) => (
+                      <ol className="space-y-1.5 my-2 pl-4 [&_li]:text-slate-300 [&_li]:text-sm">{children}</ol>
+                    ),
+                    li: ({ children }) => (
+                      <li className="flex items-start gap-2 text-sm">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400/60 mt-2 flex-shrink-0" />
+                        <span>{children}</span>
+                      </li>
+                    ),
+                    strong: ({ children }) => (
+                      <strong className="text-slate-100 font-semibold">{children}</strong>
+                    ),
+                    code: ({ node, children, ...props }) => {
+                      const isInline = !node?.position?.start.line || node?.position?.start.line === node?.position?.end.line;
+                      return isInline ? (
+                        <code className="text-[12px] font-mono bg-slate-800/70 text-cyan-300 px-1.5 py-0.5 rounded border border-slate-700/40" {...props}>
+                          {children}
+                        </code>
+                      ) : (
+                        <div className="my-4 bg-slate-900/80 border border-slate-700/40 rounded-xl overflow-hidden">
+                          <div className="flex items-center px-4 py-2 bg-slate-800/40 border-b border-slate-700/30">
+                            <div className="flex gap-1.5">
+                              <div className="w-2.5 h-2.5 rounded-full bg-red-400/40" />
+                              <div className="w-2.5 h-2.5 rounded-full bg-yellow-400/40" />
+                              <div className="w-2.5 h-2.5 rounded-full bg-green-400/40" />
+                            </div>
+                          </div>
+                          <pre className="p-4 overflow-x-auto">
+                            <code className="text-[12px] font-mono text-slate-300 leading-relaxed" {...props}>
+                              {children}
+                            </code>
+                          </pre>
+                        </div>
+                      );
+                    },
+                    pre: ({ children }) => <>{children}</>,
+                    blockquote: ({ children }) => (
+                      <blockquote className="my-3 border-l-4 border-amber-500/50 pl-4 text-slate-400 text-sm italic">
+                        {children}
+                      </blockquote>
+                    ),
+                    h3: ({ children }) => (
+                      <h3 className="text-purple-300 font-medium text-sm mt-4 mb-2">{children}</h3>
+                    ),
+                  }}
+                >
+                  {c.content}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <div
+                className="text-slate-300 text-sm leading-relaxed prose-embedded"
+                dangerouslySetInnerHTML={{ __html: c.content }}
+              />
+            )}
           </div>
         ))}
       </div>

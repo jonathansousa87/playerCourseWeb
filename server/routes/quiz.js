@@ -12,10 +12,10 @@ router.post('/api/quiz/:courseTitle/:lessonPrefix/attempts', async (req, res) =>
       return res.status(400).json({ error: 'score/total invalidos' });
     }
     const { rows } = await query(
-      `INSERT INTO quiz_attempts (course_title, lesson_prefix, score, total)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO quiz_attempts (user_id, course_title, lesson_prefix, score, total)
+       VALUES ($1,$2,$3,$4,$5)
        RETURNING id, score, total, answered_at`,
-      [courseTitle, lessonPrefix, score, total],
+      [req.userId, courseTitle, lessonPrefix, score, total],
     );
     res.json(rows[0]);
   } catch (err) {
@@ -29,10 +29,10 @@ router.get('/api/quiz/:courseTitle/:lessonPrefix/attempts', async (req, res) => 
     const { rows } = await query(
       `SELECT id, score, total, answered_at
        FROM quiz_attempts
-       WHERE course_title = $1 AND lesson_prefix = $2
+       WHERE user_id = $1 AND course_title = $2 AND lesson_prefix = $3
        ORDER BY answered_at DESC
        LIMIT 20`,
-      [courseTitle, lessonPrefix],
+      [req.userId, courseTitle, lessonPrefix],
     );
     res.json(rows);
   } catch (err) {
@@ -57,12 +57,12 @@ router.post('/api/quiz/:courseTitle/:lessonPrefix/wrong-to-flashcards', async (r
     }
 
     const deckRes = await query(
-      `INSERT INTO flashcard_decks (course_title, lesson_prefix, source_file)
-       VALUES ($1, $2, NULL)
-       ON CONFLICT (course_title, lesson_prefix)
+      `INSERT INTO flashcard_decks (user_id, course_title, lesson_prefix, source_file)
+       VALUES ($1, $2, $3, NULL)
+       ON CONFLICT (user_id, course_title, lesson_prefix)
        DO UPDATE SET imported_at = flashcard_decks.imported_at
        RETURNING id`,
-      [courseTitle, lessonPrefix],
+      [req.userId, courseTitle, lessonPrefix],
     );
     const deckId = deckRes.rows[0].id;
 
@@ -79,9 +79,9 @@ router.post('/api/quiz/:courseTitle/:lessonPrefix/wrong-to-flashcards', async (r
       const key = `${item.front}||${item.back}`;
       if (existingSet.has(key)) continue;
       await query(
-        `INSERT INTO flashcards (deck_id, front, back, card_type, tags)
-         VALUES ($1, $2, $3, 'quiz_wrong', ARRAY['quiz'])`,
-        [deckId, item.front, item.back],
+        `INSERT INTO flashcards (user_id, deck_id, front, back, card_type, tags)
+         VALUES ($1, $2, $3, $4, 'quiz_wrong', ARRAY['quiz'])`,
+        [req.userId, deckId, item.front, item.back],
       );
       inserted++;
     }

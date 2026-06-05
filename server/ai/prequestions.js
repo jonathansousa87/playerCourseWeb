@@ -3,10 +3,9 @@
 // escolha. Valida o shape antes de retornar — se o modelo violar, falha
 // alto pra o usuario regenerar em vez de salvar lixo no DB.
 
-import { join } from 'path';
 import { chatCompletion, DEFAULT_MODEL } from './deepseek.js';
 import { buildPrequestionsPrompt, SYSTEM_PROMPTS } from './prompts.js';
-import { findTranscript, parseTranscript } from './generator.js';
+import { loadTranscriptForLesson } from './generator.js';
 
 // Tira fence ```json...``` se o modelo ignorar a regra.
 const stripFence = (s) => {
@@ -46,16 +45,8 @@ export const generatePrequestionsForLesson = async ({
   lessonPrefix,
   model = DEFAULT_MODEL,
 }) => {
-  const courseRoot = join(coursesPath, courseTitle);
-  const transcriptPath = await findTranscript(courseRoot, lessonPrefix);
-  if (!transcriptPath) {
-    const err = new Error(
-      'transcricao (.txt ou .vtt) nao encontrada pra essa aula. Gere a transcricao com Whisper antes.',
-    );
-    err.code = 'NO_TRANSCRIPT';
-    throw err;
-  }
-  const transcript = await parseTranscript(transcriptPath);
+  const { text: transcript, lessonTitle: lessonTitleFromTranscript } =
+    await loadTranscriptForLesson({ courseTitle, lessonPrefix, coursesPath });
   if (transcript.length < 50) {
     const err = new Error('transcricao vazia ou muito curta');
     err.code = 'EMPTY_TRANSCRIPT';
@@ -94,7 +85,6 @@ export const generatePrequestionsForLesson = async ({
 
   return {
     questions: parsed.questions,
-    transcriptPath,
     usage,
     model: usedModel,
   };

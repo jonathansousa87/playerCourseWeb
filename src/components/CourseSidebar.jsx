@@ -15,7 +15,7 @@ const CourseSidebar = ({
   const progressPercent = totalLessons > 0 ? Math.round((completedCount / totalLessons) * 100) : 0;
 
   return (
-    <div className="h-full flex flex-col border-l border-slate-700/50 min-w-[28rem] bg-gradient-to-b from-slate-900 to-slate-900/95">
+    <div className="h-full w-full min-w-0 sm:min-w-[28rem] flex flex-col border-l border-slate-700/50 bg-gradient-to-b from-slate-900 to-slate-900/95">
       {/* Header */}
       <div className="p-4 border-b border-slate-700/40">
         <div className="flex items-center justify-between mb-3">

@@ -114,8 +114,8 @@ const LessonChat = ({ courseTitle, lessonPrefix, lessonTitle }) => {
 
   return (
     <div className="h-full flex flex-col bg-slate-950">
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="max-w-4xl mx-auto">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 lg:px-8 py-6">
+        <div className="w-full">
           {loading && (
             <div className="text-center py-12 text-slate-500 text-sm">
               Carregando histórico...
@@ -179,8 +179,8 @@ const LessonChat = ({ courseTitle, lessonPrefix, lessonTitle }) => {
         </div>
       </div>
 
-      <div className="border-t border-slate-800/60 bg-slate-900/40 px-6 py-4">
-        <form onSubmit={handleSubmit} className="max-w-4xl mx-auto flex items-end gap-2">
+      <div className="border-t border-slate-800/60 bg-slate-900/40 px-4 lg:px-8 py-4">
+        <form onSubmit={handleSubmit} className="w-full flex items-end gap-2">
           <textarea
             ref={inputRef}
             value={input}

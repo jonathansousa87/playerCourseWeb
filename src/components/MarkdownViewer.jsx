@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useReadTimer } from "../hooks/useReadTimer";
+import { LoadingState } from "./StateViews";
 
 const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   const [content, setContent] = useState("");
@@ -29,16 +30,12 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   }, [fileUrl]);
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full text-slate-400">
-        <div className="text-sm">Carregando resumo...</div>
-      </div>
-    );
+    return <LoadingState message="Carregando resumo..." />;
   }
 
   return (
     <div className="h-full overflow-y-auto bg-slate-950">
-      <div className="max-w-4xl mx-auto px-6 lg:px-10 py-8">
+      <div className="w-full px-4 lg:px-8 py-8">
         <article className="space-y-6">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}

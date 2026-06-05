@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:3001";
+const API_BASE = "";
 
 const enc = encodeURIComponent;
 
@@ -270,6 +270,14 @@ export const migrateLocalStorage = (payload) =>
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  }).then(json);
+
+// Apaga todo o material gerado (IA) do curso no banco — resumo/quiz/exemplos/
+// diario/piada, decks de flashcards e pre-questoes. Nao toca em progresso nem
+// nos arquivos do curso no Drive.
+export const clearCourseMaterials = (courseTitle) =>
+  fetch(`${API_BASE}/api/materials/${enc(courseTitle)}`, {
+    method: "DELETE",
   }).then(json);
 
 // === IA (DeepSeek) ===

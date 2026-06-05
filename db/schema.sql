@@ -4,6 +4,28 @@
 
 BEGIN;
 
+-- Materiais de aula gerados por IA ou manualmente (Fase 8.3).
+-- Substitui arquivos .md no filesystem — conteudo vive somente no banco.
+-- kind: resumo | quiz | exemplos | diario | piada
+CREATE TABLE IF NOT EXISTS lesson_materials (
+    id            BIGSERIAL PRIMARY KEY,
+    course_title  TEXT        NOT NULL,
+    lesson_prefix TEXT        NOT NULL,
+    kind          TEXT        NOT NULL CHECK (kind IN ('resumo', 'quiz', 'exemplos', 'diario', 'piada')),
+    content       TEXT        NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (course_title, lesson_prefix, kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lesson_materials_course_prefix
+    ON lesson_materials (course_title, lesson_prefix);
+
+-- Autenticacao: gerenciada pelo Supabase Auth (auth.users). Tabela users
+-- propria foi descontinuada na Etapa 9 — colunas user_id em todas as
+-- tabelas abaixo apontam para auth.users(id) com ON DELETE CASCADE,
+-- definidas via db/migrations/002_add_user_id.sql.
+
 -- Conclusao de aulas inteiras (antes: localStorage completedLessons_<curso>)
 CREATE TABLE IF NOT EXISTS lesson_progress (
     id            BIGSERIAL PRIMARY KEY,

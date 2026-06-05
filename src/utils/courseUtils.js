@@ -44,7 +44,12 @@ export const countCompletedLessons = (content, courseProgress, completedSteps) =
     if (item.type === "lesson-group") {
       if (courseProgress[item.path]) return count + 1;
       if (completedSteps) {
-        const stepKeys = [...Object.keys(item.materials || {}), "pessoal"];
+        // "diario" saiu da pipeline da aula (vira revisao do modulo), entao
+        // nao conta para a conclusao da aula.
+        const stepKeys = [
+          ...Object.keys(item.materials || {}).filter((k) => k !== "diario"),
+          "pessoal",
+        ];
         const allDone = stepKeys.length > 0 && stepKeys.every(
           (k) => completedSteps[`${item.prefix}__${k}`]
         );
@@ -67,7 +72,10 @@ export const isModuleComplete = (moduleContent, courseTitle, completedLessons, c
       return completedLessons[courseTitle]?.[item.path] || false;
     } else if (item.type === "lesson-group") {
       if (completedSteps) {
-        const stepKeys = [...Object.keys(item.materials || {}), "pessoal"];
+        const stepKeys = [
+          ...Object.keys(item.materials || {}).filter((k) => k !== "diario"),
+          "pessoal",
+        ];
         return stepKeys.length > 0 && stepKeys.every(
           (k) => completedSteps[`${item.prefix}__${k}`]
         );

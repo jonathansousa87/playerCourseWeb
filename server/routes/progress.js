@@ -10,12 +10,18 @@ router.get('/api/db/health', async (_req, res) => {
   res.status(ok ? 200 : 503).json({ ok });
 });
 
-// Snapshot de TODOS os cursos — usado na home.
-router.get('/api/progress/all', async (_req, res) => {
+// Snapshot de TODOS os cursos do usuario logado — usado na home.
+router.get('/api/progress/all', async (req, res) => {
   try {
     const [lessons, steps] = await Promise.all([
-      query('SELECT course_title, lesson_path FROM lesson_progress'),
-      query('SELECT course_title, lesson_prefix, step_key FROM step_completions'),
+      query(
+        'SELECT course_title, lesson_path FROM lesson_progress WHERE user_id = $1',
+        [req.userId],
+      ),
+      query(
+        'SELECT course_title, lesson_prefix, step_key FROM step_completions WHERE user_id = $1',
+        [req.userId],
+      ),
     ]);
     const out = {};
     for (const r of lessons.rows) {
@@ -36,8 +42,8 @@ router.get('/api/progress/all', async (_req, res) => {
 router.get('/api/progress/:courseTitle/lessons', async (req, res) => {
   try {
     const { rows } = await query(
-      'SELECT lesson_path, completed_at FROM lesson_progress WHERE course_title = $1',
-      [dec(req.params.courseTitle)],
+      'SELECT lesson_path, completed_at FROM lesson_progress WHERE user_id = $1 AND course_title = $2',
+      [req.userId, dec(req.params.courseTitle)],
     );
     res.json(rows);
   } catch (err) {
@@ -50,10 +56,10 @@ router.post('/api/progress/:courseTitle/lessons', async (req, res) => {
     const { lessonPath } = req.body;
     if (!lessonPath) return res.status(400).json({ error: 'lessonPath obrigatorio' });
     await query(
-      `INSERT INTO lesson_progress (course_title, lesson_path)
-       VALUES ($1, $2)
-       ON CONFLICT (course_title, lesson_path) DO UPDATE SET completed_at = NOW()`,
-      [dec(req.params.courseTitle), lessonPath],
+      `INSERT INTO lesson_progress (user_id, course_title, lesson_path)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id, course_title, lesson_path) DO UPDATE SET completed_at = NOW()`,
+      [req.userId, dec(req.params.courseTitle), lessonPath],
     );
     res.json({ success: true });
   } catch (err) {
@@ -65,8 +71,8 @@ router.delete('/api/progress/:courseTitle/lessons', async (req, res) => {
   try {
     const { lessonPath } = req.body;
     await query(
-      'DELETE FROM lesson_progress WHERE course_title = $1 AND lesson_path = $2',
-      [dec(req.params.courseTitle), lessonPath],
+      'DELETE FROM lesson_progress WHERE user_id = $1 AND course_title = $2 AND lesson_path = $3',
+      [req.userId, dec(req.params.courseTitle), lessonPath],
     );
     res.json({ success: true });
   } catch (err) {
@@ -78,8 +84,8 @@ router.delete('/api/progress/:courseTitle/lessons', async (req, res) => {
 router.get('/api/progress/:courseTitle/steps', async (req, res) => {
   try {
     const { rows } = await query(
-      'SELECT lesson_prefix, step_key, completed_at FROM step_completions WHERE course_title = $1',
-      [dec(req.params.courseTitle)],
+      'SELECT lesson_prefix, step_key, completed_at FROM step_completions WHERE user_id = $1 AND course_title = $2',
+      [req.userId, dec(req.params.courseTitle)],
     );
     res.json(rows);
   } catch (err) {
@@ -93,10 +99,10 @@ router.post('/api/progress/:courseTitle/steps', async (req, res) => {
     if (!lessonPrefix || !stepKey)
       return res.status(400).json({ error: 'lessonPrefix e stepKey obrigatorios' });
     await query(
-      `INSERT INTO step_completions (course_title, lesson_prefix, step_key)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (course_title, lesson_prefix, step_key) DO UPDATE SET completed_at = NOW()`,
-      [dec(req.params.courseTitle), lessonPrefix, stepKey],
+      `INSERT INTO step_completions (user_id, course_title, lesson_prefix, step_key)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id, course_title, lesson_prefix, step_key) DO UPDATE SET completed_at = NOW()`,
+      [req.userId, dec(req.params.courseTitle), lessonPrefix, stepKey],
     );
     res.json({ success: true });
   } catch (err) {
@@ -108,8 +114,8 @@ router.delete('/api/progress/:courseTitle/steps', async (req, res) => {
   try {
     const { lessonPrefix, stepKey } = req.body;
     await query(
-      'DELETE FROM step_completions WHERE course_title = $1 AND lesson_prefix = $2 AND step_key = $3',
-      [dec(req.params.courseTitle), lessonPrefix, stepKey],
+      'DELETE FROM step_completions WHERE user_id = $1 AND course_title = $2 AND lesson_prefix = $3 AND step_key = $4',
+      [req.userId, dec(req.params.courseTitle), lessonPrefix, stepKey],
     );
     res.json({ success: true });
   } catch (err) {
@@ -122,8 +128,8 @@ router.delete('/api/progress/:courseTitle/steps', async (req, res) => {
 router.get('/api/db/notes/:courseTitle/pessoal/:lessonPrefix', async (req, res) => {
   try {
     const { rows } = await query(
-      'SELECT content, prompts, updated_at FROM personal_notes WHERE course_title = $1 AND lesson_prefix = $2',
-      [dec(req.params.courseTitle), dec(req.params.lessonPrefix)],
+      'SELECT content, prompts, updated_at FROM personal_notes WHERE user_id = $1 AND course_title = $2 AND lesson_prefix = $3',
+      [req.userId, dec(req.params.courseTitle), dec(req.params.lessonPrefix)],
     );
     res.json({
       content: rows[0]?.content || '',
@@ -146,19 +152,19 @@ router.post('/api/db/notes/:courseTitle/pessoal', async (req, res) => {
 
     if (hasPrompts) {
       await query(
-        `INSERT INTO personal_notes (course_title, lesson_prefix, content, prompts, updated_at)
-         VALUES ($1, $2, $3, $4::jsonb, NOW())
-         ON CONFLICT (course_title, lesson_prefix)
+        `INSERT INTO personal_notes (user_id, course_title, lesson_prefix, content, prompts, updated_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, NOW())
+         ON CONFLICT (user_id, course_title, lesson_prefix)
          DO UPDATE SET content = EXCLUDED.content, prompts = EXCLUDED.prompts, updated_at = NOW()`,
-        [dec(req.params.courseTitle), lessonPrefix, content ?? '', JSON.stringify(prompts)],
+        [req.userId, dec(req.params.courseTitle), lessonPrefix, content ?? '', JSON.stringify(prompts)],
       );
     } else {
       await query(
-        `INSERT INTO personal_notes (course_title, lesson_prefix, content, updated_at)
-         VALUES ($1, $2, $3, NOW())
-         ON CONFLICT (course_title, lesson_prefix)
+        `INSERT INTO personal_notes (user_id, course_title, lesson_prefix, content, updated_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (user_id, course_title, lesson_prefix)
          DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
-        [dec(req.params.courseTitle), lessonPrefix, content ?? ''],
+        [req.userId, dec(req.params.courseTitle), lessonPrefix, content ?? ''],
       );
     }
     res.json({ success: true });
@@ -172,9 +178,9 @@ router.get('/api/db/notes/:courseTitle/pomodoro', async (req, res) => {
     const { rows } = await query(
       `SELECT id, lesson_prefix, content, created_at
        FROM pomodoro_sessions
-       WHERE course_title = $1
+       WHERE user_id = $1 AND course_title = $2
        ORDER BY created_at ASC`,
-      [dec(req.params.courseTitle)],
+      [req.userId, dec(req.params.courseTitle)],
     );
     res.json(rows);
   } catch (err) {
@@ -189,10 +195,10 @@ router.post('/api/db/notes/:courseTitle/pomodoro', async (req, res) => {
     const allowedKinds = new Set(['reflection', 'focus', 'break_active', 'break_passive']);
     const safeKind = allowedKinds.has(kind) ? kind : 'reflection';
     const { rows } = await query(
-      `INSERT INTO pomodoro_sessions (course_title, lesson_prefix, content, kind)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO pomodoro_sessions (user_id, course_title, lesson_prefix, content, kind)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id, created_at, kind`,
-      [dec(req.params.courseTitle), lessonPrefix || null, content, safeKind],
+      [req.userId, dec(req.params.courseTitle), lessonPrefix || null, content, safeKind],
     );
     res.json({ success: true, ...rows[0] });
   } catch (err) {
@@ -204,8 +210,8 @@ router.get('/api/db/diary/:courseTitle', async (req, res) => {
   try {
     const { rows } = await query(
       `SELECT week_key, learned, decisions, different, updated_at
-       FROM weekly_diaries WHERE course_title = $1`,
-      [dec(req.params.courseTitle)],
+       FROM weekly_diaries WHERE user_id = $1 AND course_title = $2`,
+      [req.userId, dec(req.params.courseTitle)],
     );
     res.json(rows);
   } catch (err) {
@@ -218,14 +224,14 @@ router.post('/api/db/diary/:courseTitle', async (req, res) => {
     const { weekKey, learned, decisions, different } = req.body;
     if (!weekKey) return res.status(400).json({ error: 'weekKey obrigatorio' });
     await query(
-      `INSERT INTO weekly_diaries (course_title, week_key, learned, decisions, different, updated_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
-       ON CONFLICT (course_title, week_key)
+      `INSERT INTO weekly_diaries (user_id, course_title, week_key, learned, decisions, different, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       ON CONFLICT (user_id, course_title, week_key)
        DO UPDATE SET learned = EXCLUDED.learned,
                      decisions = EXCLUDED.decisions,
                      different = EXCLUDED.different,
                      updated_at = NOW()`,
-      [dec(req.params.courseTitle), weekKey, learned ?? '', decisions ?? '', different ?? ''],
+      [req.userId, dec(req.params.courseTitle), weekKey, learned ?? '', decisions ?? '', different ?? ''],
     );
     res.json({ success: true });
   } catch (err) {
@@ -238,8 +244,8 @@ router.get('/api/db/diary-tecnico/:courseTitle/:lessonPrefix', async (req, res) 
     const { courseTitle, lessonPrefix } = req.params;
     const { rows } = await query(
       `SELECT content, updated_at FROM technical_diary_notes
-       WHERE course_title = $1 AND lesson_prefix = $2`,
-      [courseTitle, lessonPrefix],
+       WHERE user_id = $1 AND course_title = $2 AND lesson_prefix = $3`,
+      [req.userId, courseTitle, lessonPrefix],
     );
     res.json(rows[0] || { content: '', updated_at: null });
   } catch (err) {
@@ -252,12 +258,12 @@ router.post('/api/db/diary-tecnico/:courseTitle/:lessonPrefix', async (req, res)
     const { courseTitle, lessonPrefix } = req.params;
     const content = String(req.body?.content ?? '');
     const { rows } = await query(
-      `INSERT INTO technical_diary_notes (course_title, lesson_prefix, content)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (course_title, lesson_prefix)
+      `INSERT INTO technical_diary_notes (user_id, course_title, lesson_prefix, content)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id, course_title, lesson_prefix)
        DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()
        RETURNING content, updated_at`,
-      [courseTitle, lessonPrefix, content],
+      [req.userId, courseTitle, lessonPrefix, content],
     );
     res.json(rows[0]);
   } catch (err) {
@@ -265,7 +271,8 @@ router.post('/api/db/diary-tecnico/:courseTitle/:lessonPrefix', async (req, res)
   }
 });
 
-// Migracao one-shot do localStorage legacy para Postgres.
+// Migracao one-shot do localStorage legacy para Postgres. Mantida por compat
+// ate Etapa 9 — sempre escopa pelo usuario logado.
 router.post('/api/migrate-localstorage', async (req, res) => {
   try {
     const payload = req.body || {};
@@ -273,52 +280,52 @@ router.post('/api/migrate-localstorage', async (req, res) => {
 
     for (const entry of payload.lessons || []) {
       await query(
-        `INSERT INTO lesson_progress (course_title, lesson_path)
-         VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [entry.courseTitle, entry.lessonPath],
+        `INSERT INTO lesson_progress (user_id, course_title, lesson_path)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [req.userId, entry.courseTitle, entry.lessonPath],
       );
       summary.lessons++;
     }
 
     for (const entry of payload.steps || []) {
       await query(
-        `INSERT INTO step_completions (course_title, lesson_prefix, step_key)
-         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-        [entry.courseTitle, entry.lessonPrefix, entry.stepKey],
+        `INSERT INTO step_completions (user_id, course_title, lesson_prefix, step_key)
+         VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+        [req.userId, entry.courseTitle, entry.lessonPrefix, entry.stepKey],
       );
       summary.steps++;
     }
 
     for (const entry of payload.diaries || []) {
       await query(
-        `INSERT INTO weekly_diaries (course_title, week_key, learned, decisions, different)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (course_title, week_key) DO UPDATE SET
+        `INSERT INTO weekly_diaries (user_id, course_title, week_key, learned, decisions, different)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (user_id, course_title, week_key) DO UPDATE SET
            learned = EXCLUDED.learned,
            decisions = EXCLUDED.decisions,
            different = EXCLUDED.different,
            updated_at = NOW()`,
-        [entry.courseTitle, entry.weekKey, entry.learned ?? '', entry.decisions ?? '', entry.different ?? ''],
+        [req.userId, entry.courseTitle, entry.weekKey, entry.learned ?? '', entry.decisions ?? '', entry.different ?? ''],
       );
       summary.diaries++;
     }
 
     for (const entry of payload.notes || []) {
       await query(
-        `INSERT INTO personal_notes (course_title, lesson_prefix, content)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (course_title, lesson_prefix) DO UPDATE SET
+        `INSERT INTO personal_notes (user_id, course_title, lesson_prefix, content)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_id, course_title, lesson_prefix) DO UPDATE SET
            content = EXCLUDED.content, updated_at = NOW()`,
-        [entry.courseTitle, entry.lessonPrefix, entry.content ?? ''],
+        [req.userId, entry.courseTitle, entry.lessonPrefix, entry.content ?? ''],
       );
       summary.notes++;
     }
 
     for (const entry of payload.pomodoros || []) {
       await query(
-        `INSERT INTO pomodoro_sessions (course_title, lesson_prefix, content)
-         VALUES ($1, $2, $3)`,
-        [entry.courseTitle, entry.lessonPrefix || null, entry.content],
+        `INSERT INTO pomodoro_sessions (user_id, course_title, lesson_prefix, content)
+         VALUES ($1, $2, $3, $4)`,
+        [req.userId, entry.courseTitle, entry.lessonPrefix || null, entry.content],
       );
       summary.pomodoros++;
     }

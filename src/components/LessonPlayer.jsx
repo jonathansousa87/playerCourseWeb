@@ -11,7 +11,7 @@ import CourseSidebar from "./CourseSidebar";
 import PomodoroTimer from "./PomodoroTimer";
 import ChatFAB from "./ChatFAB";
 import { findNextLesson } from "../utils/courseUtils";
-import { isVideoFile, isPDFFile, isHTMLFile } from "../utils/fileUtils";
+import { isVideoFile, isPDFFile, isHTMLFile, getMediaUrl } from "../utils/fileUtils";
 
 // Decide o modo de player: lesson-group (stepper moderno), HTML/PDF,
 // video legacy (arquivo solto) ou unsupported.
@@ -30,6 +30,8 @@ const LessonPlayer = ({
   handleLessonSelect,
   toggleLessonComplete,
   buildVideoProps,
+  onStepChange,
+  onMaterialsChanged,
 }) => {
   const isLessonGroup = selectedLesson.type === "lesson-group";
 
@@ -45,6 +47,12 @@ const LessonPlayer = ({
         sidebar={sidebar}
         handleStepComplete={handleStepComplete}
         handleBack={handleBack}
+        onStepChange={onStepChange}
+        onMaterialsChanged={onMaterialsChanged}
+        isLessonComplete={
+          !!completedLessons[selectedCourse.title]?.[selectedLesson.path]
+        }
+        onMarkLessonComplete={() => handleToggleLessonComplete(selectedLesson)}
         onLessonComplete={(lesson) => {
           if (!completedLessons[selectedCourse.title]?.[lesson.path]) {
             toggleLessonComplete(
@@ -64,7 +72,7 @@ const LessonPlayer = ({
   const isVideo = isVideoFile(selectedLesson.title);
   const isPDF = isPDFFile(selectedLesson.title);
   const isHTML = isHTMLFile(selectedLesson.title);
-  const fileUrl = `http://localhost:3001/cursos/${selectedCourse.title}/${selectedLesson.path}`;
+  const fileUrl = getMediaUrl(selectedCourse.title, selectedLesson.path);
   const isCompleted =
     completedLessons[selectedCourse.title]?.[selectedLesson.path] || false;
 
@@ -91,7 +99,7 @@ const LessonPlayer = ({
               />
             )}
           </div>
-          <div className="w-[28rem] bg-slate-900 border-l border-slate-700/50 flex flex-col">
+          <div className="w-full sm:w-[28rem] bg-slate-900 border-l border-slate-700/50 flex flex-col">
             <div className="p-4 border-b border-slate-700/40">
               <h3 className="text-slate-100 text-base font-semibold text-center">
                 {selectedCourse.title}
@@ -157,34 +165,38 @@ const LessonGroupPlayer = ({
   sidebar,
   handleStepComplete,
   handleBack,
+  onStepChange,
   onLessonComplete,
   buildVideoProps,
+  onMaterialsChanged,
+  isLessonComplete,
+  onMarkLessonComplete,
 }) => {
   const videoMaterial = selectedLesson.materials?.video;
-  const videoFileUrl = videoMaterial
-    ? `http://localhost:3001/cursos/${encodeURIComponent(selectedCourse.title)}/${encodeURIComponent(videoMaterial.path)}`
-    : "";
+  const videoFileUrl = videoMaterial ? getMediaUrl(selectedCourse.title, videoMaterial.path) : "";
   const vProps = videoMaterial ? buildVideoProps(videoMaterial, videoFileUrl) : {};
 
   return (
     <CourseProvider value={courseContextValue}>
-      <div
-        className={`h-screen bg-slate-950 text-slate-100 flex relative ${
-          !fullscreen.isFullscreen && sidebar.sidebarPosition === "left"
-            ? "flex-row-reverse"
-            : ""
-        }`}
-      >
+      <div className="h-screen bg-slate-950 text-slate-100 flex relative overflow-y-auto">
         <div className={`${fullscreen.isFullscreen ? "w-full" : "flex-1 min-w-0"} h-full bg-slate-900`}>
           <LessonStepper
             lessonGroup={selectedLesson}
             courseTitle={selectedCourse.title}
             completedSteps={currentCourseSteps}
+            isLessonComplete={isLessonComplete}
+            onMarkLessonComplete={onMarkLessonComplete}
             onStepComplete={handleStepComplete}
             onAllStepsComplete={onLessonComplete}
+            onStepChange={onStepChange}
+            onMaterialsChanged={onMaterialsChanged}
             {...vProps}
             onBack={handleBack}
             onVideoTimeUpdate={(e) => {
+              // Atualiza barra de progresso
+              if (vProps.onInternalTimeUpdate) vProps.onInternalTimeUpdate(e);
+
+              // Logica de conclusao do step
               const video = e.target;
               if (
                 video &&
@@ -246,13 +258,7 @@ const LegacyVideoPlayer = ({
 
   return (
     <CourseProvider value={courseContextValue}>
-      <div
-        className={`h-screen bg-slate-950 text-slate-100 flex relative ${
-          !fullscreen.isFullscreen && sidebar.sidebarPosition === "left"
-            ? "flex-row-reverse"
-            : ""
-        }`}
-      >
+      <div className="h-screen bg-slate-950 text-slate-100 flex relative overflow-y-auto">
         <div className={`${fullscreen.isFullscreen ? "w-full" : "flex-1 min-w-0"} h-full bg-slate-900 flex flex-col`}>
           {!fullscreen.isFullscreen && (
             <LegacyHeader
@@ -268,6 +274,10 @@ const LegacyVideoPlayer = ({
             courseTitle={selectedCourse.title}
             lessonPrefix={selectedLesson.path}
             onTimeUpdate={(e) => {
+              // Executa a logica de atualizacao da barra de progresso (vProps)
+              if (vProps.onInternalTimeUpdate) vProps.onInternalTimeUpdate(e);
+              
+              // Executa a logica de conclusao automatica (Legacy)
               const video = e.target;
               if (
                 video &&
@@ -308,28 +318,43 @@ const LegacyVideoPlayer = ({
 };
 
 // Sidebar colapsavel (hover-driven) usada no modo normal.
+// Agora usa absolute/z-index para nao empurrar o conteudo principal,
+// permitindo que a aula ocupe 100% da largura.
 const SidebarSlideout = ({ sidebar }) => (
   <div
-    className="w-8 flex-shrink-0 h-full relative z-20"
+    className={`absolute ${
+      sidebar.sidebarPosition === "right" ? "right-0" : "left-0"
+    } top-0 h-full z-50 transition-all duration-300 ease-in-out`}
+    style={{
+      width:
+        sidebar.sidebarHovered || sidebar.sidebarLocked
+          ? "min(28rem, 90vw)"
+          : "0.5rem",
+    }}
     onMouseEnter={() => sidebar.setSidebarHovered(true)}
     onMouseLeave={() => !sidebar.sidebarLocked && sidebar.setSidebarHovered(false)}
   >
     <div
-      className={`absolute ${
-        sidebar.sidebarPosition === "right" ? "right-0 rounded-l-lg" : "left-0 rounded-r-lg"
-      } top-0 h-full bg-gradient-to-b from-slate-900 to-slate-900/95 shadow-2xl overflow-hidden transition-[width] duration-300 ease-in-out`}
-      style={{
-        width:
-          sidebar.sidebarHovered || sidebar.sidebarLocked
-            ? "calc(28rem + 2rem)"
-            : "2rem",
-      }}
+      className={`h-full bg-gradient-to-b from-slate-900 to-slate-900/95 shadow-2xl overflow-hidden transition-opacity duration-300 ${
+        sidebar.sidebarHovered || sidebar.sidebarLocked ? "opacity-100" : "opacity-0 pointer-events-none"
+      }`}
     >
-      <CourseSidebar
-        sidebarPosition={sidebar.sidebarPosition}
-        onTogglePosition={sidebar.toggleSidebarPosition}
-      />
+      {/* Monta a lista de aulas só quando aberta. Colapsada, a árvore pesada de
+          ModuleItem ficaria re-renderizando a cada tick de currentTime durante
+          o vídeo, saturando a main thread e travando o hover. */}
+      {(sidebar.sidebarHovered || sidebar.sidebarLocked) && (
+        <CourseSidebar
+          sidebarPosition={sidebar.sidebarPosition}
+          onTogglePosition={sidebar.toggleSidebarPosition}
+        />
+      )}
     </div>
+    {/* Indicador visual de que ha uma sidebar ali */}
+    {!sidebar.sidebarHovered && !sidebar.sidebarLocked && (
+      <div className={`absolute top-1/2 -translate-y-1/2 w-1.5 h-16 bg-blue-500/20 rounded-full ${
+        sidebar.sidebarPosition === "right" ? "right-1" : "left-1"
+      }`} />
+    )}
   </div>
 );
 
@@ -351,7 +376,7 @@ const FullscreenSidebar = ({ sidebar }) => (
     <div
       className={`absolute ${
         sidebar.sidebarPosition === "right" ? "right-0 rounded-l-lg" : "left-0 rounded-r-lg"
-      } w-[28rem] bg-gradient-to-b from-slate-900 to-slate-900/95 shadow-2xl transform transition-transform duration-300 ease-in-out z-20`}
+      } w-[min(28rem,90vw)] bg-gradient-to-b from-slate-900 to-slate-900/95 shadow-2xl transform transition-transform duration-300 ease-in-out z-20`}
       style={{
         height: "100vh",
         top: "0",
@@ -366,10 +391,12 @@ const FullscreenSidebar = ({ sidebar }) => (
       onMouseEnter={() => sidebar.setSidebarHovered(true)}
       onMouseLeave={() => !sidebar.sidebarLocked && sidebar.setSidebarHovered(false)}
     >
-      <CourseSidebar
-        sidebarPosition={sidebar.sidebarPosition}
-        onTogglePosition={sidebar.toggleSidebarPosition}
-      />
+      {(sidebar.sidebarHovered || sidebar.sidebarLocked) && (
+        <CourseSidebar
+          sidebarPosition={sidebar.sidebarPosition}
+          onTogglePosition={sidebar.toggleSidebarPosition}
+        />
+      )}
     </div>
   </>
 );

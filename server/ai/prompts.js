@@ -1,5 +1,6 @@
-// Prompts pro pipeline de geracao. Seguem exatamente o formato dos arquivos
-// ja existentes em cada aula (resumo .md, quiz .html, flashcards .txt, diario .md).
+// Prompts pro pipeline de geracao. Todos os materiais sao Markdown puro —
+// a plataforma cuida do visual. Formatos: resumo .md, quiz .md, exemplos .md,
+// flashcards .txt (TSV Anki), diario .md.
 
 const SYSTEM_BASE =
   'Voce eh um assistente educacional que gera material de estudo em portugues do Brasil ' +
@@ -13,6 +14,7 @@ export const SYSTEM_PROMPTS = {
   diario: SYSTEM_BASE,
   exemplos: SYSTEM_BASE,
   prequestions: SYSTEM_BASE,
+  piada: SYSTEM_BASE,
 };
 
 const trunc = (text, max = 20000) =>
@@ -90,130 +92,79 @@ Retorne APENAS o conteudo do arquivo .txt, sem fences de codigo, sem explicacao,
 };
 
 export const buildQuizPrompt = ({ lessonTitle, transcript }) => `
-Gere uma pagina HTML standalone de quiz interativo sobre a aula abaixo, com 8 a 12 questoes de multipla escolha (4 alternativas cada, 1 correta).
+Gere um quiz em Markdown sobre a aula abaixo, com 8 a 12 questoes de multipla escolha (4 alternativas cada, 1 correta).
 
-Formato obrigatorio (EXATO, respeite tags/classes/atributos pra o parser funcionar):
+Formato obrigatorio EXATO por questao (o parser depende desse formato):
 
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<title>Quiz: ${lessonTitle}</title>
-<style>
-body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;padding:20px;line-height:1.6;}
-.container{max-width:800px;margin:0 auto;}
-h1{color:#00d4ff;text-align:center;}
-.question-card{background:#16213e;border-radius:12px;padding:24px;margin:20px 0;}
-.question-title{color:#e0e0e0;margin-top:0;}
-.answer-btn{display:block;width:100%;text-align:left;padding:14px 20px;margin:8px 0;background:#0d1117;color:#e0e0e0;border:2px solid #333;border-radius:8px;cursor:pointer;font-size:16px;}
-.answer-btn:hover{border-color:#00d4ff;}
-.answer-btn.correct{background:#0f5132;border-color:#198754;}
-.answer-btn.incorrect{background:#58151c;border-color:#dc3545;}
-.explanation{margin-top:16px;padding:12px;background:#0d1117;border-left:4px solid #00d4ff;border-radius:4px;display:none;}
-.explanation.visible{display:block;}
-</style>
-</head>
-<body>
-<div class="container">
-<h1>Quiz: ${lessonTitle}</h1>
-<div class="question-card">
-<h3 class="question-title">Texto da pergunta 1</h3>
-<button class="answer-btn" data-correct="false">Alternativa A</button>
-<button class="answer-btn" data-correct="true">Alternativa B (correta)</button>
-<button class="answer-btn" data-correct="false">Alternativa C</button>
-<button class="answer-btn" data-correct="false">Alternativa D</button>
-<div class="explanation">Explicacao: por que a resposta correta eh a B.</div>
-</div>
-<!-- ... mais 7 a 11 question-card seguindo o mesmo padrao ... -->
-</div>
-<script>
-document.querySelectorAll('.question-card').forEach(card => {
-  const btns = card.querySelectorAll('.answer-btn');
-  const exp = card.querySelector('.explanation');
-  btns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (btn.disabled) return;
-      btns.forEach(b => { b.disabled = true; if (b.dataset.correct === 'true') b.classList.add('correct'); });
-      if (btn.dataset.correct !== 'true') btn.classList.add('incorrect');
-      if (exp) exp.classList.add('visible');
-    });
-  });
-});
-</script>
-</body>
-</html>
+## N. Texto da pergunta?
 
-Regras:
-- Exatamente UMA alternativa com data-correct="true" por question-card
-- Cada .explanation explica por que a correta eh correta (nao invente, use o conteudo da aula)
-- Alternativas incorretas devem ser plausiveis (distratores), nao absurdas
-- Ordem das alternativas aleatoria (nao colocar sempre a correta na mesma posicao)
+- [ ] Alternativa A
+- [ ] Alternativa B
+- [x] Alternativa correta
+- [ ] Alternativa D
+
+> Explicacao: por que a alternativa correta esta certa.
+
+Onde N e o numero sequencial (1, 2, 3...) e [x] marca a unica alternativa correta.
+
+Regras CRITICAS:
+- Exatamente 1 alternativa com [x] por questao (nao use [X], apenas [x] minusculo)
+- Sempre 4 alternativas por questao (3 x [ ] e 1 x [x])
+- Alternativas incorretas plausiveis (distratores reais, nao absurdos)
+- Ordem das alternativas aleatoria por questao
+- Explicacao: 1-2 frases diretas, sem inventar conteudo
+- NAO adicione texto fora do formato acima (sem introducao, sem conclusao)
+
+Titulo da aula: ${lessonTitle}
 
 Transcricao:
 ---
 ${trunc(transcript)}
 ---
 
-Retorne APENAS o HTML completo, sem fences de codigo.`.trim();
+Retorne APENAS o Markdown, sem fences de codigo.`.trim();
 
 export const buildExemplosPrompt = ({ lessonTitle, transcript }) => `
-Gere uma pagina HTML standalone com exemplos praticos dos conceitos da aula abaixo.
+Gere exemplos praticos em Markdown dos conceitos da aula abaixo.
 
-Formato obrigatorio (EXATO, respeite tags/classes pra combinar com o visual dos outros arquivos de exemplos):
+Formato obrigatorio EXATO (o parser divide por cabecalhos ##):
 
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<title>Exemplos: ${lessonTitle}</title>
-<style>
-body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;max-width:800px;margin:0 auto;padding:20px;line-height:1.6;}
-h1{color:#00d4ff;border-bottom:2px solid #00d4ff;padding-bottom:10px;}
-h2{color:#00d4ff;}
-h3{color:#bb86fc;}
-.card{background:#16213e;border-radius:12px;padding:20px;margin:16px 0;box-shadow:0 4px 6px rgba(0,0,0,.3);}
-pre,code{background:#0d1117;color:#58a6ff;border-radius:8px;font-family:Consolas,Monaco,monospace;}
-pre{padding:16px;overflow-x:auto;}
-code{padding:2px 6px;}
-ul{padding-left:20px;}
-li{margin-bottom:8px;}
-</style>
-</head>
-<body>
-<h1>Exemplos: ${lessonTitle}</h1>
+## 1. Nome do Conceito
 
-<div class="card">
-<h2>1. Nome do conceito</h2>
-<p><strong>Explicacao:</strong> o que eh o conceito.</p>
-<p><strong>Exemplo de Uso:</strong> situacao pratica ou codigo. Use <pre><code>...</code></pre> quando for codigo.</p>
-</div>
+**Explicacao:** o que eh o conceito.
 
-<!-- Mais 3 a 6 cards como esse, um por conceito da aula -->
+**Exemplo de Uso:** situacao pratica ou codigo.
 
-<div class="card">
-<h2>Pontos-chave</h2>
-<ul>
-<li>Takeaway 1 em negrito quando tecnico.</li>
-<li>Takeaway 2.</li>
-<li>Takeaway 3.</li>
-</ul>
-</div>
-</body>
-</html>
+\`\`\`linguagem
+codigo aqui quando aplicavel
+\`\`\`
+
+## 2. Outro Conceito
+
+...
+
+## Pontos-chave
+
+- Takeaway 1 em **negrito** quando tecnico.
+- Takeaway 2.
+- Takeaway 3.
 
 Regras:
-- Gere entre 4 e 7 cards com conceitos da aula (alem do ultimo card "Pontos-chave")
-- Cada card pode ter subsecoes: "Explicacao", "Exemplo de Uso", "Instalacao", "Exemplo 1 - X", "Exemplo de Referencia" etc. (varie conforme o conteudo)
-- Se a aula tem codigo, inclua blocos <pre><code>...</code></pre>
-- Exemplos devem ser baseados no que a aula de fato mostra, nao inventados
-- Ultimo card sempre "Pontos-chave" com <ul> de bullets
+- Entre 4 e 7 secoes de conceitos (## N. Nome) antes da secao "## Pontos-chave"
+- Ultima secao SEMPRE "## Pontos-chave" com lista de bullets
+- Use blocos de codigo com linguagem especificada (python, js, bash etc.) quando a aula tiver codigo
+- Exemplos baseados no que a aula mostra, nao inventados
+- Subsecoes variaveis conforme o conteudo: Explicacao, Exemplo de Uso, Instalacao, Referencia etc.
+- Use **negrito** pra termos tecnicos
+
+Titulo da aula: ${lessonTitle}
 
 Transcricao:
 ---
 ${trunc(transcript)}
 ---
 
-Retorne APENAS o HTML completo, sem fences de codigo.`.trim();
+Retorne APENAS o Markdown, sem fences externas de codigo.`.trim();
 
 // Pre-questoes (Carpenter & Toftness 2017): perguntas geradas ANTES do
 // video, pra forcar tentativa de recuperacao. O retorno DEVE ser JSON
@@ -253,6 +204,35 @@ ${trunc(transcript)}
 ---
 
 Retorne APENAS o JSON.`.trim();
+
+export const buildPiadaPrompt = ({ lessonTitle, transcript }) => `
+Gere 2 piadas curtas e inteligentes sobre o conteudo da aula abaixo.
+
+Regras CRITICAS:
+- Cada piada DEVE referenciar conceitos especificos da aula (nomes de funcoes, algoritmos, ferramentas, termos tecnicos ensinados) — nada generico
+- Use humor de trocadilho, analogia absurda ou situacao exagerada relacionada ao tema
+- Portugues casual, como se contasse pra um colega de estudo
+- Curtas: 2 a 5 linhas por piada
+- Sem conteudo ofensivo
+
+Formato obrigatorio EXATO:
+
+## Piada 1
+(texto da primeira piada)
+
+## Piada 2
+(texto da segunda piada)
+
+> Pronto, agora vai arrasar no quiz! 💪
+
+Retorne APENAS o Markdown, sem fences de codigo.
+
+Titulo da aula: ${lessonTitle}
+
+Transcricao:
+---
+${trunc(transcript, 8000)}
+---`.trim();
 
 export const buildDiarioPrompt = ({ lessonTitle, transcript, weekLabel }) => `
 Gere um template de diario tecnico em Markdown pra aula abaixo. Use EXATAMENTE este formato, preenchendo APENAS a parte do "O que aprendi" com 3 a 5 bullets de sintese; os outros campos deixe em branco (o aluno preenche depois).

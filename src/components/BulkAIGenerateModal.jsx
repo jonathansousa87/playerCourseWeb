@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { generateIa, generatePrequestions } from "../utils/progressApi";
 
 const KIND_OPTIONS = [
   { key: "prequiz", label: "Pre-Quiz", icon: "🎯" },
   { key: "resumo", label: "Resumo", icon: "📄" },
   { key: "exemplos", label: "Exemplos", icon: "💡" },
+  { key: "piada", label: "Piada", icon: "😄" },
   { key: "quiz", label: "Quiz", icon: "❓" },
   { key: "flashcards", label: "Flashcards", icon: "🔁" },
   { key: "diario", label: "Diario", icon: "📓" },
@@ -55,7 +57,10 @@ const BulkAIGenerateModal = ({
   onGenerated,
 }) => {
   const [selectedLessons, setSelectedLessons] = useState(() => new Set());
-  const [selectedKinds, setSelectedKinds] = useState(() => new Set(["resumo"]));
+  // Default: todos os tipos marcados — usuário desmarca o que não quer.
+  const [selectedKinds, setSelectedKinds] = useState(
+    () => new Set(KIND_OPTIONS.map((opt) => opt.key)),
+  );
   const [model, setModel] = useState("deepseek-v4-flash");
   const [loading, setLoading] = useState(false);
   const [currentPrefix, setCurrentPrefix] = useState(null);
@@ -232,9 +237,10 @@ const BulkAIGenerateModal = ({
           <button
             onClick={handleClose}
             disabled={loading}
-            className="text-slate-500 hover:text-slate-300 text-2xl leading-none disabled:opacity-40"
+            aria-label="Fechar"
+            className="text-slate-500 hover:text-slate-300 leading-none disabled:opacity-40"
           >
-            ×
+            <X className="w-6 h-6" />
           </button>
         </div>
 
@@ -244,8 +250,23 @@ const BulkAIGenerateModal = ({
             <div className="px-6 pt-4 pb-3 border-b border-slate-800/60">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">
-                  Tipos de material
+                  Tipos de material ({selectedKinds.size}/{KIND_OPTIONS.length})
                 </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setSelectedKinds(new Set(KIND_OPTIONS.map((o) => o.key)))}
+                    className="text-xs text-blue-400 hover:text-blue-300"
+                  >
+                    Marcar todos
+                  </button>
+                  <span className="text-slate-700">|</span>
+                  <button
+                    onClick={() => setSelectedKinds(new Set())}
+                    className="text-xs text-slate-400 hover:text-slate-300"
+                  >
+                    Limpar
+                  </button>
+                </div>
               </div>
               <div className="flex flex-wrap gap-2">
                 {KIND_OPTIONS.map((opt) => {

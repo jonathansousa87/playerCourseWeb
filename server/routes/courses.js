@@ -6,8 +6,9 @@ import { promises as fs } from 'fs';
 import { createReadStream } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { getCoursesPath, setCoursesPath } from '../config.js';
+import { getCoursesPath, setCoursesPath, getCourseSource, getDriveFolderId } from '../config.js';
 import { isTranscriptOfVideo } from '../transcriptDetect.js';
+import { query } from '../../db/index.js';
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
@@ -42,11 +43,12 @@ const getContentType = (filename) => {
 
 // Sufixos que indicam arquivos complementares de uma aula (lesson group).
 // _ia opcional identifica arquivos gerados por IA.
+// quiz e exemplos aceitam .html (legado) e .md (novo padrao).
 const LESSON_SUFFIXES = {
   video: /_dub\.(mp4|webm|ts|m3u8|mkv)$/i,
   resumo: /_resumo_dub_\d+(?:_ia)?\.md$/i,
-  exemplos: /_exemplos_dub_\d+(?:_ia)?\.html$/i,
-  quiz: /_quiz_dub_\d+(?:_ia)?\.html$/i,
+  exemplos: /_exemplos_dub_\d+(?:_ia)?\.(?:html|md)$/i,
+  quiz: /_quiz_dub_\d+(?:_ia)?\.(?:html|md)$/i,
   flashcards: /_flashcards_anki_dub_\d+(?:_ia)?\.txt$/i,
   diario: /_diario_tecnico_dub_\d+(?:_ia)?\.md$/i,
 };
@@ -184,31 +186,48 @@ async function readCourseContent(path, basePath = '') {
 
 // === Rotas ===
 
-// Serve arquivos de midia da pasta de cursos com suporte a range streaming.
+// Serve arquivos de midia. Em modo Drive o parametro :file e o fileId do Drive.
 router.get('/cursos/:file(*)', async (req, res) => {
+  const rawPath = decodeFileName(req.params.file);
   try {
-    const filePath = join(getCoursesPath(), decodeFileName(req.params.file));
-    const stat = await fs.stat(filePath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
-    const contentType = getContentType(filePath);
+    if (getCourseSource() === 'drive') {
+      const { streamFile, getSharedEmails } = await import('../drive/index.js');
+      // Em modo Drive o fileId vem como ultimo segmento do path
+      // (o front envia cursos/{courseTitle}/{fileId} mas so o fileId importa).
+      const fileId = rawPath.split('/').pop();
 
-    if (contentType.startsWith('video/') && range) {
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunksize = end - start + 1;
-      const stream = createReadStream(filePath, { start, end });
-      res.writeHead(206, {
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize,
-        'Content-Type': contentType,
+      const folderId = getDriveFolderId();
+      if (folderId) {
+        const allowed = await getSharedEmails(folderId);
+        if (allowed !== null) {
+          const userEmail = req.userEmail?.toLowerCase();
+          if (!userEmail || !allowed.has(userEmail)) {
+            console.warn(`[Auth] Acesso negado ao arquivo ${fileId} para o usuario ${userEmail}`);
+            return res.status(403).json({ error: 'Sem permissao para acessar este conteudo. Solicite acesso ao administrador.' });
+          }
+        }
+      }
+
+      await streamFile(fileId, req.headers.range, res);
+      return;
+    }
+    const filePath = join(getCoursesPath(), rawPath);
+    try {
+      const stat = await fs.stat(filePath);
+      const contentType = getContentType(filePath);
+
+      // Para arquivos locais, res.sendFile eh o metodo mais compativel com o Chrome
+      // pois gerencia Ranges e ETag de forma nativa e otimizada.
+      res.sendFile(filePath, {
+        acceptRanges: true,
+        headers: {
+          'Content-Type': contentType,
+          'Cache-Control': 'no-cache',
+        }
       });
-      stream.pipe(res);
-    } else {
-      res.writeHead(200, { 'Content-Length': fileSize, 'Content-Type': contentType });
-      createReadStream(filePath).pipe(res);
+    } catch (error) {
+      console.error('Erro ao servir arquivo:', error);
+      res.status(500).send('Erro interno do servidor');
     }
   } catch (error) {
     console.error('Erro ao servir arquivo:', error);
@@ -216,8 +235,96 @@ router.get('/cursos/:file(*)', async (req, res) => {
   }
 });
 
-router.get('/api/courses', async (_req, res) => {
+// Converte a arvore do Drive no mesmo formato de readCourseContent.
+// Em modo Drive o path de cada lesson e o fileId do arquivo no Drive.
+const buildDriveContent = (driveItems) => {
+  const items = [];
+  for (const item of driveItems) {
+    if (item.children !== undefined) {
+      const sub = buildDriveContent(item.children);
+      if (sub.length > 0) {
+        items.push({ type: 'module', title: item.name, path: item.id, content: sub });
+      }
+    } else if (VIDEO_EXTENSIONS.test(item.name)) {
+      // So videos disparam agrupamento; materiais vem do banco via augmentWithDbMaterials
+      items.push({ type: 'lesson', title: item.name, path: item.id });
+    }
+  }
+  return groupLessonFiles(items);
+};
+
+// Mescla materiais armazenados no banco (lesson_materials + flashcard_decks)
+// na arvore de conteudo retornada pelo filesystem.
+const augmentWithDbMaterials = (content, dbMaterials, dbFlashcards) => {
+  return content.map((item) => {
+    if (item.type === 'module') {
+      return { ...item, content: augmentWithDbMaterials(item.content, dbMaterials, dbFlashcards) };
+    }
+    if (item.type === 'lesson-group') {
+      const extra = {};
+      for (const kind of (dbMaterials[item.prefix] || [])) {
+        if (!item.materials[kind]) {
+          extra[kind] = { path: '__db__', kind, title: kind };
+        }
+      }
+      if (dbFlashcards.has(item.prefix) && !item.materials.flashcards) {
+        extra.flashcards = { path: '__db__', kind: 'flashcards', title: 'flashcards' };
+      }
+      if (Object.keys(extra).length === 0) return item;
+      return { ...item, materials: { ...item.materials, ...extra } };
+    }
+    return item;
+  });
+};
+
+router.get('/api/courses', async (req, res) => {
+  const _req = req;
   try {
+    // ── Modo Drive ──────────────────────────────────────────────────────────
+    if (getCourseSource() === 'drive') {
+      const folderId = getDriveFolderId();
+      if (!folderId) {
+        return res.status(503).json({ error: 'DRIVE_COURSES_FOLDER_ID nao configurado no .env' });
+      }
+      const { listFolders, listFilesRecursive, getSharedEmails } = await import('../drive/index.js');
+
+      // Verifica acesso antes de listar cursos
+      const allowed = await getSharedEmails(folderId).catch(() => null);
+      if (allowed !== null) {
+        const userEmail = _req.userEmail?.toLowerCase();
+        if (!userEmail || !allowed.has(userEmail)) {
+          return res.json([]); // retorna lista vazia — sem expor mensagem de erro
+        }
+      }
+      const folders = await listFolders(folderId);
+      const courseData = await Promise.all(
+        folders.map(async (folder) => {
+          const courseTitle = folder.name;
+          const tree = await listFilesRecursive(folder.id);
+          const content = buildDriveContent(tree);
+          let dbMaterials = {}, dbFlashcards = new Set();
+          try {
+            const [matRows, deckRows] = await Promise.all([
+              query('SELECT lesson_prefix, kind FROM lesson_materials WHERE course_title = $1', [courseTitle]),
+              query('SELECT DISTINCT lesson_prefix FROM flashcard_decks WHERE course_title = $1', [courseTitle]),
+            ]);
+            for (const { lesson_prefix, kind } of matRows.rows) {
+              if (!dbMaterials[lesson_prefix]) dbMaterials[lesson_prefix] = [];
+              dbMaterials[lesson_prefix].push(kind);
+            }
+            dbFlashcards = new Set(deckRows.rows.map((r) => r.lesson_prefix));
+          } catch { /* continua sem materiais do banco */ }
+          return {
+            title: courseTitle,
+            description: `Curso de ${courseTitle}`,
+            content: augmentWithDbMaterials(content, dbMaterials, dbFlashcards),
+          };
+        }),
+      );
+      return res.json(courseData);
+    }
+
+    // ── Modo Filesystem (padrao) ─────────────────────────────────────────────
     const coursesPath = getCoursesPath();
     try {
       await fs.access(coursesPath);
@@ -230,12 +337,37 @@ router.get('/api/courses', async (_req, res) => {
       courses
         .filter((c) => c.isDirectory())
         .map(async (course) => {
+          const courseTitle = decodeFileName(course.name);
           const coursePath = join(coursesPath, course.name);
           const content = await readCourseContent(coursePath);
+
+          // Busca materiais e decks no banco para este curso
+          let dbMaterials = {};
+          let dbFlashcards = new Set();
+          try {
+            const [matRows, deckRows] = await Promise.all([
+              query(
+                'SELECT lesson_prefix, kind FROM lesson_materials WHERE course_title = $1',
+                [courseTitle],
+              ),
+              query(
+                'SELECT DISTINCT lesson_prefix FROM flashcard_decks WHERE course_title = $1',
+                [courseTitle],
+              ),
+            ]);
+            for (const { lesson_prefix, kind } of matRows.rows) {
+              if (!dbMaterials[lesson_prefix]) dbMaterials[lesson_prefix] = [];
+              dbMaterials[lesson_prefix].push(kind);
+            }
+            dbFlashcards = new Set(deckRows.rows.map((r) => r.lesson_prefix));
+          } catch {
+            // Se o banco falhar, continua com filesystem apenas
+          }
+
           return {
-            title: decodeFileName(course.name),
-            description: `Curso de ${decodeFileName(course.name)}`,
-            content,
+            title: courseTitle,
+            description: `Curso de ${courseTitle}`,
+            content: augmentWithDbMaterials(content, dbMaterials, dbFlashcards),
           };
         }),
     );

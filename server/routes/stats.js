@@ -4,14 +4,15 @@ import { query } from '../../db/index.js';
 const router = express.Router();
 
 // Acerto em 7 dias — alimenta o Pomodoro adaptativo.
-router.get('/api/stats/recent', async (_req, res) => {
+router.get('/api/stats/recent', async (req, res) => {
   try {
     const acc = await query(
       `SELECT
          COUNT(*)::int AS n,
          SUM(CASE WHEN rating >= 3 THEN 1 ELSE 0 END)::int AS hits
        FROM flashcard_review_log
-       WHERE reviewed_at >= NOW() - INTERVAL '7 days'`,
+       WHERE user_id = $1 AND reviewed_at >= NOW() - INTERVAL '7 days'`,
+      [req.userId],
     );
     const row = acc.rows[0] || { n: 0, hits: 0 };
     const accuracy7d = row.n > 0 ? row.hits / row.n : null;
@@ -22,7 +23,7 @@ router.get('/api/stats/recent', async (_req, res) => {
 });
 
 // Dashboard: heatmap 90d + retencao 7d/30d + top lapsos + backlog ETA.
-router.get('/api/stats/dashboard', async (_req, res) => {
+router.get('/api/stats/dashboard', async (req, res) => {
   try {
     const heatmap = await query(
       `WITH days AS (
@@ -35,13 +36,13 @@ router.get('/api/stats/dashboard', async (_req, res) => {
        reviews AS (
          SELECT reviewed_at::date AS day, COUNT(*)::int AS n
          FROM flashcard_review_log
-         WHERE reviewed_at >= CURRENT_DATE - INTERVAL '89 days'
+         WHERE user_id = $1 AND reviewed_at >= CURRENT_DATE - INTERVAL '89 days'
          GROUP BY 1
        ),
        pomos AS (
          SELECT created_at::date AS day, COUNT(*)::int AS n
          FROM pomodoro_sessions
-         WHERE created_at >= CURRENT_DATE - INTERVAL '89 days'
+         WHERE user_id = $1 AND created_at >= CURRENT_DATE - INTERVAL '89 days'
          GROUP BY 1
        )
        SELECT d.day,
@@ -51,6 +52,7 @@ router.get('/api/stats/dashboard', async (_req, res) => {
        LEFT JOIN reviews r ON r.day = d.day
        LEFT JOIN pomos p ON p.day = d.day
        ORDER BY d.day`,
+      [req.userId],
     );
 
     const retention = await query(
@@ -62,9 +64,11 @@ router.get('/api/stats/dashboard', async (_req, res) => {
        FROM flashcard_review_log rl
        JOIN flashcards c ON c.id = rl.card_id
        JOIN flashcard_decks d ON d.id = c.deck_id
-       WHERE rl.reviewed_at >= NOW() - INTERVAL '30 days'
+       WHERE rl.user_id = $1
+         AND rl.reviewed_at >= NOW() - INTERVAL '30 days'
        GROUP BY d.course_title
        ORDER BY n_30d DESC`,
+      [req.userId],
     );
 
     const topLapses = await query(
@@ -73,19 +77,21 @@ router.get('/api/stats/dashboard', async (_req, res) => {
        FROM flashcards c
        JOIN flashcard_decks d ON d.id = c.deck_id
        JOIN flashcard_reviews r ON r.card_id = c.id
-       WHERE r.lapses >= 1
+       WHERE c.user_id = $1 AND r.lapses >= 1
        ORDER BY r.lapses DESC, r.reps DESC
        LIMIT 10`,
+      [req.userId],
     );
 
     const backlogRes = await query(
       `SELECT
-         (SELECT COUNT(*)::int FROM flashcard_reviews r WHERE r.due <= NOW()) +
-         (SELECT COUNT(*)::int FROM flashcards c WHERE NOT EXISTS (
+         (SELECT COUNT(*)::int FROM flashcard_reviews r WHERE r.user_id = $1 AND r.due <= NOW()) +
+         (SELECT COUNT(*)::int FROM flashcards c WHERE c.user_id = $1 AND NOT EXISTS (
             SELECT 1 FROM flashcard_reviews fr WHERE fr.card_id = c.id
          )) AS due_cards,
          (SELECT COUNT(*)::numeric FROM flashcard_review_log
-          WHERE reviewed_at >= NOW() - INTERVAL '14 days') / 14.0 AS avg_per_day`,
+          WHERE user_id = $1 AND reviewed_at >= NOW() - INTERVAL '14 days') / 14.0 AS avg_per_day`,
+      [req.userId],
     );
     const b = backlogRes.rows[0] || {};
     const avgPerDay = Number(b.avg_per_day) || 0;
@@ -104,17 +110,18 @@ router.get('/api/stats/dashboard', async (_req, res) => {
 });
 
 // Perfil cognitivo: hora otima/fraca, streak, drift D, totais.
-router.get('/api/stats/profile', async (_req, res) => {
+router.get('/api/stats/profile', async (req, res) => {
   try {
     const hours = await query(
       `SELECT EXTRACT(HOUR FROM reviewed_at)::int AS hr,
               COUNT(*)::int AS n,
               SUM(CASE WHEN rating >= 3 THEN 1 ELSE 0 END)::int AS hits
        FROM flashcard_review_log
-       WHERE reviewed_at >= NOW() - INTERVAL '30 days'
+       WHERE user_id = $1 AND reviewed_at >= NOW() - INTERVAL '30 days'
        GROUP BY hr
        HAVING COUNT(*) >= 5
        ORDER BY hr`,
+      [req.userId],
     );
 
     let bestHour = null;
@@ -133,8 +140,9 @@ router.get('/api/stats/profile', async (_req, res) => {
     const days = await query(
       `SELECT DISTINCT reviewed_at::date AS day
        FROM flashcard_review_log
-       WHERE reviewed_at >= CURRENT_DATE - INTERVAL '365 days'
+       WHERE user_id = $1 AND reviewed_at >= CURRENT_DATE - INTERVAL '365 days'
        ORDER BY day DESC`,
+      [req.userId],
     );
     let streak = 0;
     if (days.rows.length > 0) {
@@ -157,7 +165,8 @@ router.get('/api/stats/profile', async (_req, res) => {
          AVG(difficulty) FILTER (WHERE reviewed_at >= NOW() - INTERVAL '30 days'
                                    AND reviewed_at <  NOW() - INTERVAL '7 days') AS d_prev
        FROM flashcard_review_log
-       WHERE reviewed_at >= NOW() - INTERVAL '30 days' AND difficulty IS NOT NULL`,
+       WHERE user_id = $1 AND reviewed_at >= NOW() - INTERVAL '30 days' AND difficulty IS NOT NULL`,
+      [req.userId],
     );
     const dRecent = drift.rows[0]?.d_recent != null ? Number(drift.rows[0].d_recent) : null;
     const dPrev = drift.rows[0]?.d_prev != null ? Number(drift.rows[0].d_prev) : null;
@@ -166,9 +175,10 @@ router.get('/api/stats/profile', async (_req, res) => {
 
     const totals = await query(
       `SELECT
-         (SELECT COUNT(*)::int FROM flashcards) AS total_cards,
-         (SELECT COUNT(*)::int FROM flashcard_review_log) AS total_reviews,
-         (SELECT COUNT(*)::int FROM flashcard_reviews WHERE state >= 2) AS mature_cards`,
+         (SELECT COUNT(*)::int FROM flashcards WHERE user_id = $1) AS total_cards,
+         (SELECT COUNT(*)::int FROM flashcard_review_log WHERE user_id = $1) AS total_reviews,
+         (SELECT COUNT(*)::int FROM flashcard_reviews WHERE user_id = $1 AND state >= 2) AS mature_cards`,
+      [req.userId],
     );
     const t = totals.rows[0] || { total_cards: 0, total_reviews: 0, mature_cards: 0 };
 
@@ -197,22 +207,15 @@ router.get('/api/stats/profile', async (_req, res) => {
   }
 });
 
-// Razao recall (ativo) vs leitura (passivo) — Bjork & Bjork 2011, "desirable
-// difficulties". Estimativa baseada em eventos persistidos. Tempo de cada
-// atividade eh um valor medio razoavel — instrumentacao mais fina (timer no
-// player/markdown) fica pra evolucao.
 const SECS = {
-  flashcardReview: 10,        // por review (ver pergunta + flip + rating)
-  quizQuestion: 30,           // por questao do quiz (ler + decidir)
-  prequizQuestion: 25,        // por questao de pre-quiz (chutar)
-  videoStep: 8 * 60,          // 8 min por video assistido (fallback — ver baixo)
-  resumoStep: 4 * 60,         // 4 min lendo resumo
-  exemplosStep: 6 * 60,       // 6 min lendo exemplos
+  flashcardReview: 10,
+  quizQuestion: 30,
+  prequizQuestion: 25,
+  videoStep: 8 * 60,
+  resumoStep: 4 * 60,
+  exemplosStep: 6 * 60,
 };
 
-// POST: salva uma sessao de consumo passivo (video/resumo/exemplos).
-// Frontend chama on-unmount ou ao terminar uma sessao. seconds < 5
-// eh ignorado (ruido — usuario abriu por engano).
 router.post('/api/stats/view-session', async (req, res) => {
   try {
     const { courseTitle, lessonPrefix, kind, seconds } = req.body || {};
@@ -224,15 +227,13 @@ router.post('/api/stats/view-session', async (req, res) => {
     }
     const secs = Math.floor(Number(seconds) || 0);
     if (secs < 5) {
-      // Ruido — nem registra. UI nao precisa saber.
       return res.json({ saved: false, reason: 'too-short' });
     }
-    // Cap razoavel: 4h. Se passar disso, o user esqueceu a aba aberta.
     const capped = Math.min(secs, 4 * 60 * 60);
     await query(
-      `INSERT INTO view_sessions (course_title, lesson_prefix, kind, seconds)
-       VALUES ($1, $2, $3, $4)`,
-      [courseTitle, lessonPrefix, kind, capped],
+      `INSERT INTO view_sessions (user_id, course_title, lesson_prefix, kind, seconds)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [req.userId, courseTitle, lessonPrefix, kind, capped],
     );
     res.json({ saved: true, seconds: capped });
   } catch (err) {
@@ -245,36 +246,31 @@ router.get('/api/stats/activity-balance', async (req, res) => {
     const days = Math.max(1, Math.min(365, Number(req.query.days) || 30));
     const interval = `${days} days`;
 
-    // === ATIVO (testing / recall) ===
     const reviews = await query(
       `SELECT COUNT(*)::int AS n
        FROM flashcard_review_log
-       WHERE reviewed_at >= NOW() - $1::interval`,
-      [interval],
+       WHERE user_id = $1 AND reviewed_at >= NOW() - $2::interval`,
+      [req.userId, interval],
     );
     const quizzes = await query(
       `SELECT COUNT(*)::int AS n, COALESCE(SUM(total), 0)::int AS questions
        FROM quiz_attempts
-       WHERE answered_at >= NOW() - $1::interval`,
-      [interval],
+       WHERE user_id = $1 AND answered_at >= NOW() - $2::interval`,
+      [req.userId, interval],
     );
     const prequiz = await query(
       `SELECT COUNT(*)::int AS n, COALESCE(SUM(total), 0)::int AS questions
        FROM prequestion_attempts
-       WHERE attempted_at >= NOW() - $1::interval`,
-      [interval],
+       WHERE user_id = $1 AND attempted_at >= NOW() - $2::interval`,
+      [req.userId, interval],
     );
 
-    // === PASSIVO (consumo) ===
-    // Prefere tempo REAL agregado de view_sessions. Pra cada kind onde
-    // ha dados rastreados no periodo, usa a soma; se nao ha dados, cai
-    // pra estimativa baseada em step_completions.
     const tracked = await query(
       `SELECT kind, COUNT(*)::int AS sessions, COALESCE(SUM(seconds), 0)::int AS total_seconds
        FROM view_sessions
-       WHERE started_at >= NOW() - $1::interval
+       WHERE user_id = $1 AND started_at >= NOW() - $2::interval
        GROUP BY kind`,
-      [interval],
+      [req.userId, interval],
     );
     const trackedByKind = { video: null, resumo: null, exemplos: null };
     for (const row of tracked.rows) {
@@ -284,10 +280,11 @@ router.get('/api/stats/activity-balance', async (req, res) => {
     const passiveSteps = await query(
       `SELECT step_key, COUNT(*)::int AS n
        FROM step_completions
-       WHERE step_key IN ('video', 'resumo', 'exemplos')
-         AND completed_at >= NOW() - $1::interval
+       WHERE user_id = $1
+         AND step_key IN ('video', 'resumo', 'exemplos')
+         AND completed_at >= NOW() - $2::interval
        GROUP BY step_key`,
-      [interval],
+      [req.userId, interval],
     );
     const stepCounts = { video: 0, resumo: 0, exemplos: 0 };
     for (const row of passiveSteps.rows) stepCounts[row.step_key] = row.n;
@@ -313,7 +310,6 @@ router.get('/api/stats/activity-balance', async (req, res) => {
       activeBreakdown.quiz.seconds +
       activeBreakdown.prequiz.seconds;
 
-    // Helper: pra cada kind, decide entre tracked e estimado.
     const buildPassiveEntry = (kind, fallbackPerStep) => {
       if (trackedByKind[kind]) {
         return {
@@ -343,10 +339,8 @@ router.get('/api/stats/activity-balance', async (req, res) => {
 
     const ratio = passiveSeconds > 0 ? activeSeconds / passiveSeconds : null;
 
-    // Recomendacao textual baseada no ratio. ratio = active/passive.
-    // Bjork: 1:1 minimo, 2:1 ideal pra real learning.
     let recommendation;
-    let level; // 'good' | 'ok' | 'warning' | 'bad' | 'no-data'
+    let level;
     if (activeSeconds === 0 && passiveSeconds === 0) {
       level = 'no-data';
       recommendation = 'Sem atividade nos ultimos dias — comece por uma aula ou revisao.';
@@ -390,10 +384,6 @@ router.get('/api/stats/activity-balance', async (req, res) => {
   }
 });
 
-// Badges de retencao de longo prazo (Bahrick & Hall — successful relearning).
-// Conta cards "maduros" por tier de tempo desde o primeiro review, exigindo
-// state FSRS = 2 (Review estavel — sem lapsing recente). Reaprendizado
-// espacado mantem retencao por DECADAS, mas marcos visiveis motivam.
 const BADGE_TIERS = [
   { key: '1w', days: 7, label: '1 semana' },
   { key: '1m', days: 30, label: '1 mes' },
@@ -403,11 +393,8 @@ const BADGE_TIERS = [
   { key: '2y', days: 730, label: '2 anos' },
 ];
 
-router.get('/api/stats/retention-badges', async (_req, res) => {
+router.get('/api/stats/retention-badges', async (req, res) => {
   try {
-    // Pra cada card, computa first_review (MIN reviewed_at). Mature cards
-    // = state=2 (Review). Tier = maior threshold em dias que first_review
-    // ja ultrapassou.
     const { rows: cards } = await query(
       `SELECT c.id, c.front, d.course_title, d.lesson_prefix,
               cf.first_review,
@@ -419,11 +406,13 @@ router.get('/api/stats/retention-badges', async (_req, res) => {
        JOIN (
          SELECT card_id, MIN(reviewed_at) AS first_review
          FROM flashcard_review_log
+         WHERE user_id = $1
          GROUP BY card_id
-       ) cf ON cf.card_id = c.id`,
+       ) cf ON cf.card_id = c.id
+       WHERE c.user_id = $1`,
+      [req.userId],
     );
 
-    // Conta cards por tier (cumulativo decrescente: tier maior eh subset do menor).
     const byTier = BADGE_TIERS.map((t) => ({
       key: t.key,
       label: t.label,
@@ -431,9 +420,6 @@ router.get('/api/stats/retention-badges', async (_req, res) => {
       count: cards.filter((c) => Number(c.age_days) >= t.days).length,
     }));
 
-    // Marcos recentes: cards que cruzaram um tier nos ultimos 7 dias.
-    // Pra cada tier, pega cards onde first_review esta no intervalo:
-    // [tier_days a tier_days+7] dias atras (acabou de bater o marco).
     const milestones = [];
     for (const t of BADGE_TIERS) {
       for (const c of cards) {
@@ -452,7 +438,6 @@ router.get('/api/stats/retention-badges', async (_req, res) => {
         }
       }
     }
-    // Mais novos primeiro (acabou de bater)
     milestones.sort((a, b) => b.ageDays - a.ageDays);
 
     res.json({
@@ -465,7 +450,6 @@ router.get('/api/stats/retention-badges', async (_req, res) => {
   }
 });
 
-// Acerto por aula dentro de um curso — badges/banner do ModuleItem.
 router.get('/api/stats/lesson-accuracy/:courseTitle', async (req, res) => {
   try {
     const { courseTitle } = req.params;
@@ -478,10 +462,11 @@ router.get('/api/stats/lesson-accuracy/:courseTitle', async (req, res) => {
        FROM flashcard_review_log l
        JOIN flashcards c ON c.id = l.card_id
        JOIN flashcard_decks d ON d.id = c.deck_id
-       WHERE d.course_title = $1
-         AND l.reviewed_at >= NOW() - ($2::int || ' days')::interval
+       WHERE l.user_id = $1
+         AND d.course_title = $2
+         AND l.reviewed_at >= NOW() - ($3::int || ' days')::interval
        GROUP BY d.lesson_prefix`,
-      [courseTitle, days],
+      [req.userId, courseTitle, days],
     );
     const data = rows.map((r) => ({
       lessonPrefix: r.lesson_prefix,

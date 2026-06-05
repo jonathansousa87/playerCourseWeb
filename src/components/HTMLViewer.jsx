@@ -7,7 +7,7 @@ const useHTMLContent = (selectedLesson, selectedCourse) => {
   useEffect(() => {
     if (!selectedLesson || !selectedLesson.title.endsWith(".html")) return;
 
-    const fileUrl = `http://localhost:3001/cursos/${selectedCourse.title}/${selectedLesson.path}`;
+    const fileUrl = `/cursos/${selectedCourse.title}/${selectedLesson.path}`;
 
     fetch(fileUrl)
       .then((response) => response.arrayBuffer())

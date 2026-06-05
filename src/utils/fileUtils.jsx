@@ -1,5 +1,6 @@
 import React from "react";
 import { MonitorPlay, FileText, FileCode } from "lucide-react";
+import { getCurrentAccessToken } from "../lib/supabase";
 
 export const isVideoFile = (filename) =>
   /\.(mp4|webm|ts|m3u8|mkv)$/i.test(filename);
@@ -30,4 +31,11 @@ export const formatTime = (seconds) => {
   return `${hours.toString().padStart(2, "0")}:${mins
     .toString()
     .padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+};
+
+export const getMediaUrl = (courseTitle, filePath) => {
+  if (!filePath) return "";
+  const base = `/cursos/${encodeURIComponent(courseTitle)}/${encodeURIComponent(filePath)}`;
+  const token = getCurrentAccessToken();
+  return token ? `${base}?t=${encodeURIComponent(token)}` : base;
 };
