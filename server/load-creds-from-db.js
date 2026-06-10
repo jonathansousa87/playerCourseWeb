@@ -16,6 +16,10 @@ const DB_TO_ENV = {
   deepseek_api_key: 'DEEPSEEK_API_KEY',
 };
 
+// Chaves cujo valor do banco SEMPRE vence o .env (valores que rotacionam e cujo
+// banco e mantido atualizado pelo callback OAuth).
+const ALWAYS_FROM_DB = new Set(['google_refresh_token']);
+
 export const loadCredsFromDB = async () => {
   try {
     // user_settings pode ter varias linhas (uma por usuario). Em uso local
@@ -28,13 +32,17 @@ export const loadCredsFromDB = async () => {
     const s = rows[0].settings || {};
     let count = 0;
     for (const [dbKey, envKey] of Object.entries(DB_TO_ENV)) {
-      // So preenche se o .env nao tiver esse valor (env vence o banco).
-      if (process.env[envKey] && process.env[envKey].trim()) continue;
       const val = typeof s[dbKey] === 'string' ? s[dbKey].trim() : s[dbKey];
-      if (val) {
-        process.env[envKey] = val;
-        count += 1;
-      }
+      if (!val) continue;
+      // Regra geral: o .env vence (so preenche o que falta). EXCECAO: o refresh
+      // token do Drive ROTACIONA — o callback OAuth atualiza o banco a cada
+      // reautorizacao, entao ele vem SEMPRE do banco. Assim, reautorizar numa
+      // maquina propaga o token novo para as outras (no proximo start), em vez
+      // de cada .env ficar preso a um token que o Google ja invalidou.
+      const envHasValue = process.env[envKey] && process.env[envKey].trim();
+      if (envHasValue && !ALWAYS_FROM_DB.has(dbKey)) continue;
+      process.env[envKey] = val;
+      count += 1;
     }
 
     // Habilita modo Drive automaticamente quando ha uma pasta configurada e o
