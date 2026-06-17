@@ -1,9 +1,10 @@
 import React, { useState } from "react";
-import { ArrowLeft, Sparkles, NotebookPen, AlertTriangle, FileText } from "lucide-react";
+import { ArrowLeft, Sparkles, NotebookPen, AlertTriangle, FileText, BookOpenText } from "lucide-react";
 import { CourseProvider } from "./CourseContext";
 import ModuleItem from "./ModuleItem";
 import WeeklyDiaryModal from "./WeeklyDiaryModal";
 import BulkAIGenerateModal from "./BulkAIGenerateModal";
+import ReadingCourseModal from "./ReadingCourseModal";
 import TechnicalDiaryReviewModal from "./TechnicalDiaryReviewModal";
 import {
   countLessons,
@@ -28,6 +29,7 @@ const LessonsView = ({
   onMaterialsChanged,
 }) => {
   const [showTechDiary, setShowTechDiary] = useState(false);
+  const [showReadingModal, setShowReadingModal] = useState(false);
   const courseProgress = completedLessons[selectedCourse.title] || {};
   const totalLessons = countLessons(selectedCourse.content);
   const completedCount = countCompletedLessons(
@@ -64,6 +66,14 @@ const LessonsView = ({
                 </div>
               </div>
               <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowReadingModal(true)}
+                  className="flex items-center gap-2 px-3.5 py-2 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 rounded-xl transition-all text-sm text-emerald-300 hover:text-emerald-200"
+                  title="Gerar um curso de leitura (texto enxuto) a partir das transcricoes deste curso. So no modo local."
+                >
+                  <BookOpenText className="w-4 h-4" />
+                  <span className="hidden sm:inline">Gerar curso leitura</span>
+                </button>
                 <button
                   onClick={() => setShowBulkAIModal(true)}
                   className="flex items-center gap-2 px-3.5 py-2 bg-blue-600/15 hover:bg-blue-600/25 border border-blue-500/20 rounded-xl transition-all text-sm text-blue-300 hover:text-blue-200"
@@ -153,6 +163,12 @@ const LessonsView = ({
         onGenerated={() => {
           onMaterialsChanged?.();
         }}
+      />
+      <ReadingCourseModal
+        open={showReadingModal}
+        onClose={() => setShowReadingModal(false)}
+        courseTitle={selectedCourse.title}
+        courseContent={selectedCourse.content}
       />
     </CourseProvider>
   );

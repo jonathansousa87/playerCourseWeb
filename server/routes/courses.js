@@ -70,6 +70,16 @@ const getLessonMaterialType = (filename) => {
   return null;
 };
 
+// Transcricao "solta" (sem video irmao): _dub[.locale].(txt|vtt). Em cursos de
+// leitura (so .txt), ela ancora um lesson-group pra o stepper + "Gerar IA"
+// aparecerem e os materiais do banco se encaixarem. Em cursos normais a
+// transcricao tem o mesmo prefixo do video, entao apenas se junta ao grupo dele.
+const TRANSCRIPT_SUFFIX = /_dub(?:\.[a-z]{2,3}(?:-[a-zA-Z]{2,4})?)?\.(txt|vtt)$/i;
+const getTranscriptPrefix = (filename) => {
+  const match = filename.match(TRANSCRIPT_SUFFIX);
+  return match ? filename.slice(0, match.index) : null;
+};
+
 const groupLessonFiles = (items) => {
   const groups = new Map();
   const ungrouped = [];
@@ -80,38 +90,53 @@ const groupLessonFiles = (items) => {
       continue;
     }
     const prefix = getLessonGroupPrefix(item.title);
-    if (!prefix) {
-      ungrouped.push(item);
+    if (prefix) {
+      if (!groups.has(prefix)) groups.set(prefix, {});
+      const materialType = getLessonMaterialType(item.title);
+      if (materialType) {
+        const existing = groups.get(prefix)[materialType];
+        // Prioriza variante _ia quando houver ambos.
+        if (!existing || (isIaVariant(item.title) && !isIaVariant(existing.title))) {
+          groups.get(prefix)[materialType] = item;
+        }
+      }
       continue;
     }
-    if (!groups.has(prefix)) groups.set(prefix, {});
-    const materialType = getLessonMaterialType(item.title);
-    if (materialType) {
-      const existing = groups.get(prefix)[materialType];
-      // Prioriza variante _ia quando houver ambos.
-      if (!existing || (isIaVariant(item.title) && !isIaVariant(existing.title))) {
-        groups.get(prefix)[materialType] = item;
+    // Transcricao solta: ancora o grupo (curso de leitura).
+    const transcriptPrefix = getTranscriptPrefix(item.title);
+    if (transcriptPrefix) {
+      if (!groups.has(transcriptPrefix)) groups.set(transcriptPrefix, {});
+      if (!groups.get(transcriptPrefix).__transcript) {
+        groups.get(transcriptPrefix).__transcript = item;
       }
+      continue;
     }
+    ungrouped.push(item);
   }
 
   const result = [...ungrouped];
 
-  for (const [prefix, materials] of groups) {
-    // Agrupa quando tem video (mesmo sem outros materiais) pra o botao
-    // "Gerar IA" do stepper aparecer. Senao, solta.
+  for (const [prefix, group] of groups) {
+    const transcript = group.__transcript;
+    const materials = { ...group };
+    delete materials.__transcript;
+
+    // Agrupa quando tem video OU transcricao (mesmo sem outros materiais), pra
+    // o botao "Gerar IA" aparecer e os materiais do banco se encaixarem.
     const hasVideo = !!materials.video;
     const materialCount = Object.keys(materials).length;
-    if (materialCount === 1 && !hasVideo) {
+    if (materialCount === 1 && !hasVideo && !transcript) {
       result.push(Object.values(materials)[0]);
       continue;
     }
+    const anchorPath =
+      materials.video?.path || transcript?.path || Object.values(materials)[0]?.path;
     const cleanTitle = prefix.replace(/[-_]+$/, '').replace(/-/g, ' ');
     result.push({
       type: 'lesson-group',
       title: cleanTitle,
       prefix,
-      path: materials.video?.path || Object.values(materials)[0].path,
+      path: anchorPath,
       materials,
     });
   }
@@ -247,6 +272,10 @@ const buildDriveContent = (driveItems) => {
       }
     } else if (VIDEO_EXTENSIONS.test(item.name)) {
       // So videos disparam agrupamento; materiais vem do banco via augmentWithDbMaterials
+      items.push({ type: 'lesson', title: item.name, path: item.id });
+    } else if (TRANSCRIPT_SUFFIX.test(item.name)) {
+      // Transcricao solta (curso de leitura): ancora um grupo mesmo sem video.
+      // Em curso normal ela tem o mesmo prefixo do video e so se junta ao grupo.
       items.push({ type: 'lesson', title: item.name, path: item.id });
     }
   }

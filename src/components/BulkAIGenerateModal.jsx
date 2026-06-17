@@ -5,7 +5,7 @@ import { generateIa, generatePrequestions } from "../utils/progressApi";
 const KIND_OPTIONS = [
   { key: "prequiz", label: "Pre-Quiz", icon: "🎯" },
   { key: "resumo", label: "Resumo", icon: "📄" },
-  { key: "exemplos", label: "Exemplos", icon: "💡" },
+  { key: "exemplos", label: "Pratica", icon: "💪" },
   { key: "piada", label: "Piada", icon: "😄" },
   { key: "quiz", label: "Quiz", icon: "❓" },
   { key: "flashcards", label: "Flashcards", icon: "🔁" },
@@ -57,9 +57,17 @@ const BulkAIGenerateModal = ({
   onGenerated,
 }) => {
   const [selectedLessons, setSelectedLessons] = useState(() => new Set());
-  // Default: todos os tipos marcados — usuário desmarca o que não quer.
+  // Curso de leitura: o "resumo" ja eh a propria leitura (gerada rica). Gerar
+  // de novo sobrescreveria pela versao fraca — entao vem desmarcado por padrao.
+  const isReadingCourse = / - Leitura$/i.test(courseTitle || "");
+  // Default: todos os tipos marcados (menos resumo em curso de leitura).
   const [selectedKinds, setSelectedKinds] = useState(
-    () => new Set(KIND_OPTIONS.map((opt) => opt.key)),
+    () =>
+      new Set(
+        KIND_OPTIONS.map((opt) => opt.key).filter(
+          (k) => !(isReadingCourse && k === "resumo"),
+        ),
+      ),
   );
   const [model, setModel] = useState("deepseek-v4-flash");
   const [loading, setLoading] = useState(false);

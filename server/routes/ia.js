@@ -1,10 +1,11 @@
 import express from 'express';
 import { query } from '../../db/index.js';
 import { generateForLesson } from '../ai/generator.js';
+import { generateReadingModule } from '../ai/readingCourse.js';
 import { chatWithLesson } from '../ai/chat.js';
 import { generatePrequestionsForLesson } from '../ai/prequestions.js';
 import { DEFAULT_MODEL as DEEPSEEK_DEFAULT_MODEL } from '../ai/deepseek.js';
-import { getCoursesPath } from '../config.js';
+import { getCoursesPath, getCourseSource } from '../config.js';
 
 const router = express.Router();
 
@@ -43,6 +44,36 @@ router.post('/api/ia/generate', async (req, res) => {
           ? 422
           : 500;
     res.status(code).json({ error: err.message, code: err.code });
+  }
+});
+
+// Gera o curso de leitura de UM modulo (a IA agrupa as aulas e condensa as
+// transcricoes em .txt). So funciona em modo filesystem (escreve em disco).
+router.post('/api/ia/reading-course/module', async (req, res) => {
+  try {
+    if (getCourseSource() === 'drive') {
+      return res.status(400).json({
+        error: 'Gerar curso de leitura so funciona no modo local (filesystem). Troque COURSE_SOURCE.',
+      });
+    }
+    const { courseTitle, modulePath, moduleTitle, index, model } = req.body || {};
+    if (!courseTitle || !modulePath) {
+      return res.status(400).json({ error: 'courseTitle e modulePath obrigatorios' });
+    }
+    if (!process.env.DEEPSEEK_API_KEY) {
+      return res.status(500).json({ error: 'DEEPSEEK_API_KEY nao configurada no .env' });
+    }
+    const out = await generateReadingModule({
+      coursesPath: getCoursesPath(),
+      courseTitle,
+      modulePath,
+      moduleTitle: moduleTitle || modulePath,
+      index: Number(index) || 1,
+      model: model || DEEPSEEK_DEFAULT_MODEL,
+    });
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err.message, code: err.code });
   }
 });
 

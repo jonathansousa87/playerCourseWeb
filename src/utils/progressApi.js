@@ -293,6 +293,20 @@ export const generateIa = ({ courseTitle, lessonPrefix, kinds, model }) =>
     return data;
   });
 
+// === Curso de leitura ===
+// Gera o curso de leitura de UM modulo (a IA agrupa as aulas e condensa as
+// transcricoes em .txt). So funciona em modo local (filesystem).
+export const generateReadingModule = ({ courseTitle, modulePath, moduleTitle, index, model }) =>
+  fetch(`${API_BASE}/api/ia/reading-course/module`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle, modulePath, moduleTitle, index, model }),
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  });
+
 // === Pre-questoes (Carpenter & Toftness 2017) ===
 // Retorna { questions, lastAttempt, generatedAt } ou { questions: null }
 // se ainda nao foi gerado pra essa aula.

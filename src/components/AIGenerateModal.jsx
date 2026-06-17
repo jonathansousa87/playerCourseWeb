@@ -7,7 +7,7 @@ import { generateIa, generatePrequestions } from "../utils/progressApi";
 const KIND_OPTIONS = [
   { key: "prequiz", label: "Pre-Quiz (perguntas-iscas)", icon: "🎯", color: "yellow" },
   { key: "resumo", label: "Resumo", icon: "📄", color: "emerald" },
-  { key: "exemplos", label: "Exemplos praticos", icon: "💡", color: "amber" },
+  { key: "exemplos", label: "Pratica", icon: "💪", color: "amber" },
   { key: "piada", label: "Piada da aula", icon: "😄", color: "pink" },
   { key: "quiz", label: "Quiz", icon: "❓", color: "purple" },
   { key: "flashcards", label: "Flashcards", icon: "🔁", color: "cyan" },

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
   CheckCircle, Circle, Sparkles, ArrowLeft, Check,
-  Target, Play, FileText, Lightbulb, Coffee, HelpCircle, Repeat, PenLine,
+  Target, Play, FileText, Coffee, HelpCircle, Repeat, PenLine, Dumbbell,
 } from "lucide-react";
 import { getMediaUrl } from "../utils/fileUtils";
 import VideoPlayer from "./VideoPlayer";
@@ -21,7 +21,7 @@ const STEP_CONFIG = [
   { key: "prequiz", label: "Pre-Quiz", Icon: Target, requiresVideo: true },
   { key: "video", label: "Video", Icon: Play },
   { key: "resumo", label: "Resumo", Icon: FileText },
-  { key: "exemplos", label: "Exemplos", Icon: Lightbulb },
+  { key: "exemplos", label: "Pratica", Icon: Dumbbell },
   { key: "piada", label: "Pausa", Icon: Coffee },
   { key: "quiz", label: "Quiz", Icon: HelpCircle },
   { key: "flashcards", label: "Flashcards", Icon: Repeat },

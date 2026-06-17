@@ -34,17 +34,17 @@ const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   }, [fileUrl]);
 
   if (status === "loading") {
-    return <LoadingState message="Carregando exemplos..." />;
+    return <LoadingState message="Carregando pratica..." />;
   }
 
   if (status === "error") {
-    return <ErrorState message="Erro ao carregar exemplos." />;
+    return <ErrorState message="Erro ao carregar a pratica." />;
   }
 
   if (status === "empty") {
     return (
       <div className="flex items-center justify-center h-full text-slate-400">
-        Nenhum exemplo encontrado
+        Nenhuma pratica encontrada
       </div>
     );
   }
