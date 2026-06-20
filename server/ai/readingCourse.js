@@ -255,21 +255,26 @@ const generateReadingModuleFs = async ({
   instruction = '',
   autoTranscribe = true,
   language = 'pt',
+  onProgress = () => {},
 }) => {
   const moduleDir = join(coursesPath, courseTitle, modulePath);
 
   // Fase 0: aulas sem .txt sao transcritas pelo WhisperX antes de tudo.
   let transcription = null;
   if (autoTranscribe) {
+    onProgress({ type: 'transcricao', status: 'start' });
     transcription = await transcribeMissingTranscripts(moduleDir, language);
   }
+  onProgress({ type: 'transcricao', status: 'done', ...(transcription || {}) });
 
   const transcripts = await collectModuleTranscripts(moduleDir);
   if (transcripts.length === 0) {
+    onProgress({ type: 'plano', total: 0 });
     return { module: moduleTitle, skipped: 'sem transcricoes', transcription, created: [] };
   }
 
   const plan = await planGrouping({ moduleTitle, transcripts, model });
+  onProgress({ type: 'plano', total: plan.length });
 
   const outRoot = join(coursesPath, `${courseTitle} - Leitura`);
   const readingCourseTitle = `${courseTitle} - Leitura`;
@@ -303,43 +308,34 @@ const generateReadingModuleFs = async ({
   // Condensa as aulas planejadas em paralelo (ate 4 por vez). A ordem do
   // arquivo (NN) segue a posicao no plano, nao a de conclusao.
   const created = await mapPool(plan, 4, async (lesson, idx) => {
+    onProgress({ type: 'aula', status: 'start', i: idx, title: cleanLessonTitle(lesson.title) });
     const title = cleanLessonTitle(lesson.title);
     const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
+    let res;
     try {
       const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language });
-      if (!out) return { title, ok: false, error: 'transcricao vazia' };
-
-      const fileTitle = `${pad2(idx + 1)} ${safeName(title)}`;
-      const fileName = `${fileTitle}_dub.txt`;
-      await fs.writeFile(join(outDir, fileName), out.text, 'utf8');
-
-      // Grava a aula de leitura tambem como material "resumo" no banco (keyed
-      // por course_title + lesson_prefix, igual ao pipeline normal), pra render
-      // rico direto, sem depender do prompt generico de resumo. O lesson_prefix
-      // bate com o que a descoberta gera pra a transcricao (nome sem _dub.txt).
-      try {
-        await query(
-          `INSERT INTO lesson_materials (course_title, lesson_prefix, kind, content)
-           VALUES ($1, $2, 'resumo', $3)
-           ON CONFLICT (course_title, lesson_prefix, kind)
-           DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
-          [`${courseTitle} - Leitura`, fileTitle, out.text],
-        );
-      } catch {
-        // Se o banco falhar, o .txt ainda permite gerar o resumo via "Gerar IA".
+      if (!out) {
+        res = { title, ok: false, error: 'transcricao vazia' };
+      } else {
+        const fileTitle = `${pad2(idx + 1)} ${safeName(title)}`;
+        const fileName = `${fileTitle}_dub.txt`;
+        await fs.writeFile(join(outDir, fileName), out.text, 'utf8');
+        try {
+          await query(
+            `INSERT INTO lesson_materials (course_title, lesson_prefix, kind, content)
+             VALUES ($1, $2, 'resumo', $3)
+             ON CONFLICT (course_title, lesson_prefix, kind)
+             DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
+            [`${courseTitle} - Leitura`, fileTitle, out.text],
+          );
+        } catch { /* DB falhou: o .txt ainda permite gerar o resumo via "Gerar IA". */ }
+        res = { title, file: fileName, prefix: fileTitle, sources: sources.map((s) => s.title), ok: true, usage: out.usage };
       }
-
-      return {
-        title,
-        file: fileName,
-        prefix: fileTitle, // lesson_prefix no curso "- Leitura" (pra "Gerar IA")
-        sources: sources.map((s) => s.title),
-        ok: true,
-        usage: out.usage,
-      };
     } catch (err) {
-      return { title, ok: false, error: err.message };
+      res = { title, ok: false, error: err.message };
     }
+    onProgress({ type: 'aula', status: 'done', i: idx, title, ok: res.ok });
+    return res;
   });
 
   return { module: moduleTitle, outDir, transcription, created };
@@ -352,6 +348,7 @@ const generateReadingModuleFs = async ({
 const generateReadingModuleDrive = async ({
   courseTitle, modulePath, moduleTitle, index = 1,
   model = DEFAULT_MODEL, instruction = '', language = 'pt',
+  onProgress = () => {},
 }) => {
   const drive = await import('../drive/index.js');
   const { getDriveFolderId } = await import('../config.js');
@@ -360,6 +357,7 @@ const generateReadingModuleDrive = async ({
 
   const moduleFolderId = modulePath;
   const transcription = { transcribed: 0, failed: [], skipped: true };
+  onProgress({ type: 'transcricao', status: 'done', ...transcription });
 
   const files = drive.flattenFiles(await drive.listFilesRecursive(moduleFolderId));
   const transcripts = files
@@ -368,10 +366,12 @@ const generateReadingModuleDrive = async ({
     .sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' }))
     .map((t, id) => ({ id, ...t }));
   if (transcripts.length === 0) {
+    onProgress({ type: 'plano', total: 0 });
     return { module: moduleTitle, skipped: 'sem transcricoes', transcription, created: [] };
   }
 
   const plan = await planGrouping({ moduleTitle, transcripts, model });
+  onProgress({ type: 'plano', total: plan.length });
 
   const readingCourseTitle = `${courseTitle} - Leitura`;
   const leituraRootId = await drive.ensureSubfolder(rootId, readingCourseTitle);
@@ -401,7 +401,9 @@ const generateReadingModuleDrive = async ({
 
   const created = await mapPool(plan, 4, async (lesson, idx) => {
     const title = cleanLessonTitle(lesson.title);
+    onProgress({ type: 'aula', status: 'start', i: idx, title });
     const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
+    let res;
     try {
       const parts = [];
       for (const s of sources) {
@@ -412,28 +414,28 @@ const generateReadingModuleDrive = async ({
       const out = await condenseText({
         lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language,
       });
-      if (!out) return { title, ok: false, error: 'transcricao vazia' };
-
-      const fileTitle = `${pad2(idx + 1)} ${safeName(title)}`;
-      const fileName = `${fileTitle}_dub.txt`;
-      await drive.uploadText(outFolderId, fileName, out.text);
-      try {
-        await query(
-          `INSERT INTO lesson_materials (course_title, lesson_prefix, kind, content)
-           VALUES ($1, $2, 'resumo', $3)
-           ON CONFLICT (course_title, lesson_prefix, kind)
-           DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
-          [readingCourseTitle, fileTitle, out.text],
-        );
-      } catch { /* DB falhou: o .txt ja esta no Drive */ }
-
-      return {
-        title, file: fileName, prefix: fileTitle,
-        sources: sources.map((s) => s.title), ok: true, usage: out.usage,
-      };
+      if (!out) {
+        res = { title, ok: false, error: 'transcricao vazia' };
+      } else {
+        const fileTitle = `${pad2(idx + 1)} ${safeName(title)}`;
+        const fileName = `${fileTitle}_dub.txt`;
+        await drive.uploadText(outFolderId, fileName, out.text);
+        try {
+          await query(
+            `INSERT INTO lesson_materials (course_title, lesson_prefix, kind, content)
+             VALUES ($1, $2, 'resumo', $3)
+             ON CONFLICT (course_title, lesson_prefix, kind)
+             DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
+            [readingCourseTitle, fileTitle, out.text],
+          );
+        } catch { /* DB falhou: o .txt ja esta no Drive */ }
+        res = { title, file: fileName, prefix: fileTitle, sources: sources.map((s) => s.title), ok: true, usage: out.usage };
+      }
     } catch (err) {
-      return { title, ok: false, error: err.message };
+      res = { title, ok: false, error: err.message };
     }
+    onProgress({ type: 'aula', status: 'done', i: idx, title, ok: res.ok });
+    return res;
   });
 
   return { module: moduleTitle, outFolderId, transcription, created };

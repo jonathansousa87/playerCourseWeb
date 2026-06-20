@@ -1,11 +1,10 @@
 import React, { useState } from "react";
-import { ArrowLeft, Sparkles, NotebookPen, AlertTriangle, FileText, BookOpenText } from "lucide-react";
+import { ArrowLeft, Sparkles, NotebookPen, AlertTriangle, BookOpenText } from "lucide-react";
 import { CourseProvider } from "./CourseContext";
 import ModuleItem from "./ModuleItem";
 import WeeklyDiaryModal from "./WeeklyDiaryModal";
 import BulkAIGenerateModal from "./BulkAIGenerateModal";
 import ReadingCourseModal from "./ReadingCourseModal";
-import TechnicalDiaryReviewModal from "./TechnicalDiaryReviewModal";
 import {
   countLessons,
   countCompletedLessons,
@@ -28,7 +27,6 @@ const LessonsView = ({
   courseContextValue,
   onMaterialsChanged,
 }) => {
-  const [showTechDiary, setShowTechDiary] = useState(false);
   const [showReadingModal, setShowReadingModal] = useState(false);
   const courseProgress = completedLessons[selectedCourse.title] || {};
   const totalLessons = countLessons(selectedCourse.content);
@@ -45,9 +43,9 @@ const LessonsView = ({
     <CourseProvider value={courseContextValue}>
       <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100">
         <div className="border-b border-slate-800/60 bg-slate-900/50 backdrop-blur-sm sticky top-0 z-10">
-          <div className="w-full max-w-6xl mx-auto px-6 lg:px-10 xl:px-14 py-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-4">
+          <div className="w-full px-6 lg:px-10 xl:px-14 py-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-4 min-w-0 flex-1">
                 <button
                   onClick={onBack}
                   title="Voltar para cursos"
@@ -56,8 +54,8 @@ const LessonsView = ({
                   <ArrowLeft className="w-4 h-4" strokeWidth={2.5} />
                   <span className="text-xs font-medium">Voltar</span>
                 </button>
-                <div>
-                  <h2 className="text-lg font-bold text-slate-100 leading-tight">
+                <div className="min-w-0">
+                  <h2 className="text-lg font-bold text-slate-100 leading-tight truncate" title={selectedCourse.title}>
                     {selectedCourse.title}
                   </h2>
                   <p className="text-sm text-slate-400 mt-0.5">
@@ -65,7 +63,7 @@ const LessonsView = ({
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-shrink-0">
                 <button
                   onClick={() => setShowReadingModal(true)}
                   className="flex items-center gap-2 px-3.5 py-2 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 rounded-xl transition-all text-sm text-emerald-300 hover:text-emerald-200"
@@ -81,14 +79,6 @@ const LessonsView = ({
                 >
                   <Sparkles className="w-4 h-4" />
                   <span className="hidden sm:inline">Gerar IA</span>
-                </button>
-                <button
-                  onClick={() => setShowTechDiary(true)}
-                  className="flex items-center gap-2 px-3.5 py-2 bg-rose-600/15 hover:bg-rose-600/25 border border-rose-500/20 rounded-xl transition-all text-sm text-rose-300 hover:text-rose-200"
-                  title="Revisar os diarios tecnicos das aulas deste curso"
-                >
-                  <FileText className="w-4 h-4" />
-                  <span className="hidden sm:inline">Diario tecnico</span>
                 </button>
                 <button
                   onClick={() => setShowDiaryModal(true)}
@@ -115,7 +105,7 @@ const LessonsView = ({
           </div>
         </div>
 
-        <div className="w-full max-w-6xl mx-auto px-6 lg:px-10 xl:px-14 py-6">
+        <div className="w-full px-6 lg:px-10 xl:px-14 py-6">
           {weakModules > 0 && (
             <div className="mb-5 flex items-center gap-3 bg-red-950/25 border border-red-500/25 rounded-xl px-4 py-3">
               <AlertTriangle className="w-5 h-5 text-red-300 flex-shrink-0" />
@@ -146,13 +136,6 @@ const LessonsView = ({
         <WeeklyDiaryModal
           courseTitle={selectedCourse.title}
           onClose={() => setShowDiaryModal(false)}
-        />
-      )}
-      {showTechDiary && (
-        <TechnicalDiaryReviewModal
-          courseTitle={selectedCourse.title}
-          courseContent={selectedCourse.content}
-          onClose={() => setShowTechDiary(false)}
         />
       )}
       <BulkAIGenerateModal

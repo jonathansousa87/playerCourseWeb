@@ -16,6 +16,7 @@ import quizRouter from './server/routes/quiz.js';
 import statsRouter from './server/routes/stats.js';
 import iaRouter from './server/routes/ia.js';
 import typingRouter from './server/routes/typing.js';
+import maintenanceRouter from './server/routes/maintenance.js';
 
 const app = express();
 
@@ -47,6 +48,7 @@ app.use(quizRouter);
 app.use(statsRouter);
 app.use(iaRouter);
 app.use(typingRouter);
+app.use(maintenanceRouter);
 
 const PORT = Number(process.env.PORT) || 3001;
 app.listen(PORT, async () => {

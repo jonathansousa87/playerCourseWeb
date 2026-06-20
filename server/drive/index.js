@@ -207,28 +207,34 @@ export const findTranscriptInDrive = async (courseTitle, lessonPrefix) => {
   const folderId = getDriveFolderId();
   if (!folderId) throw new Error('DRIVE_COURSES_FOLDER_ID nao configurado');
 
-  const courseFolders = await listFolders(folderId);
-  const courseFolder = courseFolders.find((f) => f.name === courseTitle);
-  if (!courseFolder) throw new Error(`Curso "${courseTitle}" nao encontrado no Drive`);
+  // Uma tentativa de busca (usa o cache de listagem).
+  const attempt = async () => {
+    const courseFolders = await listFolders(folderId);
+    const courseFolder = courseFolders.find((f) => f.name === courseTitle);
+    if (!courseFolder) return null;
 
-  const tree = await listFilesRecursive(courseFolder.id);
-  const allFiles = flattenFiles(tree);
+    const allFiles = flattenFiles(await listFilesRecursive(courseFolder.id));
+    const txt = allFiles.find(
+      (f) =>
+        f.name.startsWith(lessonPrefix) &&
+        /_dub(?:\.[a-z]{2,3}(?:-[a-zA-Z]{2,4})?)?\.txt$/i.test(f.name) &&
+        !/_(?:flashcards_anki|resumo|exemplos|quiz|diario_tecnico)_dub_\d+/i.test(f.name),
+    );
+    if (txt) return { fileId: txt.id, name: txt.name };
+    const vtt = allFiles.find(
+      (f) => f.name.startsWith(lessonPrefix) && /_dub(?:\.[a-z-]+)?\.vtt$/i.test(f.name),
+    );
+    return vtt ? { fileId: vtt.id, name: vtt.name } : null;
+  };
 
-  // Prioriza .txt, fallback para .vtt (mesma logica do filesystem)
-  const txt = allFiles.find(
-    (f) =>
-      f.name.startsWith(lessonPrefix) &&
-      /_dub(?:\.[a-z]{2,3}(?:-[a-zA-Z]{2,4})?)?\.txt$/i.test(f.name) &&
-      !/_(?:flashcards_anki|resumo|exemplos|quiz|diario_tecnico)_dub_\d+/i.test(f.name),
-  );
-  if (txt) return { fileId: txt.id, name: txt.name };
-
-  const vtt = allFiles.find(
-    (f) =>
-      f.name.startsWith(lessonPrefix) &&
-      /_dub(?:\.[a-z-]+)?\.vtt$/i.test(f.name),
-  );
-  return vtt ? { fileId: vtt.id, name: vtt.name } : null;
+  // Se nao achou, o cache de listagem pode estar desatualizado (curso/arquivo
+  // recem-criado, ex.: curso de leitura). Limpa e tenta de novo antes de desistir.
+  let result = await attempt();
+  if (!result) {
+    clearCache();
+    result = await attempt();
+  }
+  return result;
 };
 
 // === Escrita no Drive ===
@@ -320,6 +326,22 @@ export const downloadToFile = async (fileId, destPath) => {
 export const deleteFile = async (fileId) => {
   await getDrive().files.delete({ fileId });
   clearCache();
+};
+
+// Renomeia um arquivo/pasta por id.
+export const renameFile = async (fileId, name) => {
+  await getDrive().files.update({ fileId, requestBody: { name } });
+  clearCache();
+};
+
+// Acha uma subpasta por nome exato dentro de um parent. Retorna {id,name} ou null.
+export const findFolderByName = async (parentId, name) => {
+  const { data } = await getDrive().files.list({
+    q: `name = ${q(name)} and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+    fields: 'files(id, name)',
+    pageSize: 1,
+  });
+  return data.files?.[0] || null;
 };
 
 export { SCOPES };

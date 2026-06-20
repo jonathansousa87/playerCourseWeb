@@ -27,25 +27,49 @@ const reachable = async () => {
   }
 };
 
-// Garante o Kokoro no ar. Se cair, tenta subir o container (configuravel) e
-// espera responder. Em docker o boot + carga do modelo leva ~15-30s.
+// Aquece o modelo: o /v1/audio/voices responde ANTES do modelo conseguir
+// sintetizar (cold-start). Sem isso, a 1ª fala do 1º podcast falhava. Faz um
+// clip minusculo e so retorna quando o Kokoro de fato gera audio.
+const warmup = async () => {
+  for (let i = 0; i < 15; i++) {
+    try {
+      const r = await fetch(`${url()}/v1/audio/speech`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'kokoro', input: 'ok', voice: 'pf_dora', lang_code: 'p', response_format: 'wav', speed: 1.0 }),
+      });
+      if (r.ok) {
+        const b = Buffer.from(await r.arrayBuffer());
+        if (b.length > 256) return;
+      }
+    } catch { /* ainda carregando */ }
+    await sleep(2000);
+  }
+  // Nao aquecida em ~30s: segue mesmo assim (o synthesize ainda re-tenta).
+};
+
+// Garante o Kokoro no ar E com o modelo pronto pra sintetizar. Se cair, tenta
+// subir o container (configuravel). Em docker o boot + carga leva ~15-30s.
 export const ensureServer = async () => {
-  if (await reachable()) return;
-
-  const startCmd = (process.env.KOKORO_START_CMD ?? 'docker start kokoro-container').trim();
-  if (startCmd) {
-    await new Promise((resolve) => {
-      const p = spawn(startCmd, { shell: true, stdio: 'ignore' });
-      p.on('close', resolve);
-      p.on('error', resolve);
-    });
+  let up = await reachable();
+  if (!up) {
+    const startCmd = (process.env.KOKORO_START_CMD ?? 'docker start kokoro-container').trim();
+    if (startCmd) {
+      await new Promise((resolve) => {
+        const p = spawn(startCmd, { shell: true, stdio: 'ignore' });
+        p.on('close', resolve);
+        p.on('error', resolve);
+      });
+    }
+    for (let i = 0; i < 60; i++) {
+      await sleep(1000);
+      if (await reachable()) { up = true; break; }
+    }
+    if (!up) {
+      throw err('NO_KOKORO', 'Kokoro nao respondeu em :8880 (suba o container kokoro ou ajuste KOKORO_URL/KOKORO_START_CMD)');
+    }
   }
-
-  for (let i = 0; i < 60; i++) {
-    await sleep(1000);
-    if (await reachable()) return;
-  }
-  throw err('NO_KOKORO', 'Kokoro nao respondeu em :8880 (suba o container kokoro ou ajuste KOKORO_URL/KOKORO_START_CMD)');
+  await warmup();
 };
 
 // Workarounds de pronuncia PT-BR (lang_code "p" + eSpeak), iguais ao DubAI:
@@ -83,7 +107,9 @@ export const synthesize = async ({ text, voice, speed = 1.0, langCode = 'p' }) =
     },
   };
   let lastErr;
-  for (let i = 0; i < 3; i++) {
+  const ATTEMPTS = 4;
+  for (let i = 0; i < ATTEMPTS; i++) {
+    if (i > 0) await sleep(1500 * i); // backoff: cobre hiccup/cold-start do Kokoro
     try {
       const r = await fetch(`${url()}/v1/audio/speech`, {
         method: 'POST',

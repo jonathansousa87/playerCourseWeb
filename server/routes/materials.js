@@ -21,6 +21,22 @@ router.get('/api/materials/:course/:prefix/:kind', async (req, res) => {
   }
 });
 
+// GET /api/materials-by-kind/:course/:kind — lista as aulas (lesson_prefix) que
+// tem aquele material no curso. Usado pela tela de revisao (aba Diario tecnico).
+// Base distinta de /api/materials/... pra nao colidir com /:course/:prefix/:kind.
+router.get('/api/materials-by-kind/:course/:kind', async (req, res) => {
+  const { course, kind } = req.params;
+  try {
+    const { rows } = await query(
+      'SELECT lesson_prefix, updated_at FROM lesson_materials WHERE course_title = $1 AND kind = $2 ORDER BY lesson_prefix',
+      [dec(course), kind],
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/materials/:course/:prefix  — lista os kinds disponíveis no DB
 router.get('/api/materials/:course/:prefix', async (req, res) => {
   const { course, prefix } = req.params;

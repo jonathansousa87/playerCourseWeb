@@ -360,39 +360,39 @@ Retorne APENAS o markdown, sem fences.`.trim();
 // (quais viram uma aula de leitura unica, quais ficam isoladas).
 
 export const READING_PLAN_SYSTEM =
-  'Voce eh um designer instrucional. Recebe a lista de aulas (transcricoes) de um modulo ' +
-  'e decide como reorganiza-las num curso de LEITURA enxuto. Responda SEMPRE com JSON puro, ' +
-  'sem texto antes ou depois.';
+  'Voce eh um designer instrucional. Recebe as aulas (transcricoes) de um modulo e as reorganiza ' +
+  'num curso de LEITURA coeso: combina aulas curtas relacionadas (tende a ~metade do total), mas ' +
+  'cada aula resultante cobre INTEGRALMENTE suas fontes (sem ficar rasa). Responda SEMPRE com ' +
+  'JSON puro, sem texto antes ou depois.';
 
 // lessons: [{ id: number, title: string }]
 export const buildReadingPlanPrompt = ({ moduleTitle, lessons }) => `
 Modulo: ${moduleTitle}
 
-Abaixo a lista de aulas em video deste modulo (na ordem original). O curso original eh
-"inchado": muitos videos curtos que, em texto, viram UMA aula. Seu trabalho eh planejar um
-curso de LEITURA ENXUTO, agrupando AGRESSIVAMENTE as aulas que tratam do mesmo assunto.
+Abaixo a lista de aulas em video deste modulo (na ordem original). Planeje um curso de LEITURA
+COESO: combine aulas curtas RELACIONADAS (mesmo tema) em aulas de leitura maiores, sem perder
+conteudo. Busque o EQUILIBRIO — nem 1 aula gigante e rasa, nem 1-pra-1.
 
-Meta: reduzir bastante o numero de aulas. Um modulo com muitas aulas curtas costuma virar
-algo como 1/3 a 1/2 do total. Cada aula de leitura resultante deve ter substancia
-(normalmente combinando 2 a 5 aulas curtas).
+Meta: um modulo com varias aulas curtas costuma virar ~METADE (ex.: 5 aulas -> 2 ou 3 aulas de
+leitura). Cada aula de leitura normalmente reune 2 a 3 aulas originais relacionadas.
 
-SEMPRE junte no MESMO grupo:
-- Aulas marcadas como "Parte 1", "Parte 2", "(Parte N)" do mesmo tema.
-- Variacoes incrementais do mesmo topico (ex.: "com 1 parametro" + "com mais de um
-  parametro"; "declarando uma variavel" + "declarando mais de uma variavel").
-- Uma "explicacao" + a "solucao"/"resolucao" correspondente.
-- Sequencias de exercicios ("Explicacao Exercicios", "Resolucao Exercicio 1..N") → uma
-  unica aula tipo "Exercicios resolvidos".
-- Introducoes curtas, avisos e "cuidado ao..." → no grupo do tema vizinho.
-- Varios comandos/funcoes pequenos do mesmo grupo tematico (ex.: funcoes de conversao e
-  formatacao de dados juntas).
+REGRA DE OURO (cobertura): a aula de leitura resultante precisa COBRIR INTEGRALMENTE tudo o que
+as aulas-fonte ensinam — nada raso, nada cortado. Se juntar muita coisa deixaria o texto
+superficial, agrupe MENOS (divida em mais aulas).
+
+Agrupe por afinidade de tema:
+- "Parte 1/2/N" e explicacao+resolucao+desafio do MESMO exercicio: sempre juntos.
+- Aulas vizinhas do mesmo assunto (ex.: contexto/introducao do tema + primeiros passos + detalhes).
+- Uma aula curta de "visao geral/por que" com a primeira aula pratica do mesmo tema.
+
+Mantenha separado quando forem temas claramente distintos e densos o bastante pra aula propria.
+Nao force juntar assuntos sem relacao so pra reduzir o numero.
 
 Regras:
 - Cobrir TODAS as aulas. Cada id deve aparecer em EXATAMENTE um grupo.
+- Evite grupos com mais de ~4 aulas (a nao ser "Parte 1..N" do mesmo tema).
 - Preservar a ordem logica de aprendizado.
 - Titulos claros e diretos, SEM numero no inicio (nada de "1." ou "01").
-- Deixe ISOLADO so quando o topico eh denso e independente o bastante pra uma aula propria.
-- Nao junte assuntos sem relacao so para reduzir o numero — agrupe por afinidade real.
 
 Aulas:
 ${lessons.map((l) => `- [${l.id}] ${l.title}`).join('\n')}

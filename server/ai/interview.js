@@ -6,7 +6,7 @@
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { chatCompletion, DEFAULT_MODEL } from './deepseek.js';
-import { parseTranscript } from './generator.js';
+import { parseTranscript, parseTranscriptRaw } from './generator.js';
 import {
   INTERVIEW_QUESTIONS_SYSTEM,
   buildInterviewQuestionsPrompt,
@@ -68,11 +68,28 @@ const collectModuleText = async (moduleDir) => {
   return parts.filter(Boolean).join('\n\n');
 };
 
+// Drive: modulePath = id da pasta do modulo. Le as transcricoes via Drive API.
+const collectModuleTextDrive = async (moduleFolderId) => {
+  const drive = await import('../drive/index.js');
+  const files = drive.flattenFiles(await drive.listFilesRecursive(moduleFolderId))
+    .filter((f) => TRANSCRIPT_RE.test(f.name) && !MATERIAL_TXT_RE.test(f.name))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  const parts = [];
+  for (const f of files) {
+    try {
+      parts.push(parseTranscriptRaw(await drive.getFileContent(f.id), /\.vtt$/i.test(f.name)));
+    } catch { /* ignora ilegivel */ }
+  }
+  return parts.filter(Boolean).join('\n\n');
+};
+
 export const generateInterviewQuestions = async ({
   coursesPath, courseTitle, modulePath, moduleTitle, model = DEFAULT_MODEL,
 }) => {
-  const moduleDir = join(coursesPath, courseTitle, modulePath);
-  const content = await collectModuleText(moduleDir);
+  const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
+  const content = isDrive
+    ? await collectModuleTextDrive(modulePath)
+    : await collectModuleText(join(coursesPath, courseTitle, modulePath));
   if (content.length < 100) {
     const e = new Error('modulo sem transcricoes suficientes pra entrevista'); e.code = 'EMPTY_MODULE'; throw e;
   }

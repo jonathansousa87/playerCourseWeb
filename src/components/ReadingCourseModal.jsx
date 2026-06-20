@@ -22,6 +22,40 @@ const MATERIAL_KINDS = [
 ];
 const TEXT_KINDS = new Set(["exemplos", "quiz", "piada", "flashcards", "diario"]);
 
+// Concorrencia da fase de materiais (varias aulas ao mesmo tempo). O backend
+// (semaforo do DeepSeek) limita a concorrencia real na API.
+const MAT_CONCURRENCY = 3;
+const runPool = async (items, limit, worker) => {
+  let i = 0;
+  const run = async () => { while (i < items.length) await worker(items[i++]); };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+};
+
+// Bolinha de status de uma aula na pipeline (mostra o paralelismo: varias
+// "doing" pulsando ao mesmo tempo).
+const DOT = {
+  queue: "bg-slate-700",
+  doing: "bg-blue-400 animate-pulse",
+  ok: "bg-emerald-500",
+  fail: "bg-red-500",
+};
+const Dots = ({ states }) => (
+  <div className="flex flex-wrap gap-1 mt-1">
+    {states.map((s, i) => (
+      <span key={i} className={`w-2.5 h-2.5 rounded-sm ${DOT[s] || DOT.queue}`} />
+    ))}
+  </div>
+);
+
+// Prompt padrao do campo "Instrucao extra": modernizar pra o estado da arte do
+// ANO ATUAL (pego do sistema), mesmo que o curso use versoes antigas. O usuario
+// pode editar ou limpar antes de gerar.
+const DEFAULT_INSTRUCTION =
+  `Modernize o conteudo e os exemplos para as versoes e tecnologias mais atuais ` +
+  `disponiveis em ${new Date().getFullYear()} (linguagem, frameworks, bibliotecas, ` +
+  `sintaxe e boas praticas), mesmo que o curso original use versoes antigas. ` +
+  `Mantenha a materia e os conceitos da aula; atualize apenas a forma (codigo, APIs e padroes).`;
+
 // Coleta modulos "folha" (que contem aulas diretamente) preservando o path
 // relativo ao curso, usado pelo backend pra achar as transcricoes.
 // Conta tanto lesson-group (aula ja reconhecida) quanto video "cru" (lesson
@@ -53,15 +87,20 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
   const modules = useMemo(() => collectModules(courseContent), [courseContent]);
   const [selected, setSelected] = useState(() => new Set(modules.map((m) => m.path)));
   const [model, setModel] = useState("deepseek-v4-flash");
-  const [instruction, setInstruction] = useState("");
+  const [instruction, setInstruction] = useState(DEFAULT_INSTRUCTION);
+  // O botao "Gerar" so libera depois que o usuario revisa/ajusta a instrucao
+  // (ex.: fixar a versao certa — Java 25, Spring Boot 4.x). Editar ja marca como
+  // revisado; quem mantem o padrao confirma no checkbox.
+  const [instructionOk, setInstructionOk] = useState(false);
   const [autoTranscribe, setAutoTranscribe] = useState(true);
   const [language, setLanguage] = useState("pt"); // idioma do curso ORIGINAL
-  const [genMaterials, setGenMaterials] = useState(false);
+  const [genMaterials, setGenMaterials] = useState(true);
   const [materialKinds, setMaterialKinds] = useState(
-    () => new Set(["exemplos", "quiz", "flashcards"]),
+    () => new Set(MATERIAL_KINDS.map((k) => k.key)),
   );
   const [loading, setLoading] = useState(false);
   const [current, setCurrent] = useState(null);
+  const [live, setLive] = useState(null); // pipeline ao vivo do modulo atual
   const [done, setDone] = useState([]); // [{ module, created, skipped, error }]
   const cancelRef = useRef(false);
 
@@ -106,9 +145,29 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
     for (const mod of chosen) {
       if (cancelRef.current) break;
       setCurrent(mod.title);
+      setLive({ module: mod.title, transcricao: null, transcribed: 0, leituraTotal: null, aulas: [], mats: null });
       // index = posicao do modulo no curso inteiro (estavel entre rodadas),
       // pra a numeracao das pastas (01, 02, ...) nao colidir ao gerar um por vez.
       const index = modules.findIndex((m) => m.path === mod.path) + 1;
+
+      // Atualiza a pipeline ao vivo conforme os eventos do stream do backend.
+      const onProgress = (ev) =>
+        setLive((L) => {
+          if (!L) return L;
+          if (ev.type === "transcricao") {
+            return { ...L, transcricao: ev.status, transcribed: ev.transcribed ?? L.transcribed };
+          }
+          if (ev.type === "plano") {
+            return { ...L, leituraTotal: ev.total, aulas: Array.from({ length: ev.total }, () => "queue") };
+          }
+          if (ev.type === "aula") {
+            const aulas = L.aulas.slice();
+            aulas[ev.i] = ev.status === "start" ? "doing" : ev.ok ? "ok" : "fail";
+            return { ...L, aulas };
+          }
+          return L;
+        });
+
       try {
         const out = await generateReadingModule({
           courseTitle,
@@ -119,26 +178,36 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
           instruction: instruction.trim(),
           autoTranscribe,
           language,
+          onProgress,
         });
 
         // #6: apos a leitura, gera o resto do "Gerar IA" (sem resumo) pra cada
-        // aula criada, no curso "- Leitura".
+        // aula criada, no curso "- Leitura" — em paralelo (mostra o paralelismo).
         let materials = null;
         const kinds = [...materialKinds];
         const lessons = (out.created || []).filter((c) => c.ok && c.prefix);
         if (genMaterials && kinds.length && lessons.length) {
           const leituraTitle = `${courseTitle} - Leitura`;
-          materials = { ok: 0, fail: 0, total: lessons.length };
-          for (const lesson of lessons) {
-            if (cancelRef.current) break;
-            setCurrent(`${mod.title} — materiais (${materials.ok + materials.fail + 1}/${lessons.length})`);
-            try {
-              await runLessonMaterials(leituraTitle, lesson.prefix, kinds);
-              materials.ok += 1;
-            } catch {
-              materials.fail += 1;
-            }
-          }
+          const states = Array.from({ length: lessons.length }, () => "queue");
+          setLive((L) => (L ? { ...L, mats: { total: lessons.length, states: states.slice() } } : L));
+          materials = { ok: 0, fail: 0, total: lessons.length, errors: [] };
+          const syncMats = () => setLive((L) => (L ? { ...L, mats: { total: lessons.length, states: states.slice() } } : L));
+          await runPool(
+            lessons.map((l, i) => ({ l, i })),
+            MAT_CONCURRENCY,
+            async ({ l, i }) => {
+              if (cancelRef.current) return;
+              states[i] = "doing"; syncMats();
+              try {
+                await runLessonMaterials(leituraTitle, l.prefix, kinds);
+                materials.ok += 1; states[i] = "ok";
+              } catch (err) {
+                materials.fail += 1; states[i] = "fail";
+                materials.errors.push(`${l.prefix}: ${err.message}`);
+              }
+              syncMats();
+            },
+          );
         }
 
         setDone((prev) => [...prev, { module: mod.title, ...out, materials }]);
@@ -147,6 +216,7 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
       }
     }
     setCurrent(null);
+    setLive(null);
     setLoading(false);
   };
 
@@ -187,15 +257,27 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
             </label>
             <textarea
               value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
+              onChange={(e) => { setInstruction(e.target.value); setInstructionOk(true); }}
               disabled={loading}
-              rows={3}
+              rows={4}
               placeholder="Ex.: modernize o conteudo e os exemplos para Spring Boot 4.x e Java 25, mesmo que o curso original use versoes antigas."
               className="mt-1.5 w-full bg-slate-800/70 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 resize-y focus:outline-none focus:border-emerald-500/50 disabled:opacity-50"
             />
             <p className="text-[11px] text-slate-500 mt-1">
               Aplicada na geracao da leitura de cada aula. Tem prioridade sobre a fidelidade a transcricao.
             </p>
+            <label className="flex items-start gap-2 cursor-pointer select-none mt-2">
+              <input
+                type="checkbox"
+                checked={instructionOk}
+                onChange={(e) => setInstructionOk(e.target.checked)}
+                disabled={loading}
+                className="mt-0.5 accent-emerald-500"
+              />
+              <span className="text-[12px] text-amber-300/90">
+                Revisei a instrucao acima (confira as <b>versoes/tecnologias</b>, ex.: Java 25, Spring Boot 4.x — o modelo as vezes chuta versoes antigas).
+              </span>
+            </label>
           </div>
 
           <label className="flex items-start gap-2 cursor-pointer select-none">
@@ -312,8 +394,8 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
                   const on = selected.has(m.path);
                   const result = done.find((d) => d.module === m.title);
                   return (
+                    <div key={m.path}>
                     <button
-                      key={m.path}
                       onClick={() => !loading && toggle(m.path)}
                       disabled={loading}
                       className={`w-full flex items-center gap-2 py-1.5 px-2 rounded text-sm text-left transition-colors ${
@@ -345,7 +427,10 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
                           )}
                           {result.skipped ? "sem transcricao" : `${result.created?.filter((c) => c.ok).length || 0} aulas`}
                           {result.materials && (
-                            <span className="text-amber-400">
+                            <span
+                              className="text-amber-400"
+                              title={result.materials.errors?.join("\n") || undefined}
+                            >
                               {" "}· {result.materials.ok}/{result.materials.total} c/ materiais
                               {result.materials.fail > 0 ? ` (${result.materials.fail} falhou)` : ""}
                             </span>
@@ -353,6 +438,34 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
                         </span>
                       )}
                     </button>
+                    {live?.module === m.title && (
+                      <div className="ml-6 mb-1 mt-1 px-3 py-2 rounded-lg bg-slate-800/40 border border-slate-700/40 text-[11px] text-slate-400 space-y-1.5">
+                        {autoTranscribe && (
+                          <div>
+                            Transcricao:{" "}
+                            {live.transcricao === "start"
+                              ? "em andamento..."
+                              : live.transcricao === "done"
+                                ? `${live.transcribed || 0} feita(s)`
+                                : "—"}
+                          </div>
+                        )}
+                        <div>
+                          Leitura{" "}
+                          {live.leituraTotal != null
+                            ? `(${live.aulas.filter((s) => s === "ok" || s === "fail").length}/${live.leituraTotal})`
+                            : "— preparando..."}
+                          {live.aulas.length > 0 && <Dots states={live.aulas} />}
+                        </div>
+                        {live.mats && (
+                          <div>
+                            Materiais ({live.mats.states.filter((s) => s === "ok" || s === "fail").length}/{live.mats.total})
+                            <Dots states={live.mats.states} />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    </div>
                   );
                 })}
               </div>
@@ -374,6 +487,9 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
             ))}
           </select>
           <div className="flex items-center gap-3">
+            {!loading && !instructionOk && (
+              <span className="text-xs text-amber-400">Revise a instrucao pra liberar</span>
+            )}
             {done.length > 0 && !loading && (
               <span className="text-xs text-slate-400">{okLessons} aulas geradas</span>
             )}
@@ -387,7 +503,8 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
             ) : (
               <button
                 onClick={handleGenerate}
-                disabled={selected.size === 0}
+                disabled={selected.size === 0 || !instructionOk}
+                title={!instructionOk ? "Revise/ajuste a instrucao extra e marque a confirmacao" : undefined}
                 className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Gerar {selected.size > 0 ? selected.size : ""} modulo{selected.size > 1 ? "s" : ""}

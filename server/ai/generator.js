@@ -175,6 +175,20 @@ const promptBuilders = {
   piada: buildPiadaPrompt,
 };
 
+// Roda fn sobre items com no maximo `limit` em paralelo, preservando a ordem.
+const mapPool = async (items, limit, fn) => {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+};
+
 export const generateForLesson = async ({
   userId,
   coursesPath,
@@ -215,11 +229,12 @@ export const generateForLesson = async ({
   );
   const weekLabel = `Semana ${String(weekNumber).padStart(2, '0')}/${now.getFullYear()}`;
 
-  const results = [];
-  for (const kind of kinds) {
+  // Kinds em paralelo (a concorrencia real na API + retry sao garantidos pelo
+  // semaforo do deepseek.js). Cobre tambem chamadas multi-kind (ex.: materiais
+  // gerados apos o curso de leitura).
+  const results = await mapPool(kinds, 4, async (kind) => {
     if (!promptBuilders[kind]) {
-      results.push({ kind, ok: false, error: `kind desconhecido: ${kind}` });
-      continue;
+      return { kind, ok: false, error: `kind desconhecido: ${kind}` };
     }
     try {
       const user = promptBuilders[kind]({ lessonTitle, transcript, weekLabel });
@@ -236,15 +251,13 @@ export const generateForLesson = async ({
       if (kind === 'flashcards') {
         const testCards = parseAnkiFlashcards(cleaned);
         if (testCards.length < 3) {
-          results.push({ kind, ok: false, error: `Flashcards: apenas ${testCards.length} cards parseados (minimo 3). O modelo nao seguiu o formato.` });
-          continue;
+          return { kind, ok: false, error: `Flashcards: apenas ${testCards.length} cards parseados (minimo 3). O modelo nao seguiu o formato.` };
         }
       }
       if (kind === 'quiz') {
         const questionCount = (cleaned.match(/^## \d+\./gm) || []).length;
         if (questionCount < 3 || !cleaned.includes('- [x]')) {
-          results.push({ kind, ok: false, error: `Quiz: ${questionCount} questoes detectadas / sem alternativa [x]. Modelo nao seguiu o formato Markdown.` });
-          continue;
+          return { kind, ok: false, error: `Quiz: ${questionCount} questoes detectadas / sem alternativa [x]. Modelo nao seguiu o formato Markdown.` };
         }
       }
 
@@ -268,11 +281,11 @@ export const generateForLesson = async ({
         );
       }
 
-      results.push(entry);
+      return entry;
     } catch (err) {
-      results.push({ kind, ok: false, error: err.message });
+      return { kind, ok: false, error: err.message };
     }
-  }
+  });
 
   return {
     lessonPrefix,

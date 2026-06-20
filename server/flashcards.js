@@ -177,12 +177,14 @@ export const getDueCards = async ({ userId, courseTitle = null, limit = 50 } = {
     params.push(courseTitle);
     where += ` AND d.course_title = $${params.length}`;
   }
-  // Surface only cards de aulas em que o usuario ja iniciou alguma etapa.
+  // So mostra revisao de aulas com a PIPELINE INTEIRA concluida (sentinela
+  // 'pipeline_done', gravada quando todas as etapas da aula foram completadas).
   where += ` AND EXISTS (
     SELECT 1 FROM step_completions sc
     WHERE sc.user_id = d.user_id
       AND sc.course_title = d.course_title
       AND sc.lesson_prefix = d.lesson_prefix
+      AND sc.step_key = 'pipeline_done'
   )`;
   const { rows } = await query(
     `SELECT c.id, c.front, c.back, c.tags, c.source_timestamp,
@@ -305,6 +307,13 @@ export const getDueSummary = async ({ userId } = {}) => {
      JOIN flashcard_decks d ON d.id = c.deck_id
      LEFT JOIN flashcard_reviews r ON r.card_id = c.id
      WHERE d.user_id = $2
+       AND EXISTS (
+         SELECT 1 FROM step_completions sc
+         WHERE sc.user_id = d.user_id
+           AND sc.course_title = d.course_title
+           AND sc.lesson_prefix = d.lesson_prefix
+           AND sc.step_key = 'pipeline_done'
+       )
      GROUP BY d.course_title`,
     [now, userId],
   );

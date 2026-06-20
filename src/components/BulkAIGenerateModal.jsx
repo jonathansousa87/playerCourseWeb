@@ -25,6 +25,18 @@ const fmtTime = (ms) => {
   return `${m}:${String(rem).padStart(2, "0")}`;
 };
 
+// Roda `worker` sobre os items com no maximo `limit` em paralelo. O backend
+// limita a concorrencia real na API DeepSeek + faz retry/backoff.
+const runPool = async (items, limit, worker) => {
+  let i = 0;
+  const run = async () => {
+    while (i < items.length) await worker(items[i++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+};
+// Teto do front com folga; o limite REAL e o semaforo do backend (DEEPSEEK_CONCURRENCY).
+const PAIR_CONCURRENCY = 6;
+
 // Coleta lesson-groups da arvore preservando a hierarquia de modulos pra exibicao
 const walkTree = (content, depth = 0) => {
   const rows = [];
@@ -177,39 +189,37 @@ const BulkAIGenerateModal = ({
     const hasPodcast = kinds.includes("podcast");
     const serialKinds = kinds.filter((k) => k !== "podcast");
 
+    // Materiais DeepSeek: TODOS os pares (aula x tipo) num pool com teto. O
+    // backend limita a concorrencia real na API e re-tenta em 429/503.
+    const textPairs = [];
     for (const lesson of lessons) {
-      if (cancelRef.current) break;
+      for (const kind of serialKinds) textPairs.push({ lesson, kind });
+    }
+    const textRun = runPool(textPairs, PAIR_CONCURRENCY, async ({ lesson, kind }) => {
+      if (cancelRef.current) return;
       setCurrentPrefix(lesson.prefix);
-      const base = { prefix: lesson.prefix, title: lesson.title, kind: "podcast" };
+      setCurrentKind(kind);
+      const pair = await runPair(lesson, kind);
+      setCompletedPairs((prev) => [...prev, pair]);
+    });
 
-      // Podcast em 2 passos: o ROTEIRO (DeepSeek) sai primeiro, na vez dele na
-      // fila da API; depois o AUDIO (Chatterbox, GPU local) roda EM PARALELO com
-      // os materiais DeepSeek da MESMA aula. So um podcast por vez (a GPU eh unica).
-      let audioPromise = null;
-      if (hasPodcast) {
-        setCurrentKind("podcast");
+    // Podcast: UM por vez (a GPU do Kokoro e unica), em paralelo com o pool acima.
+    const podcastRun = (async () => {
+      if (!hasPodcast) return;
+      for (const lesson of lessons) {
+        if (cancelRef.current) break;
+        const base = { prefix: lesson.prefix, title: lesson.title, kind: "podcast" };
         try {
           const script = await generatePodcastScript({ courseTitle, lessonPrefix: lesson.prefix, model });
-          audioPromise = generatePodcastAudio({ courseTitle, lessonPrefix: lesson.prefix, title: script.title, turns: script.turns, model })
-            .then((out) => ({ ...base, ok: true, error: null, file: `${out.turns} falas — ${out.title}` }))
-            .catch((err) => ({ ...base, ok: false, error: err.message || "erro" }));
+          const out = await generatePodcastAudio({ courseTitle, lessonPrefix: lesson.prefix, title: script.title, turns: script.turns, model });
+          setCompletedPairs((prev) => [...prev, { ...base, ok: true, error: null, file: `${out.turns} falas — ${out.title}` }]);
         } catch (err) {
-          setCompletedPairs((prev) => [...prev, { ...base, ok: false, error: err.message || "erro (roteiro)" }]);
+          setCompletedPairs((prev) => [...prev, { ...base, ok: false, error: err.message || "erro" }]);
         }
       }
+    })();
 
-      for (const kind of serialKinds) {
-        if (cancelRef.current) break;
-        setCurrentKind(kind);
-        const pair = await runPair(lesson, kind);
-        setCompletedPairs((prev) => [...prev, pair]);
-      }
-
-      if (audioPromise) {
-        const pair = await audioPromise;
-        setCompletedPairs((prev) => [...prev, pair]);
-      }
-    }
+    await Promise.all([textRun, podcastRun]);
 
     setCurrentPrefix(null);
     setCurrentKind(null);

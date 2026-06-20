@@ -1,12 +1,15 @@
-import React from "react";
-import { LogOut, Settings, BarChart3, RefreshCw, Keyboard, ChevronRight } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { LogOut, Settings, BarChart3, RefreshCw, Keyboard, ChevronRight, Bell, AlertTriangle, ShieldAlert } from "lucide-react";
 import CourseCard from "./CourseCard";
 import ConfigModal from "./ConfigModal";
+import OrphanCoursesModal from "./OrphanCoursesModal";
+import AdminModal from "./AdminModal";
 import {
   countLessons,
   countCompletedLessons,
   calculateModuleDuration,
 } from "../utils/courseUtils";
+import { fetchFlashcardSummary, fetchOrphanCourses } from "../utils/progressApi";
 import { TYPING_TOTAL } from "../typing/curriculum";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -26,8 +29,36 @@ const CoursesScreen = ({
   onOpenTyping,
   typingCompleted = 0,
   onView,
+  onCoursesChanged,
 }) => {
   const { user, logout } = useAuth();
+
+  // Revisao espacada vencida (por curso) — alimenta o banner + os selos.
+  const [dueByCourse, setDueByCourse] = useState({});
+  useEffect(() => {
+    let alive = true;
+    fetchFlashcardSummary()
+      .then((rows) => {
+        if (!alive) return;
+        const map = {};
+        for (const r of rows || []) if (r.due > 0) map[r.course_title] = r.due;
+        setDueByCourse(map);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const totalDue = Object.values(dueByCourse).reduce((a, b) => a + b, 0);
+
+  // Cursos orfaos (no banco mas nao na fonte atual).
+  const [orphanCount, setOrphanCount] = useState(0);
+  const [showOrphans, setShowOrphans] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
+  const reloadOrphans = () =>
+    fetchOrphanCourses()
+      .then((res) => setOrphanCount((res.orphans || []).length))
+      .catch(() => {});
+  useEffect(() => { reloadOrphans(); }, []);
+
   const totalAllLessons = courses.reduce(
     (sum, c) => sum + countLessons(c.content || []),
     0,
@@ -94,6 +125,14 @@ const CoursesScreen = ({
               <span className="hidden sm:inline">Revisar</span>
             </button>
             <button
+              onClick={() => setShowAdmin(true)}
+              className="flex items-center gap-2 px-3.5 py-2 bg-purple-600/15 hover:bg-purple-600/25 border border-purple-500/20 rounded-xl transition-all text-sm text-purple-300 hover:text-purple-200"
+              title="Modo admin: renomear ou excluir cursos"
+            >
+              <ShieldAlert className="w-4 h-4" />
+              <span className="hidden sm:inline">Admin</span>
+            </button>
+            <button
               onClick={() => setShowConfigModal(true)}
               className="flex items-center gap-2 px-3.5 py-2 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/50 rounded-xl transition-all text-sm text-slate-300 hover:text-white"
               title="Configuracoes"
@@ -114,6 +153,48 @@ const CoursesScreen = ({
       </header>
 
       <main className="w-full px-6 lg:px-10 xl:px-14 py-8">
+        {totalDue > 0 && (
+          <button
+            onClick={() => onView("review")}
+            className="w-full mb-6 flex items-center gap-3 bg-amber-500/10 hover:bg-amber-500/15 border border-amber-500/30 rounded-2xl px-5 py-4 text-left transition-colors"
+          >
+            <div className="p-2 rounded-lg bg-amber-500/20 text-amber-300 flex-shrink-0">
+              <Bell className="w-5 h-5" />
+            </div>
+            <div className="flex-1">
+              <div className="text-amber-100 font-semibold">
+                Voce tem {totalDue} card{totalDue === 1 ? "" : "s"} para revisar
+              </div>
+              <div className="text-amber-300/80 text-xs mt-0.5">
+                A revisao espacada (FSRS) consolida o que voce ja estudou — faca agora pra nao acumular.
+              </div>
+            </div>
+            <span className="px-3 py-1.5 bg-amber-500/20 border border-amber-500/30 rounded-lg text-sm text-amber-200 font-medium flex-shrink-0">
+              Revisar
+            </span>
+          </button>
+        )}
+        {orphanCount > 0 && (
+          <button
+            onClick={() => setShowOrphans(true)}
+            className="w-full mb-6 flex items-center gap-3 bg-rose-500/10 hover:bg-rose-500/15 border border-rose-500/30 rounded-2xl px-5 py-4 text-left transition-colors"
+          >
+            <div className="p-2 rounded-lg bg-rose-500/20 text-rose-300 flex-shrink-0">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div className="flex-1">
+              <div className="text-rose-100 font-semibold">
+                {orphanCount} curso{orphanCount === 1 ? "" : "s"} no banco nao existe{orphanCount === 1 ? "" : "m"} mais na fonte
+              </div>
+              <div className="text-rose-300/80 text-xs mt-0.5">
+                Provavelmente pastas renomeadas/removidas. Revise e decida se limpa os dados (materiais, revisao, progresso).
+              </div>
+            </div>
+            <span className="px-3 py-1.5 bg-rose-500/20 border border-rose-500/30 rounded-lg text-sm text-rose-200 font-medium flex-shrink-0">
+              Revisar
+            </span>
+          </button>
+        )}
         {totalAllLessons > 0 && (
           <div className="mb-8 p-4 bg-slate-800/40 rounded-2xl border border-slate-700/30">
             <div className="flex items-center justify-between mb-2">
@@ -152,12 +233,22 @@ const CoursesScreen = ({
               course.content || [],
               videoDurations || {},
             );
+            const due = dueByCourse[course.title] || 0;
             return (
               <div
                 key={index}
                 onClick={() => onSelectCourse(course)}
-                className="cursor-pointer"
+                className="cursor-pointer relative"
               >
+                {due > 0 && (
+                  <span
+                    className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/90 text-amber-950 text-[11px] font-bold shadow"
+                    title={`${due} card(s) para revisar`}
+                  >
+                    <Bell className="w-3 h-3" />
+                    {due}
+                  </span>
+                )}
                 <CourseCard
                   title={course.title}
                   description={course.description}
@@ -183,6 +274,19 @@ const CoursesScreen = ({
           onPathChange={setCoursesPath}
           onSave={saveCoursesPath}
           onCancel={() => setShowConfigModal(false)}
+        />
+      )}
+      {showOrphans && (
+        <OrphanCoursesModal
+          onClose={() => setShowOrphans(false)}
+          onCleaned={reloadOrphans}
+        />
+      )}
+      {showAdmin && (
+        <AdminModal
+          courses={courses}
+          onClose={() => setShowAdmin(false)}
+          onChanged={() => { onCoursesChanged?.(); reloadOrphans(); }}
         />
       )}
     </div>

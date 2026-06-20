@@ -416,6 +416,7 @@ const MainComponent = () => {
       onOpenTyping={() => setView("typing")}
       typingCompleted={typing.completedCount}
       onView={setView}
+      onCoursesChanged={reloadCourses}
     />
   );
 };

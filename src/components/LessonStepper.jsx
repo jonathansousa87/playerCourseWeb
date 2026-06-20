@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  CheckCircle, Circle, Sparkles, ArrowLeft, Check,
+  CheckCircle, Circle, Sparkles, ArrowLeft, Check, Clock,
   Target, Play, FileText, Coffee, HelpCircle, Repeat, PenLine, Dumbbell, Mic,
 } from "lucide-react";
 import { getMediaUrl } from "../utils/fileUtils";
@@ -19,14 +19,14 @@ import { API_BASE } from "../config";
 // se a aula tem video. Aparece sempre que materials.video existir.
 // "always": step nao depende de arquivos da aula.
 const STEP_CONFIG = [
-  { key: "prequiz", label: "Pre-Quiz", Icon: Target, requiresVideo: true },
+  { key: "prequiz", label: "Pre-Quiz", Icon: Target, requiresTranscript: true },
   { key: "video", label: "Video", Icon: Play },
-  { key: "resumo", label: "Resumo", Icon: FileText },
-  { key: "exemplos", label: "Pratica", Icon: Dumbbell },
-  { key: "piada", label: "Pausa", Icon: Coffee },
   { key: "podcast", label: "Podcast", Icon: Mic },
+  { key: "resumo", label: "Resumo", Icon: FileText },
+  { key: "piada", label: "Pausa", Icon: Coffee },
   { key: "quiz", label: "Quiz", Icon: HelpCircle },
   { key: "flashcards", label: "Flashcards", Icon: Repeat },
+  { key: "exemplos", label: "Pratica", Icon: Dumbbell },
   { key: "pessoal", label: "Meu Resumo", Icon: PenLine, always: true },
 ];
 
@@ -134,11 +134,13 @@ const LessonStepper = ({
 
   // Steps disponiveis:
   // - always: step "pessoal" (sempre)
-  // - requiresVideo: step "prequiz" (so quando ha video — implica que ha transcricao)
+  // - requiresTranscript: step "prequiz" — precisa de transcricao. Ha transcricao
+  //   quando ha video (curso normal) OU quando ha resumo (curso de leitura, que
+  //   nasce de um _dub.txt). Antes exigia video e sumia no curso de leitura.
   // - default: precisa do material correspondente
   const availableSteps = STEP_CONFIG.filter((step) => {
     if (step.always) return true;
-    if (step.requiresVideo) return !!materials.video;
+    if (step.requiresTranscript) return !!(materials.video || materials.resumo);
     return !!materials[step.key];
   });
 
@@ -165,11 +167,14 @@ const LessonStepper = ({
 
   const allComplete = completedCount === availableSteps.length;
 
-  // Check if all steps are done → notify parent
+  // Pipeline completa: avisa o parent (marca a aula) e grava o sentinela
+  // 'pipeline_done' — a revisao espacada so aparece pra aulas 100% concluidas.
   useEffect(() => {
-    if (allComplete && onAllStepsComplete) {
-      onAllStepsComplete(lessonGroup);
+    if (allComplete) {
+      onAllStepsComplete?.(lessonGroup);
+      onStepComplete(`${lessonGroup.prefix}__pipeline_done`);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allComplete]);
 
   const buildFileUrl = (material) => {
@@ -183,6 +188,29 @@ const LessonStepper = ({
   const handleMarkComplete = (stepKey) => {
     onStepComplete(`${lessonGroup.prefix}__${stepKey}`);
   };
+
+  // Conclusao automatica por tempo: so conclui se voce FICAR 1 minuto continuo
+  // na etapa, com a aba ATIVA. Trocar de etapa/aula, sair da pagina ou trocar
+  // de aba antes de 1 min cancela e zera a contagem (precisa ficar de novo).
+  useEffect(() => {
+    if (!activeStep || isStepCompleted(activeStep)) return undefined;
+    let timer = null;
+    const start = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => handleMarkComplete(activeStep), 60_000);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") start();
+      else clearTimeout(timer); // saiu da aba: pausa e zera
+    };
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStep, lessonGroup.prefix]);
 
   // Advance to next available step
   const advanceToNextStep = useCallback(() => {
@@ -530,30 +558,20 @@ const LessonStepper = ({
 // aqui só o titulo do step + botao de marcar como concluido. `title` aceita
 // texto ou nodes (ex.: titulo com subtitulo) e `borderClass` permite o realce
 // de cor por step (ex.: a "pausa" usa borda rosa).
-const StepHeader = ({
-  title,
-  stepKey,
-  isCompleted,
-  onMarkComplete,
-  borderClass = "border-slate-700/40",
-}) => (
+// Sem botao "Concluir": a etapa conclui sozinha apos 1 min nela (ver o timer no
+// LessonStepper). Aqui so mostramos o status.
+const StepHeader = ({ title, isCompleted, borderClass = "border-slate-700/40" }) => (
   <div className={`bg-slate-800/80 py-2 px-4 border-b ${borderClass} flex items-center justify-between`}>
     <h3 className="text-slate-200 font-medium text-sm">{title}</h3>
-    <button
-      onClick={() => onMarkComplete(stepKey)}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-        isCompleted
-          ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/25"
-          : "bg-slate-700/60 hover:bg-slate-600/60 text-slate-300 border border-slate-600/30"
+    <span
+      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${
+        isCompleted ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/25" : "text-slate-500"
       }`}
+      title={isCompleted ? "Etapa concluida" : "Conclui sozinha apos 1 min nesta etapa"}
     >
-      {isCompleted ? (
-        <CheckCircle className="w-3.5 h-3.5" />
-      ) : (
-        <Circle className="w-3.5 h-3.5" />
-      )}
-      {isCompleted ? "Concluido" : "Concluir"}
-    </button>
+      {isCompleted ? <CheckCircle className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
+      {isCompleted ? "Concluido" : "Conclui em 1 min"}
+    </span>
   </div>
 );
 

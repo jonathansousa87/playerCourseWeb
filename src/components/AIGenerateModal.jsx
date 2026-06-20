@@ -36,6 +36,19 @@ const fmtTime = (ms) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
+// Roda `worker` sobre os items com no maximo `limit` em paralelo. O backend
+// (deepseek.js) ainda limita a concorrencia real na API + faz retry/backoff,
+// entao paralelizar aqui e seguro.
+const runPool = async (items, limit, worker) => {
+  let i = 0;
+  const run = async () => {
+    while (i < items.length) await worker(items[i++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+};
+// Teto do front com folga; o limite REAL e o semaforo do backend (DEEPSEEK_CONCURRENCY).
+const KIND_CONCURRENCY = 6;
+
 const AIGenerateModal = ({
   open,
   onClose,
@@ -48,7 +61,7 @@ const AIGenerateModal = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [podcastRunning, setPodcastRunning] = useState(false);
-  const [progress, setProgress] = useState({ current: null, done: [], errors: [] });
+  const [progress, setProgress] = useState({ running: new Set(), done: [], errors: [] });
   const [elapsed, setElapsed] = useState(0);
   const startedAtRef = useRef(null);
 
@@ -93,7 +106,7 @@ const AIGenerateModal = ({
     const kinds = [...selected];
     setLoading(true);
     setError(null);
-    setProgress({ current: null, done: [], errors: [] });
+    setProgress({ running: new Set(), done: [], errors: [] });
 
     const allResults = [];
     const record = (res) => {
@@ -126,11 +139,17 @@ const AIGenerateModal = ({
       }
     }
 
-    for (const kind of serialKinds) {
-      setProgress((p) => ({ ...p, current: kind }));
-      record(await runOne(kind));
-    }
-    setProgress((p) => ({ ...p, current: null }));
+    // Materiais DeepSeek em paralelo (teto KIND_CONCURRENCY).
+    await runPool(serialKinds, KIND_CONCURRENCY, async (kind) => {
+      setProgress((p) => ({ ...p, running: new Set(p.running).add(kind) }));
+      const res = await runOne(kind);
+      record(res);
+      setProgress((p) => {
+        const r = new Set(p.running);
+        r.delete(kind);
+        return { ...p, running: r };
+      });
+    });
 
     if (audioPromise) {
       record(await audioPromise);
@@ -143,7 +162,7 @@ const AIGenerateModal = ({
 
   const handleClose = () => {
     if (loading) return;
-    setProgress({ current: null, done: [], errors: [] });
+    setProgress({ running: new Set(), done: [], errors: [] });
     setError(null);
     setElapsed(0);
     onClose();
@@ -265,7 +284,7 @@ const AIGenerateModal = ({
                 // O podcast roda em paralelo (GPU local), entao fica "gerando..."
                 // junto com a cadeia DeepSeek ate resolver.
                 const isCurrent =
-                  progress.current === kind ||
+                  progress.running?.has(kind) ||
                   (kind === "podcast" && podcastRunning && !done && !err);
                 return (
                   <div

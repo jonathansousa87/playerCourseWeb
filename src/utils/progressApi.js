@@ -131,6 +131,34 @@ export const fetchDueFlashcards = ({ courseTitle, limit = 50 } = {}) => {
 export const fetchFlashcardSummary = () =>
   fetch(`${API_BASE}/api/flashcards/summary`).then(json);
 
+// Lista as aulas (lesson_prefix) que tem determinado material no curso.
+export const fetchMaterialsByKind = (courseTitle, kind) =>
+  fetch(`${API_BASE}/api/materials-by-kind/${enc(courseTitle)}/${kind}`).then(json);
+
+// === Manutencao: cursos orfaos (no banco mas nao na fonte atual) ===
+export const fetchOrphanCourses = () =>
+  fetch(`${API_BASE}/api/maintenance/orphan-courses`).then(json);
+
+export const cleanupCourse = (courseTitle) =>
+  fetch(`${API_BASE}/api/maintenance/course/${enc(courseTitle)}`, { method: "DELETE" }).then(json);
+
+// === Admin: renomear / excluir curso (pasta na fonte + banco) ===
+const jsonOrThrow = async (res) => {
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+};
+
+export const renameCourse = (from, to) =>
+  fetch(`${API_BASE}/api/maintenance/rename-course`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from, to }),
+  }).then(jsonOrThrow);
+
+export const deleteCourseFull = (courseTitle) =>
+  fetch(`${API_BASE}/api/maintenance/delete-course/${enc(courseTitle)}`, { method: "DELETE" }).then(jsonOrThrow);
+
 // rating: 1=Again, 2=Hard, 3=Good, 4=Easy
 // confidence (opcional): 'high' | 'medium' | 'low' — captura pre-flip
 // pra detectar hypercorrection (Metcalfe 2017)
@@ -359,16 +387,49 @@ export const fetchLastInterview = (courseTitle, modulePath) =>
 // === Curso de leitura ===
 // Gera o curso de leitura de UM modulo (a IA agrupa as aulas e condensa as
 // transcricoes em .txt). So funciona em modo local (filesystem).
-export const generateReadingModule = ({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language }) =>
-  fetch(`${API_BASE}/api/ia/reading-course/module`, {
+// Se `onProgress` for passado, consome o stream NDJSON (eventos por aula, em
+// tempo real, mostrando o paralelismo). Sem ele, retorna o JSON normal.
+export const generateReadingModule = async ({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, onProgress }) => {
+  const res = await fetch(`${API_BASE}/api/ia/reading-course/module`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language }),
-  }).then(async (res) => {
+    body: JSON.stringify({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, stream: !!onProgress }),
+  });
+
+  if (!onProgress) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
-  });
+  }
+
+  if (!res.ok || !res.body) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let result = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let ev;
+      try { ev = JSON.parse(line); } catch { continue; }
+      if (ev.type === "fim") result = ev.result;
+      else if (ev.type === "erro") throw new Error(ev.error || "erro na geracao");
+      else onProgress(ev);
+    }
+  }
+  if (!result) throw new Error("stream encerrou sem resultado");
+  return result;
+};
 
 // === Pre-questoes (Carpenter & Toftness 2017) ===
 // Retorna { questions, lastAttempt, generatedAt } ou { questions: null }
