@@ -17,9 +17,12 @@ Sobre os cursos que você já tem: cada aula vira uma unidade de estudo (resumo,
 
 ## Funcionalidades
 
-- **Player + lesson groups** — vídeo (MP4/WEBM/MKV/M3U8/TS), PDF, HTML, Markdown. Arquivos de mesmo prefixo viram uma linha do tempo de etapas: Pré-quiz · Vídeo · Resumo · Exemplos · Pausa · Quiz · Flashcards · Meu Resumo. Sidebar deslizante, layout de 1 a 5 colunas, atalhos de teclado.
+- **Player + lesson groups** — vídeo (MP4/WEBM/MKV/M3U8/TS), PDF, HTML, Markdown. Arquivos de mesmo prefixo viram uma linha do tempo de etapas: Pré-quiz · Vídeo · Resumo · Prática · Pausa · Podcast · Quiz · Flashcards · Meu Resumo. Sidebar deslizante, layout de 1 a 5 colunas, atalhos de teclado.
 - **Fixação** — FSRS por card, tela *Revisar* (cards vencidos de todos os cursos), quiz com tracking (erros viram cards), pré-quiz (Carpenter & Toftness), pomodoro adaptativo, resumo pessoal e diário semanal. O **diário técnico** (gerado por IA) fica como revisão no nível do módulo, fora da pipeline da aula.
-- **IA opcional (DeepSeek)** — gera resumo, quiz, flashcards, exemplos, diário e pré-quiz por aula ou em lote (lê a transcrição `.vtt`). Chat por aula com a transcrição como contexto. Validação antes de salvar.
+- **IA por aula / em lote (DeepSeek)** — gera resumo, quiz, flashcards, diário, pré-quiz e **prática adaptativa** (mão na massa com passo a passo quando a aula é prática; reforço teórico quando é só conceito) a partir da transcrição (`.txt`/`.vtt`). Chat por aula com a transcrição como contexto. Validação antes de salvar.
+- **Curso de leitura por IA** — transforma um curso em vídeo num **curso de leitura** enxuto (`<curso> - Leitura`): agrupa aulas, condensa as transcrições em texto didático e gera **mapas mentais (Mermaid)**. Aulas sem transcrição são transcritas pelo **WhisperX** (GPU/CPU). Curso em **inglês**: transcreve com modelo EN e entrega a leitura em **português** preservando termos técnicos. Opcional: ao terminar, já gera os demais materiais de cada aula (sem refazer o resumo).
+- **Podcast por aula** — a IA roteiriza um diálogo (dev sênior × entrevistadora, com nomes) e o **Kokoro TTS** gera o áudio (~5 min, vozes configuráveis com blend). Player próprio com play/seek, ±10s e controle de velocidade.
+- **Modo Entrevista (por módulo)** — a IA atua como recrutador técnico: 5 perguntas progressivas sobre o módulo; você responde por texto e recebe feedback por pergunta + nota.
 - **Dashboard** — heatmap de consistência, curva de retenção 7d/30d, cards problemáticos/confusos, perfil cognitivo (streak, hora ótima, drift de dificuldade), badges por módulo.
 - **Curso de digitação** — módulo fixo de touch typing PT-BR (ABNT2): currículo progressivo e cumulativo, teclado virtual com dedo certo, som opcional, conclusão por precisão ≥95%, progresso por lição no banco.
 - **Temas** — 4 paletas escuras (petrol, forest, slate, ciano).
@@ -33,8 +36,9 @@ Sobre os cursos que você já tem: cada aula vira uma unidade de estudo (resumo,
 | Backend | Node · Express |
 | Banco | Postgres (Supabase em produção, Docker local em dev) |
 | Auth | Supabase Auth |
-| Fonte dos cursos | Filesystem local **ou** Google Drive |
-| IA | DeepSeek (opcional) |
+| Fonte dos cursos | Filesystem local **ou** Google Drive (leitura **e** escrita) |
+| IA (texto) | DeepSeek (opcional) |
+| Transcrição / Voz | WhisperX (ASR) · Kokoro (TTS do podcast) — opcionais, GPU ou CPU |
 
 ## Setup
 
@@ -77,9 +81,15 @@ VITE_SUPABASE_URL=...       VITE_SUPABASE_ANON_KEY=...
 
 # Opcional — habilita "Gerar IA" e Chat IA
 DEEPSEEK_API_KEY=
+
+# Opcional — transcrição (curso de leitura) e voz (podcast). Ver .env.example.
+WHISPERX_BIN=                 # ex.: ~/miniconda3/envs/whisperx/bin/whisperx  OU  docker exec whisperx-container whisperx
+WHISPERX_DEVICE=             # cuda | cpu | vazio = auto-detecta
+KOKORO_URL=http://127.0.0.1:8880
+KOKORO_START_CMD=docker start kokoro-container   # como subir o Kokoro (docker/conda) — vazio = subo manualmente
 ```
 
-Sem `DEEPSEEK_API_KEY` o app funciona normalmente — só os recursos de IA ficam desativados.
+Sem `DEEPSEEK_API_KEY` o app funciona normalmente — só os recursos de IA ficam desativados. WhisperX/Kokoro só são necessários, respectivamente, para transcrever aulas sem `.txt` e gerar o podcast; o `.env.example` traz todos os campos comentados (incluindo vozes `PODCAST_VOICE_*`, nomes `PODCAST_NAME_*` e modelo EN `WHISPERX_MODEL_EN`).
 
 ## Configuração dos serviços externos
 
@@ -112,13 +122,13 @@ Só se você quer os cursos vindo do Drive (`COURSE_SOURCE=drive`). Caso contrá
 
 1. **https://console.cloud.google.com** → crie/escolha um projeto.
 2. **APIs e Serviços → Biblioteca** → ative a **Google Drive API**.
-3. **APIs e Serviços → Tela de consentimento OAuth**: tipo **External**, e em *Test users* adicione o **seu e-mail** (libera autorizar sem verificação do app). Escopo usado: `.../auth/drive.readonly`.
+3. **APIs e Serviços → Tela de consentimento OAuth**: tipo **External**, e em *Test users* adicione o **seu e-mail**. Escopo: **`.../auth/drive`** (acesso total — necessário porque a plataforma **grava** no Drive: curso de leitura e podcast). Em *Acesso a dados → Adicionar ou remover escopos*, adicione `https://www.googleapis.com/auth/drive` e salve. Esse escopo é **restrito**: para uso próprio funciona (na autorização aparece "app não verificado" → *Avançado → Acessar (não seguro)*); só precisa de verificação do Google para liberar a muitos usuários. (O `drive.file` **não serve**: ele só acessa arquivos que o app criou, e precisamos ler/gravar nas pastas de curso já existentes.)
 4. **APIs e Serviços → Credenciais → Criar credenciais → ID do cliente OAuth → Aplicativo da Web:**
    - **URI de redirecionamento autorizado**: `http://localhost:3001/api/drive/callback` (tem que bater com `GOOGLE_REDIRECT_URI`).
    - Copie **Client ID** → `GOOGLE_CLIENT_ID` e **Client secret** → `GOOGLE_CLIENT_SECRET`.
 5. **ID da pasta de cursos**: abra a pasta no Drive; o ID é o final da URL `drive.google.com/drive/folders/ESTE_ID` → `DRIVE_COURSES_FOLDER_ID`. Cada subpasta dela vira um curso.
 6. No `.env`: `COURSE_SOURCE=drive` (+ os 3 valores acima).
-7. **Pegue o refresh token**: suba o backend e acesse **`http://localhost:3001/api/drive/auth`** no navegador → autorize. O callback salva o `GOOGLE_REFRESH_TOKEN` **no `.env` e no banco** automaticamente — sem reiniciar.
+7. **Pegue o refresh token**: suba o backend e acesse **`http://localhost:3001/api/drive/auth`** no navegador → autorize. O callback salva o `GOOGLE_REFRESH_TOKEN` **no `.env` e no banco** automaticamente — sem reiniciar. **Se você já tinha autorizado antes com o escopo só-leitura, refaça este passo** para gerar um token com permissão de escrita.
 
 > Dica: os valores de Google/Drive (e DeepSeek) também podem ser preenchidos pela **UI** (Config → Credenciais), ficando no banco. Aí, em outra máquina, basta o `.env` ter Supabase + `DATABASE_URL` que o resto vem do banco.
 
@@ -126,6 +136,26 @@ Só se você quer os cursos vindo do Drive (`COURSE_SOURCE=drive`). Caso contrá
 
 1. **https://platform.deepseek.com** → crie conta, adicione crédito e gere uma **API key**.
 2. `DEEPSEEK_API_KEY=...` no `.env` (ou pela UI). Custo típico ~US$ 0,003–0,01 por aula gerada.
+
+### 4. WhisperX (transcrição) — opcional
+
+Só para transcrever, no "Gerar curso de leitura", aulas que ainda não têm `.txt`. Pode rodar via **docker** ou **miniconda** (mesmas configs do DubAI).
+
+1. Instale o WhisperX como preferir (container ou env conda).
+2. `WHISPERX_BIN` = o comando-base (a plataforma anexa as flags). Ex.: `~/miniconda3/envs/whisperx/bin/whisperx` ou `docker exec whisperx-container whisperx`. No modo docker, monte a pasta de cursos no container para o áudio ser visível.
+3. `WHISPERX_DEVICE` = `cuda` | `cpu` (vazio = auto-detecta por `nvidia-smi`). Máquina sem GPU → `cpu`.
+4. Modelos: PT-BR usa `large-v3-turbo`; curso em inglês usa `WHISPERX_MODEL_EN` (default `distil-large-v3.5`).
+
+> No modo **Drive**, o WhisperX não roda (exigiria baixar os vídeos): aulas sem `.txt` são puladas; transcreva-as localmente antes, se precisar.
+
+### 5. Kokoro (voz do podcast) — opcional
+
+Servidor HTTP de TTS (porta 8880) usado no "Gerar IA → Podcast". GPU **ou** CPU — quem decide é a instalação do Kokoro, não a plataforma.
+
+1. Suba o Kokoro como preferir: docker GPU (`ghcr.io/remsky/kokoro-fastapi-gpu`), docker **CPU** (`ghcr.io/remsky/kokoro-fastapi-cpu`) ou via conda/pip.
+2. `KOKORO_URL` = onde ele responde (pode ser outra máquina).
+3. `KOKORO_START_CMD` = como a plataforma o sobe se estiver fora do ar (ex.: `docker start kokoro-container`, `docker compose ... up -d`, comando conda) — **vazio** se você sobe manualmente.
+4. Vozes: `PODCAST_VOICE_SENIOR`/`PODCAST_VOICE_JUNIOR` (códigos do Kokoro, aceitam blend com `+`) e nomes `PODCAST_NAME_SENIOR`/`PODCAST_NAME_JUNIOR`.
 
 ## Estrutura da pasta de cursos
 
@@ -142,8 +172,9 @@ O backend escaneia `COURSES_PATH` (ou a pasta do Google Drive) recursivamente:
 | `_quiz_dub_NN` | quiz | `.html`/`.md` |
 | `_flashcards_anki_dub_NN` | flashcards | `.txt` (Anki) |
 | `_diario_tecnico_dub_NN` | diário (template) | `.md` |
+| `_podcast_dub_NN` | podcast (áudio) | `.mp3` |
 
-`_ia` antes da extensão marca material gerado por IA (tem prioridade). Materiais gerados também podem viver só no banco (`lesson_materials`), sem arquivo.
+`_ia` antes da extensão marca material gerado por IA (tem prioridade). Materiais gerados também podem viver só no banco (`lesson_materials`), sem arquivo. O **curso de leitura** gerado por IA vira um curso à parte, na pasta irmã `<curso> - Leitura` (no filesystem ou no Drive).
 
 ```
 /cursos/
@@ -178,7 +209,7 @@ React (Vite)  ──/api/*──►  Express  ──►  Postgres (Supabase/loca
 
 - **Rotas** (`server/routes/`): `courses`, `materials`, `progress`, `notes`, `flashcards`, `quiz`, `stats`, `ia`, `typing`, `drive`. Tudo sob `requireAuth` (valida o JWT do Supabase), exceto o callback do Drive.
 - **Frontend** (`src/`): `components/`, `hooks/`, `contexts/` (auth, tema, curso), `utils/`, `typing/` (currículo e teclado).
-- **Banco** (`db/`): `schema.sql` + `migrations/*.sql`. Tabelas principais: `lesson_progress`, `step_completions`, `lesson_materials`, `flashcard_decks`/`flashcards`/`flashcard_reviews` (FSRS), `quiz_attempts`, `lesson_chats`, `typing_progress`. Colunas `user_id` + RLS isolam por usuário.
+- **Banco** (`db/`): `schema.sql` + `migrations/*.sql`. Tabelas principais: `lesson_progress`, `step_completions`, `lesson_materials` (resumo/quiz/exemplos/diário/piada/**podcast**), `flashcard_decks`/`flashcards`/`flashcard_reviews` (FSRS), `quiz_attempts`, `lesson_chats`, `lesson_prequestions`/`prequestion_attempts` (pré-quiz), `interview_questions`/`interview_sessions` (modo entrevista), `typing_progress`. Colunas `user_id` + RLS isolam por usuário.
 
 ## Troubleshooting
 
@@ -190,6 +221,9 @@ React (Vite)  ──/api/*──►  Express  ──►  Postgres (Supabase/loca
 - **Progresso não salva** — rode `npm run db:migrate:versioned` e reinicie o `server.js`.
 - **`401` em TODAS as rotas `/api` atrás de proxy corporativo (Windows)** — o Node não confia na CA da empresa e não busca o JWKS do Supabase (`SELF_SIGNED_CERT_IN_CHAIN`), então rejeita todo JWT. Suba o backend com **`node --use-system-ca server.js`** (já é o padrão do `run-server.bat`; requer **Node ≥ 22.15**), ou aponte `NODE_EXTRA_CA_CERTS` para a CA raiz da empresa.
 - **Cursos do Drive não listam** — confira no log do servidor `Fonte de cursos: Drive (pasta ...)`. Se aparecer `filesystem`, falta `COURSE_SOURCE=drive`. Se o backend não acha as credenciais, reautorize em `http://localhost:3001/api/drive/auth`.
+- **Erro ao gravar no Drive (curso de leitura / podcast)** — o token pode ser só-leitura: adicione o escopo `.../auth/drive` na tela de consentimento e **reautorize** em `/api/drive/auth`.
+- **"WHISPERX_BIN não configurada" / WhisperX falha** — defina `WHISPERX_BIN` (docker ou conda). Sem GPU compatível, use `WHISPERX_DEVICE=cpu`. No modo docker, a pasta de cursos precisa estar montada no container.
+- **"Kokoro não respondeu" no podcast** — suba o servidor Kokoro (porta 8880) ou ajuste `KOKORO_URL`/`KOKORO_START_CMD`. Máquina sem GPU → use a imagem **CPU** do Kokoro.
 - **E-mail de confirmação/reset não chega** — configure **Site URL + Redirect URLs** e um **SMTP próprio** no Supabase (o e-mail embutido é limitado). Esqueceu a senha e o e-mail não funciona? Dá pra resetar pela Admin API com a `service_role key`.
 - **Finais de linha (`/bin/bash^M`)** — o `.gitattributes` força `.sh` em LF e `.bat` em CRLF; se editou antes de tê-lo, rode `git add --renormalize .`.
 

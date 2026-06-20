@@ -1,11 +1,162 @@
-import React, { useEffect, useState } from "react";
-import { Mic, GraduationCap } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  Mic, GraduationCap, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Gauge,
+} from "lucide-react";
 import { getMediaUrl } from "../utils/fileUtils";
 import { LoadingState } from "./StateViews";
 
+const SPEEDS = [1, 1.25, 1.5, 1.75, 2];
+
+const fmt = (s) => {
+  if (!Number.isFinite(s)) return "0:00";
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2, "0")}`;
+};
+
+// Player de audio customizado (play/pause, seek, ±10s, volume, velocidade).
+const AudioPlayer = ({ src }) => {
+  const ref = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [cur, setCur] = useState(0);
+  const [dur, setDur] = useState(0);
+  const [rate, setRate] = useState(1);
+  const [muted, setMuted] = useState(false);
+
+  // Troca de aula: reseta o estado.
+  useEffect(() => {
+    setPlaying(false);
+    setCur(0);
+    setDur(0);
+  }, [src]);
+
+  const toggle = () => {
+    const a = ref.current;
+    if (!a) return;
+    if (a.paused) {
+      a.play();
+      setPlaying(true);
+    } else {
+      a.pause();
+      setPlaying(false);
+    }
+  };
+
+  const skip = (delta) => {
+    const a = ref.current;
+    if (!a) return;
+    a.currentTime = Math.max(0, Math.min(dur || a.duration || 0, a.currentTime + delta));
+  };
+
+  const seek = (e) => {
+    const a = ref.current;
+    if (!a || !dur) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    a.currentTime = frac * dur;
+    setCur(a.currentTime);
+  };
+
+  const changeRate = (r) => {
+    setRate(r);
+    if (ref.current) ref.current.playbackRate = r;
+  };
+
+  const toggleMute = () => {
+    const a = ref.current;
+    if (!a) return;
+    a.muted = !a.muted;
+    setMuted(a.muted);
+  };
+
+  const pct = dur ? (cur / dur) * 100 : 0;
+
+  return (
+    <div className="bg-slate-950/40 border border-slate-700/40 rounded-xl p-3">
+      <audio
+        ref={ref}
+        src={src}
+        preload="metadata"
+        onTimeUpdate={(e) => setCur(e.currentTarget.currentTime)}
+        onLoadedMetadata={(e) => setDur(e.currentTarget.duration)}
+        onEnded={() => setPlaying(false)}
+      />
+
+      {/* Barra de progresso */}
+      <div
+        onClick={seek}
+        className="group relative h-2 bg-slate-700/60 rounded-full cursor-pointer mb-2"
+      >
+        <div
+          className="absolute inset-y-0 left-0 bg-gradient-to-r from-blue-500 to-indigo-400 rounded-full"
+          style={{ width: `${pct}%` }}
+        />
+        <div
+          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white shadow opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ left: `${pct}%` }}
+        />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => skip(-10)}
+          title="Voltar 10s"
+          className="p-1.5 text-slate-400 hover:text-slate-200"
+        >
+          <SkipBack className="w-4 h-4" />
+        </button>
+        <button
+          onClick={toggle}
+          title={playing ? "Pausar" : "Reproduzir"}
+          className="p-2 rounded-full bg-blue-600 hover:bg-blue-500 text-white"
+        >
+          {playing ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+        </button>
+        <button
+          onClick={() => skip(10)}
+          title="Avancar 10s"
+          className="p-1.5 text-slate-400 hover:text-slate-200"
+        >
+          <SkipForward className="w-4 h-4" />
+        </button>
+
+        <span className="text-xs font-mono text-slate-400 tabular-nums ml-1">
+          {fmt(cur)} / {fmt(dur)}
+        </span>
+
+        <div className="flex-1" />
+
+        <Gauge className="w-3.5 h-3.5 text-slate-500" />
+        <div className="flex items-center gap-1">
+          {SPEEDS.map((r) => (
+            <button
+              key={r}
+              onClick={() => changeRate(r)}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                rate === r
+                  ? "bg-blue-500 text-white"
+                  : "bg-slate-700/50 hover:bg-slate-700 text-slate-300"
+              }`}
+            >
+              {r}x
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={toggleMute}
+          title={muted ? "Ativar som" : "Silenciar"}
+          className="p-1.5 text-slate-400 hover:text-slate-200"
+        >
+          {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 // Renderiza o podcast da aula: player de audio + roteiro do dialogo.
 // `fileUrl` aponta pro /api/materials/.../podcast, que devolve o JSON
-// { audio, title, turns:[{speaker,text}] } como texto.
+// { audio, title, turns:[{speaker,text}], names } como texto.
 const PodcastPlayer = ({ fileUrl, courseTitle }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -44,9 +195,7 @@ const PodcastPlayer = ({ fileUrl, courseTitle }) => {
             </div>
             <h1 className="text-xl font-bold text-slate-100">{data.title || "Podcast da aula"}</h1>
           </div>
-          <audio controls src={audioSrc} className="w-full">
-            Seu navegador nao suporta audio.
-          </audio>
+          <AudioPlayer src={audioSrc} />
         </div>
 
         <h2 className="text-sm uppercase tracking-wide text-slate-500 mb-3">Roteiro</h2>
