@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
   CheckCircle, Circle, Sparkles, ArrowLeft, Check,
-  Target, Play, FileText, Coffee, HelpCircle, Repeat, PenLine, Dumbbell,
+  Target, Play, FileText, Coffee, HelpCircle, Repeat, PenLine, Dumbbell, Mic,
 } from "lucide-react";
 import { getMediaUrl } from "../utils/fileUtils";
 import VideoPlayer from "./VideoPlayer";
@@ -9,6 +9,7 @@ import MarkdownViewer from "./MarkdownViewer";
 import FlashcardViewer from "./FlashcardViewer";
 import QuizViewer from "./QuizViewer";
 import ExamplesViewer from "./ExamplesViewer";
+import PodcastPlayer from "./PodcastPlayer";
 import PersonalSummary from "./PersonalSummary";
 import PreQuiz from "./PreQuiz";
 import AIGenerateModal from "./AIGenerateModal";
@@ -23,6 +24,7 @@ const STEP_CONFIG = [
   { key: "resumo", label: "Resumo", Icon: FileText },
   { key: "exemplos", label: "Pratica", Icon: Dumbbell },
   { key: "piada", label: "Pausa", Icon: Coffee },
+  { key: "podcast", label: "Podcast", Icon: Mic },
   { key: "quiz", label: "Quiz", Icon: HelpCircle },
   { key: "flashcards", label: "Flashcards", Icon: Repeat },
   { key: "pessoal", label: "Meu Resumo", Icon: PenLine, always: true },
@@ -373,6 +375,27 @@ const LessonStepper = ({
                 courseTitle={courseTitle}
                 lessonPrefix={lessonGroup.prefix}
               />
+            </div>
+          </div>
+        );
+
+      case "podcast":
+        return (
+          <div className="flex flex-col h-full">
+            <StepHeader
+              title={
+                <>
+                  🎙️ Podcast da aula
+                  <span className="ml-2 text-xs text-blue-400 font-normal">dev senior x iniciante</span>
+                </>
+              }
+              stepKey="podcast"
+              isCompleted={isStepCompleted("podcast")}
+              onMarkComplete={handleMarkComplete}
+              borderClass="border-blue-500/20"
+            />
+            <div className="flex-1 overflow-hidden">
+              <PodcastPlayer fileUrl={fileUrl} courseTitle={courseTitle} />
             </div>
           </div>
         );

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { generateIa, generatePrequestions } from "../utils/progressApi";
+import { generateIa, generatePrequestions, generatePodcastScript, generatePodcastAudio } from "../utils/progressApi";
 
 // "prequiz" eh especial: nao gera arquivo no disco, salva no Postgres
 // (lesson_prequestions). Roteado pra um endpoint diferente em handleGenerate.
@@ -12,6 +12,7 @@ const KIND_OPTIONS = [
   { key: "quiz", label: "Quiz", icon: "❓", color: "purple" },
   { key: "flashcards", label: "Flashcards", icon: "🔁", color: "cyan" },
   { key: "diario", label: "Diario tecnico", icon: "📓", color: "rose" },
+  { key: "podcast", label: "Podcast (audio, ~5 min)", icon: "🎙️", color: "blue" },
 ];
 
 const MODELS = [
@@ -27,6 +28,7 @@ const COLOR_CLASSES = {
   cyan: "border-cyan-500/40 bg-cyan-500/10 text-cyan-200",
   rose: "border-rose-500/40 bg-rose-500/10 text-rose-200",
   pink: "border-pink-500/40 bg-pink-500/10 text-pink-200",
+  blue: "border-blue-500/40 bg-blue-500/10 text-blue-200",
 };
 
 const fmtTime = (ms) => {
@@ -45,6 +47,7 @@ const AIGenerateModal = ({
   const [model, setModel] = useState("deepseek-v4-flash");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [podcastRunning, setPodcastRunning] = useState(false);
   const [progress, setProgress] = useState({ current: null, done: [], errors: [] });
   const [elapsed, setElapsed] = useState(0);
   const startedAtRef = useRef(null);
@@ -69,6 +72,22 @@ const AIGenerateModal = ({
     });
   };
 
+  // Gera UM material DeepSeek e devolve o resultado normalizado { kind, ok, ... }.
+  // (O podcast tem fluxo proprio em handleGenerate: roteiro + audio.)
+  const runOne = async (kind) => {
+    try {
+      if (kind === "prequiz") {
+        // Pre-quiz salva no DB (lesson_prequestions), nao em arquivo.
+        const out = await generatePrequestions({ courseTitle, lessonPrefix, model });
+        return { kind, ok: true, file: `${out.questions.length} perguntas no DB`, usage: out.usage, model: out.model };
+      }
+      const out = await generateIa({ courseTitle, lessonPrefix, kinds: [kind], model });
+      return out.results?.[0] || { kind, ok: false, error: "falha" };
+    } catch (err) {
+      return { kind, ok: false, error: err.message || "erro" };
+    }
+  };
+
   const handleGenerate = async () => {
     if (selected.size === 0) return;
     const kinds = [...selected];
@@ -77,49 +96,47 @@ const AIGenerateModal = ({
     setProgress({ current: null, done: [], errors: [] });
 
     const allResults = [];
-    for (const kind of kinds) {
-      setProgress((p) => ({ ...p, current: kind }));
-      try {
-        let res;
-        if (kind === "prequiz") {
-          // Pre-quiz salva no DB (lesson_prequestions), nao em arquivo.
-          // Adapta a resposta pro shape unificado { kind, ok, file, ... }.
-          const out = await generatePrequestions({ courseTitle, lessonPrefix, model });
-          res = {
-            kind,
-            ok: true,
-            file: `${out.questions.length} perguntas no DB`,
-            usage: out.usage,
-            model: out.model,
-          };
-        } else {
-          const out = await generateIa({
-            courseTitle,
-            lessonPrefix,
-            kinds: [kind],
-            model,
-          });
-          res = out.results?.[0];
-        }
+    const record = (res) => {
+      allResults.push(res);
+      setProgress((p) =>
+        res.ok
+          ? { ...p, done: [...p.done, res] }
+          : { ...p, errors: [...p.errors, res] },
+      );
+    };
 
-        if (res?.ok) {
-          allResults.push(res);
-          setProgress((p) => ({ ...p, done: [...p.done, res] }));
-        } else {
-          allResults.push(res || { kind, ok: false, error: "falha" });
-          setProgress((p) => ({
-            ...p,
-            errors: [...p.errors, res || { kind, ok: false, error: "falha" }],
-          }));
-        }
+    // Podcast em 2 passos: (1) ROTEIRO no DeepSeek primeiro — feito antes da
+    // cadeia de materiais pra nao competir na API (foge do rate limit); depois
+    // (2) o AUDIO no Chatterbox (GPU local) roda EM PARALELO com os materiais.
+    const hasPodcast = kinds.includes("podcast");
+    const serialKinds = kinds.filter((k) => k !== "podcast");
+
+    let audioPromise = null;
+    if (hasPodcast) {
+      setPodcastRunning(true);
+      try {
+        const script = await generatePodcastScript({ courseTitle, lessonPrefix, model });
+        audioPromise = generatePodcastAudio({ courseTitle, lessonPrefix, title: script.title, turns: script.turns, model })
+          .then((out) => ({ kind: "podcast", ok: true, file: `${out.turns} falas — ${out.title}` }))
+          .catch((err) => ({ kind: "podcast", ok: false, error: err.message || "erro" }));
       } catch (err) {
-        const failed = { kind, ok: false, error: err.message || "erro" };
-        allResults.push(failed);
-        setProgress((p) => ({ ...p, errors: [...p.errors, failed] }));
+        // Falha no roteiro: nem chega no Chatterbox.
+        record({ kind: "podcast", ok: false, error: err.message || "erro (roteiro)" });
+        setPodcastRunning(false);
       }
     }
 
+    for (const kind of serialKinds) {
+      setProgress((p) => ({ ...p, current: kind }));
+      record(await runOne(kind));
+    }
     setProgress((p) => ({ ...p, current: null }));
+
+    if (audioPromise) {
+      record(await audioPromise);
+      setPodcastRunning(false);
+    }
+
     setLoading(false);
     onGenerated?.({ results: allResults });
   };
@@ -245,7 +262,11 @@ const AIGenerateModal = ({
                 const opt = KIND_OPTIONS.find((o) => o.key === kind);
                 const done = progress.done.find((r) => r.kind === kind);
                 const err = progress.errors.find((r) => r.kind === kind);
-                const isCurrent = progress.current === kind;
+                // O podcast roda em paralelo (GPU local), entao fica "gerando..."
+                // junto com a cadeia DeepSeek ate resolver.
+                const isCurrent =
+                  progress.current === kind ||
+                  (kind === "podcast" && podcastRunning && !done && !err);
                 return (
                   <div
                     key={kind}

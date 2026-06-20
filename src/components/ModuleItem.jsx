@@ -1,9 +1,10 @@
 import React from "react";
-import { CheckCircle, ChevronDown, ChevronRight, Circle, AlertTriangle, Clock } from "lucide-react";
+import { CheckCircle, ChevronDown, ChevronRight, Circle, AlertTriangle, Clock, Briefcase } from "lucide-react";
 import Collapsible from "react-collapsible";
 import { useCourse } from "./CourseContext";
 import { getFileIcon, formatTime, isVideoFile } from "../utils/fileUtils";
 import { calculateModuleDuration } from "../utils/courseUtils";
+import InterviewModal from "./InterviewModal";
 
 // Agrega acerto de todas as aulas dentro de um modulo recursivamente.
 // Retorna { accuracy, total, hasData } ou null se nenhuma aula teve reviews.
@@ -201,6 +202,8 @@ const ModuleItem = ({ item, level = 0 }) => {
     lessonAccuracy,
   } = useCourse();
 
+  const [interviewOpen, setInterviewOpen] = React.useState(false);
+
   // Render lesson-group with its own component
   if (item.type === "lesson-group") {
     return <LessonGroupItem item={item} level={level} />;
@@ -289,6 +292,17 @@ const ModuleItem = ({ item, level = 0 }) => {
                 {badge.label}
               </span>
             )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setInterviewOpen(true);
+              }}
+              title="Simular uma entrevista de emprego sobre este módulo"
+              className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 flex-shrink-0"
+            >
+              <Briefcase className="w-3 h-3" />
+              Entrevista
+            </button>
           </div>
           <p
             className={`text-xs mt-1 transition-colors duration-300 ${
@@ -334,6 +348,15 @@ const ModuleItem = ({ item, level = 0 }) => {
             </div>
           )}
         </Collapsible>
+        {interviewOpen && (
+          <InterviewModal
+            open={interviewOpen}
+            onClose={() => setInterviewOpen(false)}
+            courseTitle={courseTitle}
+            modulePath={item.path}
+            moduleTitle={item.title}
+          />
+        )}
       </div>
     );
   }

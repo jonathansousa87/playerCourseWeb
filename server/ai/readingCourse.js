@@ -9,6 +9,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { chatCompletion, DEFAULT_MODEL } from './deepseek.js';
 import { parseTranscript } from './generator.js';
+import { transcribeToTxt } from './whisperx.js';
 import { query } from '../../db/index.js';
 import {
   READING_PLAN_SYSTEM,
@@ -21,6 +22,13 @@ import {
 const TRANSCRIPT_RE = /_dub(?:\.[a-z]{2,3}(?:-[a-zA-Z]{2,4})?)?\.(txt|vtt)$/i;
 // Materiais gerados que terminam em .txt (flashcards) NAO sao transcricao.
 const MATERIAL_TXT_RE = /_(?:flashcards_anki|resumo|exemplos|quiz|diario_tecnico)_dub_\d+/i;
+// Arquivo de video da aula. Qualquer extensao de video conta — inclusive o
+// .mp4 "cru" (sem _dub) de cursos ainda nao processados pelo DubAI. O _dub
+// (quando existe) e removido pra casar com a transcricao correspondente.
+const VIDEO_RE = /\.(mp4|webm|ts|m3u8|mkv)$/i;
+// Stem canonico de um arquivo: tira a extensao de video e o sufixo _dub, pra
+// "X.mp4", "X_dub.mp4" e "X_dub.pt-BR.txt" caírem todos no mesmo "X".
+const videoStem = (path) => path.replace(VIDEO_RE, '').replace(/_dub$/i, '');
 
 const lessonTitleFromFile = (name) => name.replace(TRANSCRIPT_RE, '').trim();
 
@@ -34,6 +42,27 @@ const cleanModuleTitle = (title) => title.replace(/^\s*\d+\s*[.)-]\s*/, '').trim
 const cleanLessonTitle = (title) => title.replace(/^\s*\d+\s*[.)-]\s*/, '').trim() || title;
 
 const pad2 = (n) => String(n).padStart(2, '0');
+
+// Parse de JSON tolerante: tira fences ```json e, se falhar, tenta extrair o
+// objeto do primeiro "{" ao ultimo "}". Retorna null se nao der.
+const parseJsonLoose = (raw) => {
+  if (!raw) return null;
+  const cleaned = raw.replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/i, '').trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const a = cleaned.indexOf('{');
+    const b = cleaned.lastIndexOf('}');
+    if (a >= 0 && b > a) {
+      try {
+        return JSON.parse(cleaned.slice(a, b + 1));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+};
 
 // Roda fn sobre items com no maximo `limit` em paralelo, preservando a ordem.
 const mapPool = async (items, limit, fn) => {
@@ -77,6 +106,64 @@ const collectModuleTranscripts = async (moduleDir) => {
   return found.map((t, id) => ({ id, ...t }));
 };
 
+// Antes de montar o curso de leitura: as aulas que tem video mas ainda NAO tem
+// transcricao (.txt/.vtt) sao transcritas pelo WhisperX, gerando <base>_dub.txt
+// na propria pasta (no padrao que o collectModuleTranscripts ja entende).
+// Retorna um resumo { transcribed, failed, skipped } pra mostrar no front.
+const transcribeMissingTranscripts = async (moduleDir, language = 'pt') => {
+  // Curso em ingles: WhisperX usa o modelo English-only (distil-large-v3.5,
+  // mais rapido/preciso pra EN); a traducao pra PT-BR acontece na condensacao.
+  const whisper = language === 'en'
+    ? { model: (process.env.WHISPERX_MODEL_EN || '').trim() || 'distil-large-v3.5', language: 'en' }
+    : { model: undefined, language: 'pt' };
+  const videos = [];
+  const haveStem = new Set();
+  const walk = async (dir) => {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) {
+        await walk(full);
+      } else if (VIDEO_RE.test(e.name)) {
+        videos.push({ name: e.name, path: full, stem: videoStem(full) });
+      } else if (TRANSCRIPT_RE.test(e.name) && !MATERIAL_TXT_RE.test(e.name)) {
+        haveStem.add(full.replace(TRANSCRIPT_RE, ''));
+      }
+    }
+  };
+  await walk(moduleDir);
+
+  const pending = videos.filter((v) => !haveStem.has(v.stem));
+  const summary = { transcribed: 0, failed: [], skipped: false };
+  if (pending.length === 0) return summary;
+
+  if (!(process.env.WHISPERX_BIN || '').trim()) {
+    // Sem WhisperX configurado: nao trava o fluxo — segue so com quem ja tem txt.
+    summary.skipped = true;
+    return summary;
+  }
+
+  // Serial de proposito: WhisperX satura GPU/CPU; rodar em paralelo so atrapalha.
+  for (const v of pending) {
+    try {
+      const produced = await transcribeToTxt({ audioFile: v.path, model: whisper.model, language: whisper.language });
+      // Normaliza pro padrao da plataforma: <stem>_dub.txt. Pra video cru
+      // (X.mp4 -> X.txt) renomeia; pra X_dub.mp4 ja sai certo (X_dub.txt).
+      const target = `${v.stem}_dub.txt`;
+      if (produced !== target) await fs.rename(produced, target);
+      summary.transcribed += 1;
+    } catch (err) {
+      summary.failed.push({ file: v.name, error: err.message });
+    }
+  }
+  return summary;
+};
+
 // Fase 1: a IA decide o agrupamento. Fallback robusto = cada aula isolada.
 const planGrouping = async ({ moduleTitle, transcripts, model }) => {
   const fallback = () =>
@@ -93,10 +180,14 @@ const planGrouping = async ({ moduleTitle, transcripts, model }) => {
       }),
       model,
       temperature: 0.2,
-      maxTokens: 2000,
+      // Orcamento generoso: o modelo "raciocina" antes do JSON e modulos
+      // grandes geram planos longos. Se faltar token, o JSON trunca e cai no
+      // fallback isolado (= "aula por aula"). Escala com o nº de aulas.
+      maxTokens: Math.min(8000, 2500 + transcripts.length * 150),
       responseFormat: { type: 'json_object' },
     });
-    const parsed = JSON.parse(content);
+    const parsed = parseJsonLoose(content);
+    if (!parsed) throw new Error('plano: JSON invalido/truncado');
     const lessons = Array.isArray(parsed?.lessons) ? parsed.lessons : [];
     // Valida: ids reais, cobertura total, sem duplicar.
     const validIds = new Set(transcripts.map((t) => t.id));
@@ -122,7 +213,7 @@ const planGrouping = async ({ moduleTitle, transcripts, model }) => {
 };
 
 // Fase 2: condensa as transcricoes de um grupo num texto de leitura.
-const condenseLesson = async ({ lessonTitle, sources, model }) => {
+const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt' }) => {
   const parts = [];
   for (const src of sources) {
     try {
@@ -136,7 +227,7 @@ const condenseLesson = async ({ lessonTitle, sources, model }) => {
 
   const { content, usage, model: usedModel } = await chatCompletion({
     system: READING_CONDENSE_SYSTEM,
-    user: buildReadingCondensePrompt({ lessonTitle, transcript: merged }),
+    user: buildReadingCondensePrompt({ lessonTitle, transcript: merged, instruction, sourceLanguage: language }),
     model,
     temperature: 0.3,
     maxTokens: 8000,
@@ -153,26 +244,53 @@ export const generateReadingModule = async ({
   moduleTitle,
   index = 1,
   model = DEFAULT_MODEL,
+  instruction = '',
+  autoTranscribe = true,
+  language = 'pt',
 }) => {
   const moduleDir = join(coursesPath, courseTitle, modulePath);
+
+  // Fase 0: aulas sem .txt sao transcritas pelo WhisperX antes de tudo.
+  let transcription = null;
+  if (autoTranscribe) {
+    transcription = await transcribeMissingTranscripts(moduleDir, language);
+  }
+
   const transcripts = await collectModuleTranscripts(moduleDir);
   if (transcripts.length === 0) {
-    return { module: moduleTitle, skipped: 'sem transcricoes', created: [] };
+    return { module: moduleTitle, skipped: 'sem transcricoes', transcription, created: [] };
   }
 
   const plan = await planGrouping({ moduleTitle, transcripts, model });
 
   const outRoot = join(coursesPath, `${courseTitle} - Leitura`);
-  const outDir = join(outRoot, `${pad2(index)} ${safeName(cleanModuleTitle(moduleTitle))}`);
-  await fs.mkdir(outDir, { recursive: true });
+  const readingCourseTitle = `${courseTitle} - Leitura`;
+  const moduleFolderName = safeName(cleanModuleTitle(moduleTitle));
+  const outDir = join(outRoot, `${pad2(index)} ${moduleFolderName}`);
 
-  // Re-rodar deve ser idempotente: remove os .txt antigos do modulo pra nao
-  // acumular aulas orfas (o planejador da IA pode mudar o agrupamento).
+  // Re-rodar deve ser 100% idempotente: remove QUALQUER pasta anterior deste
+  // modulo (mesmo com numero diferente — o indice ou o agrupamento podem ter
+  // mudado) e apaga os resumos orfaos correspondentes no banco. Assim nao
+  // duplica pasta nem deixa lixo no Supabase.
   try {
-    for (const f of await fs.readdir(outDir)) {
-      if (TRANSCRIPT_RE.test(f)) await fs.unlink(join(outDir, f));
+    for (const d of await fs.readdir(outRoot)) {
+      if (!/^\d+\s/.test(d) || d.replace(/^\d+\s+/, '') !== moduleFolderName) continue;
+      const oldDir = join(outRoot, d);
+      try {
+        for (const f of await fs.readdir(oldDir)) {
+          const m = f.match(TRANSCRIPT_RE);
+          if (!m) continue;
+          const prefix = f.slice(0, m.index);
+          await query(
+            "DELETE FROM lesson_materials WHERE course_title = $1 AND lesson_prefix = $2 AND kind = 'resumo'",
+            [readingCourseTitle, prefix],
+          );
+        }
+      } catch { /* ignora erro de leitura/banco */ }
+      await fs.rm(oldDir, { recursive: true, force: true });
     }
-  } catch { /* pasta nova, nada a limpar */ }
+  } catch { /* outRoot novo, nada a limpar */ }
+  await fs.mkdir(outDir, { recursive: true });
 
   // Condensa as aulas planejadas em paralelo (ate 4 por vez). A ordem do
   // arquivo (NN) segue a posicao no plano, nao a de conclusao.
@@ -180,7 +298,7 @@ export const generateReadingModule = async ({
     const title = cleanLessonTitle(lesson.title);
     const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
     try {
-      const out = await condenseLesson({ lessonTitle: title, sources, model });
+      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language });
       if (!out) return { title, ok: false, error: 'transcricao vazia' };
 
       const fileTitle = `${pad2(idx + 1)} ${safeName(title)}`;
@@ -206,6 +324,7 @@ export const generateReadingModule = async ({
       return {
         title,
         file: fileName,
+        prefix: fileTitle, // lesson_prefix no curso "- Leitura" (pra "Gerar IA")
         sources: sources.map((s) => s.title),
         ok: true,
         usage: out.usage,
@@ -215,5 +334,5 @@ export const generateReadingModule = async ({
     }
   });
 
-  return { module: moduleTitle, outDir, created };
+  return { module: moduleTitle, outDir, transcription, created };
 };

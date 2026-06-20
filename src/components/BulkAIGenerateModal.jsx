@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { generateIa, generatePrequestions } from "../utils/progressApi";
+import { generateIa, generatePrequestions, generatePodcastScript, generatePodcastAudio } from "../utils/progressApi";
 
 const KIND_OPTIONS = [
   { key: "prequiz", label: "Pre-Quiz", icon: "🎯" },
@@ -10,6 +10,7 @@ const KIND_OPTIONS = [
   { key: "quiz", label: "Quiz", icon: "❓" },
   { key: "flashcards", label: "Flashcards", icon: "🔁" },
   { key: "diario", label: "Diario", icon: "📓" },
+  { key: "podcast", label: "Podcast", icon: "🎙️" },
 ];
 
 const MODELS = [
@@ -156,59 +157,57 @@ const BulkAIGenerateModal = ({
     setLoading(true);
     cancelRef.current = false;
 
+    // Gera UM par (aula, tipo) DeepSeek e devolve o resultado normalizado.
+    // (O podcast tem fluxo proprio: roteiro + audio.)
+    const runPair = async (lesson, kind) => {
+      const base = { prefix: lesson.prefix, title: lesson.title, kind };
+      try {
+        if (kind === "prequiz") {
+          const out = await generatePrequestions({ courseTitle, lessonPrefix: lesson.prefix, model });
+          return { ...base, ok: true, error: null, file: `${out.questions.length} perguntas no DB` };
+        }
+        const out = await generateIa({ courseTitle, lessonPrefix: lesson.prefix, kinds: [kind], model });
+        const res = out.results?.[0];
+        return { ...base, ok: !!res?.ok, error: res?.ok ? null : res?.error || "falha", file: res?.file || null };
+      } catch (err) {
+        return { ...base, ok: false, error: err.message || "erro" };
+      }
+    };
+
+    const hasPodcast = kinds.includes("podcast");
+    const serialKinds = kinds.filter((k) => k !== "podcast");
+
     for (const lesson of lessons) {
       if (cancelRef.current) break;
       setCurrentPrefix(lesson.prefix);
-      for (const kind of kinds) {
+      const base = { prefix: lesson.prefix, title: lesson.title, kind: "podcast" };
+
+      // Podcast em 2 passos: o ROTEIRO (DeepSeek) sai primeiro, na vez dele na
+      // fila da API; depois o AUDIO (Chatterbox, GPU local) roda EM PARALELO com
+      // os materiais DeepSeek da MESMA aula. So um podcast por vez (a GPU eh unica).
+      let audioPromise = null;
+      if (hasPodcast) {
+        setCurrentKind("podcast");
+        try {
+          const script = await generatePodcastScript({ courseTitle, lessonPrefix: lesson.prefix, model });
+          audioPromise = generatePodcastAudio({ courseTitle, lessonPrefix: lesson.prefix, title: script.title, turns: script.turns, model })
+            .then((out) => ({ ...base, ok: true, error: null, file: `${out.turns} falas — ${out.title}` }))
+            .catch((err) => ({ ...base, ok: false, error: err.message || "erro" }));
+        } catch (err) {
+          setCompletedPairs((prev) => [...prev, { ...base, ok: false, error: err.message || "erro (roteiro)" }]);
+        }
+      }
+
+      for (const kind of serialKinds) {
         if (cancelRef.current) break;
         setCurrentKind(kind);
-        try {
-          let pair;
-          if (kind === "prequiz") {
-            // Pre-quiz salva no DB, nao em arquivo
-            const out = await generatePrequestions({
-              courseTitle,
-              lessonPrefix: lesson.prefix,
-              model,
-            });
-            pair = {
-              prefix: lesson.prefix,
-              title: lesson.title,
-              kind,
-              ok: true,
-              error: null,
-              file: `${out.questions.length} perguntas no DB`,
-            };
-          } else {
-            const out = await generateIa({
-              courseTitle,
-              lessonPrefix: lesson.prefix,
-              kinds: [kind],
-              model,
-            });
-            const res = out.results?.[0];
-            pair = {
-              prefix: lesson.prefix,
-              title: lesson.title,
-              kind,
-              ok: !!res?.ok,
-              error: res?.ok ? null : res?.error || "falha",
-              file: res?.file || null,
-            };
-          }
-          setCompletedPairs((prev) => [...prev, pair]);
-        } catch (err) {
-          setCompletedPairs((prev) => [
-            ...prev,
-            {
-              prefix: lesson.prefix,
-              title: lesson.title,
-              kind,
-              ok: false,
-              error: err.message || "erro",
-            },
-          ]);
-        }
+        const pair = await runPair(lesson, kind);
+        setCompletedPairs((prev) => [...prev, pair]);
+      }
+
+      if (audioPromise) {
+        const pair = await audioPromise;
+        setCompletedPairs((prev) => [...prev, pair]);
       }
     }
 

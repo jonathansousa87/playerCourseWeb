@@ -1,13 +1,40 @@
 import React, { useMemo, useState, useRef } from "react";
 import { X, BookOpenText, Loader2, Check, AlertTriangle } from "lucide-react";
-import { generateReadingModule } from "../utils/progressApi";
+import {
+  generateReadingModule,
+  generateIa,
+  generatePrequestions,
+  generatePodcastScript,
+  generatePodcastAudio,
+} from "../utils/progressApi";
+
+// Materiais que podem ser gerados automaticamente apos a leitura. O "resumo"
+// NAO entra: a propria leitura ja e' o resumo (sobrescrever pela versao fraca
+// seria perda). 'exemplos' = Pratica.
+const MATERIAL_KINDS = [
+  { key: "prequiz", label: "Pre-Quiz" },
+  { key: "exemplos", label: "Pratica" },
+  { key: "quiz", label: "Quiz" },
+  { key: "flashcards", label: "Flashcards" },
+  { key: "piada", label: "Piada" },
+  { key: "diario", label: "Diario" },
+  { key: "podcast", label: "Podcast" },
+];
+const TEXT_KINDS = new Set(["exemplos", "quiz", "piada", "flashcards", "diario"]);
 
 // Coleta modulos "folha" (que contem aulas diretamente) preservando o path
 // relativo ao curso, usado pelo backend pra achar as transcricoes.
+// Conta tanto lesson-group (aula ja reconhecida) quanto video "cru" (lesson
+// .mp4 sem _dub) — sao justamente os que precisam de transcricao via WhisperX.
+const VIDEO_RE = /\.(mp4|webm|ts|m3u8|mkv)$/i;
 const collectModules = (content, acc = []) => {
   for (const item of content || []) {
     if (item.type === "module") {
-      const hasLessons = (item.content || []).some((c) => c.type === "lesson-group");
+      const hasLessons = (item.content || []).some(
+        (c) =>
+          c.type === "lesson-group" ||
+          (c.type === "lesson" && VIDEO_RE.test(c.title)),
+      );
       if (hasLessons) acc.push({ title: item.title, path: item.path });
       collectModules(item.content, acc);
     }
@@ -26,6 +53,13 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
   const modules = useMemo(() => collectModules(courseContent), [courseContent]);
   const [selected, setSelected] = useState(() => new Set(modules.map((m) => m.path)));
   const [model, setModel] = useState("deepseek-v4-flash");
+  const [instruction, setInstruction] = useState("");
+  const [autoTranscribe, setAutoTranscribe] = useState(true);
+  const [language, setLanguage] = useState("pt"); // idioma do curso ORIGINAL
+  const [genMaterials, setGenMaterials] = useState(false);
+  const [materialKinds, setMaterialKinds] = useState(
+    () => new Set(["exemplos", "quiz", "flashcards"]),
+  );
   const [loading, setLoading] = useState(false);
   const [current, setCurrent] = useState(null);
   const [done, setDone] = useState([]); // [{ module, created, skipped, error }]
@@ -39,6 +73,29 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
       next.has(path) ? next.delete(path) : next.add(path);
       return next;
     });
+
+  const toggleKind = (key) =>
+    setMaterialKinds((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+
+  // Gera os materiais (IA) de UMA aula de leitura ja criada. Texto vai junto num
+  // generateIa; pre-quiz e podcast tem fluxo proprio. Sem 'resumo' (e a leitura).
+  const runLessonMaterials = async (leituraTitle, prefix, kinds) => {
+    const text = kinds.filter((k) => TEXT_KINDS.has(k));
+    if (text.length) {
+      await generateIa({ courseTitle: leituraTitle, lessonPrefix: prefix, kinds: text, model });
+    }
+    if (kinds.includes("prequiz")) {
+      await generatePrequestions({ courseTitle: leituraTitle, lessonPrefix: prefix, model });
+    }
+    if (kinds.includes("podcast")) {
+      const s = await generatePodcastScript({ courseTitle: leituraTitle, lessonPrefix: prefix, model });
+      await generatePodcastAudio({ courseTitle: leituraTitle, lessonPrefix: prefix, title: s.title, turns: s.turns, model });
+    }
+  };
 
   const handleGenerate = async () => {
     const chosen = modules.filter((m) => selected.has(m.path));
@@ -59,8 +116,32 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
           moduleTitle: mod.title,
           index,
           model,
+          instruction: instruction.trim(),
+          autoTranscribe,
+          language,
         });
-        setDone((prev) => [...prev, { module: mod.title, ...out }]);
+
+        // #6: apos a leitura, gera o resto do "Gerar IA" (sem resumo) pra cada
+        // aula criada, no curso "- Leitura".
+        let materials = null;
+        const kinds = [...materialKinds];
+        const lessons = (out.created || []).filter((c) => c.ok && c.prefix);
+        if (genMaterials && kinds.length && lessons.length) {
+          const leituraTitle = `${courseTitle} - Leitura`;
+          materials = { ok: 0, fail: 0, total: lessons.length };
+          for (const lesson of lessons) {
+            if (cancelRef.current) break;
+            setCurrent(`${mod.title} — materiais (${materials.ok + materials.fail + 1}/${lessons.length})`);
+            try {
+              await runLessonMaterials(leituraTitle, lesson.prefix, kinds);
+              materials.ok += 1;
+            } catch {
+              materials.fail += 1;
+            }
+          }
+        }
+
+        setDone((prev) => [...prev, { module: mod.title, ...out, materials }]);
       } catch (err) {
         setDone((prev) => [...prev, { module: mod.title, error: err.message }]);
       }
@@ -100,6 +181,107 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          <div>
+            <label className="text-xs uppercase tracking-wide text-slate-500">
+              Instrucao extra <span className="text-slate-600 normal-case">(opcional)</span>
+            </label>
+            <textarea
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              disabled={loading}
+              rows={3}
+              placeholder="Ex.: modernize o conteudo e os exemplos para Spring Boot 4.x e Java 25, mesmo que o curso original use versoes antigas."
+              className="mt-1.5 w-full bg-slate-800/70 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 resize-y focus:outline-none focus:border-emerald-500/50 disabled:opacity-50"
+            />
+            <p className="text-[11px] text-slate-500 mt-1">
+              Aplicada na geracao da leitura de cada aula. Tem prioridade sobre a fidelidade a transcricao.
+            </p>
+          </div>
+
+          <label className="flex items-start gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoTranscribe}
+              onChange={(e) => setAutoTranscribe(e.target.checked)}
+              disabled={loading}
+              className="mt-0.5 accent-emerald-500"
+            />
+            <span className="text-sm text-slate-300">
+              Transcrever aulas sem .txt com WhisperX
+              <span className="block text-[11px] text-slate-500">
+                Aulas que so tem video sao transcritas (GPU/CPU conforme o .env) antes de gerar a leitura.
+              </span>
+            </span>
+          </label>
+
+          <div>
+            <label className="text-xs uppercase tracking-wide text-slate-500">Idioma do curso original</label>
+            <div className="mt-1.5 flex gap-2">
+              {[
+                { key: "pt", label: "Portugues" },
+                { key: "en", label: "Ingles" },
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => !loading && setLanguage(opt.key)}
+                  disabled={loading}
+                  className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+                    language === opt.key
+                      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200"
+                      : "border-slate-700 bg-slate-800/50 text-slate-400 hover:bg-slate-800"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-500 mt-1">
+              {language === "en"
+                ? "Curso em ingles: transcreve com modelo EN e a leitura sai em portugues (termos tecnicos preservados)."
+                : "A saida da leitura e sempre em portugues do Brasil."}
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-slate-700/60 p-3">
+            <label className="flex items-start gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={genMaterials}
+                onChange={(e) => setGenMaterials(e.target.checked)}
+                disabled={loading}
+                className="mt-0.5 accent-emerald-500"
+              />
+              <span className="text-sm text-slate-300">
+                Gerar materiais (IA) apos a leitura
+                <span className="block text-[11px] text-slate-500">
+                  Quando a leitura de cada aula terminar, gera os materiais marcados na propria
+                  aula. O <b>resumo</b> nao entra — a leitura ja e o resumo.
+                </span>
+              </span>
+            </label>
+            {genMaterials && (
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {MATERIAL_KINDS.map((k) => {
+                  const on = materialKinds.has(k.key);
+                  return (
+                    <button
+                      key={k.key}
+                      onClick={() => !loading && toggleKind(k.key)}
+                      disabled={loading}
+                      className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                        on
+                          ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200"
+                          : "border-slate-700 bg-slate-800/50 text-slate-400 hover:bg-slate-800"
+                      }`}
+                    >
+                      {k.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {modules.length === 0 ? (
             <div className="text-sm text-slate-400 py-8 text-center">
               Nenhum modulo com aulas encontrado neste curso.
@@ -146,7 +328,7 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
                         {on ? "✓" : ""}
                       </span>
                       <span className="truncate flex-1">{m.title}</span>
-                      {current === m.title && (
+                      {(current === m.title || current?.startsWith(`${m.title} —`)) && (
                         <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
                       )}
                       {result?.error && (
@@ -155,7 +337,19 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
                       {result && !result.error && (
                         <span className="text-[11px] text-emerald-400 flex items-center gap-1">
                           <Check className="w-3.5 h-3.5" />
+                          {result.transcription?.transcribed > 0 && (
+                            <span className="text-sky-400">
+                              {result.transcription.transcribed} transcrita
+                              {result.transcription.transcribed > 1 ? "s" : ""} ·{" "}
+                            </span>
+                          )}
                           {result.skipped ? "sem transcricao" : `${result.created?.filter((c) => c.ok).length || 0} aulas`}
+                          {result.materials && (
+                            <span className="text-amber-400">
+                              {" "}· {result.materials.ok}/{result.materials.total} c/ materiais
+                              {result.materials.fail > 0 ? ` (${result.materials.fail} falhou)` : ""}
+                            </span>
+                          )}
                         </span>
                       )}
                     </button>

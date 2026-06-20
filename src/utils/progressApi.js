@@ -293,14 +293,77 @@ export const generateIa = ({ courseTitle, lessonPrefix, kinds, model }) =>
     return data;
   });
 
+// Gera o podcast (~5 min) de uma aula: roteiro DeepSeek + TTS Chatterbox.
+// Lento (sobe o server e sintetiza dezenas de clips) — use timeout generoso.
+export const generatePodcast = ({ courseTitle, lessonPrefix, model }) =>
+  fetch(`${API_BASE}/api/ia/podcast`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle, lessonPrefix, model }),
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  });
+
+// Passo 1: gera so o roteiro (DeepSeek). Rapido.
+export const generatePodcastScript = ({ courseTitle, lessonPrefix, model }) =>
+  fetch(`${API_BASE}/api/ia/podcast/script`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle, lessonPrefix, model }),
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  });
+
+// Passo 2: sintetiza o audio (Chatterbox) a partir do roteiro. Lento (GPU local).
+export const generatePodcastAudio = ({ courseTitle, lessonPrefix, title, turns, model }) =>
+  fetch(`${API_BASE}/api/ia/podcast/audio`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle, lessonPrefix, title, turns, model }),
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  });
+
+// === Modo Entrevista (por modulo) ===
+export const getInterviewQuestions = ({ courseTitle, modulePath, moduleTitle, model, refresh }) =>
+  fetch(`${API_BASE}/api/ia/interview/questions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle, modulePath, moduleTitle, model, refresh }),
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  });
+
+export const evaluateInterview = ({ courseTitle, modulePath, moduleTitle, questions, answers, model }) =>
+  fetch(`${API_BASE}/api/ia/interview/evaluate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle, modulePath, moduleTitle, questions, answers, model }),
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  });
+
+export const fetchLastInterview = (courseTitle, modulePath) =>
+  fetch(`${API_BASE}/api/ia/interview/${enc(courseTitle)}/${enc(modulePath)}/last`).then(json);
+
 // === Curso de leitura ===
 // Gera o curso de leitura de UM modulo (a IA agrupa as aulas e condensa as
 // transcricoes em .txt). So funciona em modo local (filesystem).
-export const generateReadingModule = ({ courseTitle, modulePath, moduleTitle, index, model }) =>
+export const generateReadingModule = ({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language }) =>
   fetch(`${API_BASE}/api/ia/reading-course/module`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ courseTitle, modulePath, moduleTitle, index, model }),
+    body: JSON.stringify({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language }),
   }).then(async (res) => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);

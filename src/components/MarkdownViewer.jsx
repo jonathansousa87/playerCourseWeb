@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useReadTimer } from "../hooks/useReadTimer";
 import { LoadingState } from "./StateViews";
+import MermaidDiagram from "./MermaidDiagram";
 
 const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   const [content, setContent] = useState("");
@@ -107,6 +108,10 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
               ),
               code: ({ node, children, ...props }) => {
                 const isInline = !node?.position?.start.line || node?.position?.start.line === node?.position?.end.line;
+                // Bloco ```mermaid -> renderiza o diagrama (mapa mental/fluxograma).
+                if (!isInline && /\blanguage-mermaid\b/.test(props.className || "")) {
+                  return <MermaidDiagram chart={String(children).replace(/\n$/, "")} />;
+                }
                 return isInline ? (
                   <code
                     className="text-[13px] font-mono bg-slate-800/70 text-cyan-300 px-1.5 py-0.5 rounded-md border border-slate-700/40"

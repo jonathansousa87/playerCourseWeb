@@ -2,6 +2,8 @@ import express from 'express';
 import { query } from '../../db/index.js';
 import { generateForLesson } from '../ai/generator.js';
 import { generateReadingModule } from '../ai/readingCourse.js';
+import { generatePodcastForLesson, generatePodcastScript, synthesizePodcast } from '../ai/podcast.js';
+import { generateInterviewQuestions, evaluateInterview } from '../ai/interview.js';
 import { chatWithLesson } from '../ai/chat.js';
 import { generatePrequestionsForLesson } from '../ai/prequestions.js';
 import { DEFAULT_MODEL as DEEPSEEK_DEFAULT_MODEL } from '../ai/deepseek.js';
@@ -56,7 +58,7 @@ router.post('/api/ia/reading-course/module', async (req, res) => {
         error: 'Gerar curso de leitura so funciona no modo local (filesystem). Troque COURSE_SOURCE.',
       });
     }
-    const { courseTitle, modulePath, moduleTitle, index, model } = req.body || {};
+    const { courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language } = req.body || {};
     if (!courseTitle || !modulePath) {
       return res.status(400).json({ error: 'courseTitle e modulePath obrigatorios' });
     }
@@ -70,10 +72,194 @@ router.post('/api/ia/reading-course/module', async (req, res) => {
       moduleTitle: moduleTitle || modulePath,
       index: Number(index) || 1,
       model: model || DEEPSEEK_DEFAULT_MODEL,
+      instruction: typeof instruction === 'string' ? instruction.trim() : '',
+      autoTranscribe: autoTranscribe !== false,
+      language: language === 'en' ? 'en' : 'pt',
     });
     res.json(out);
   } catch (err) {
     res.status(500).json({ error: err.message, code: err.code });
+  }
+});
+
+// Gera um podcast (~5 min) da aula: roteiro DeepSeek + TTS Chatterbox. So roda
+// em modo filesystem (escreve o mp3 em disco).
+router.post('/api/ia/podcast', async (req, res) => {
+  try {
+    if (getCourseSource() === 'drive') {
+      return res.status(400).json({
+        error: 'Gerar podcast so funciona no modo local (filesystem). Troque COURSE_SOURCE.',
+      });
+    }
+    const { courseTitle, lessonPrefix, model } = req.body || {};
+    if (!courseTitle || !lessonPrefix) {
+      return res.status(400).json({ error: 'courseTitle e lessonPrefix obrigatorios' });
+    }
+    if (!process.env.DEEPSEEK_API_KEY) {
+      return res.status(500).json({ error: 'DEEPSEEK_API_KEY nao configurada no .env' });
+    }
+    const out = await generatePodcastForLesson({
+      coursesPath: getCoursesPath(),
+      courseTitle,
+      lessonPrefix,
+      model: model || DEEPSEEK_DEFAULT_MODEL,
+    });
+    res.json(out);
+  } catch (err) {
+    const code =
+      err.code === 'NO_TRANSCRIPT' ? 404
+        : err.code === 'EMPTY_TRANSCRIPT' || err.code === 'BAD_SCRIPT' ? 422
+          : err.code === 'NO_KOKORO' || err.code === 'NO_CHATTERBOX' || err.code === 'NO_VOICE' ? 503
+            : 500;
+    res.status(code).json({ error: err.message, code: err.code });
+  }
+});
+
+// Passo 1 do podcast: gera SO o roteiro (DeepSeek). Rapido — o front chama isso
+// primeiro pra nao competir com os outros materiais na API.
+router.post('/api/ia/podcast/script', async (req, res) => {
+  try {
+    if (getCourseSource() === 'drive') {
+      return res.status(400).json({ error: 'Gerar podcast so funciona no modo local (filesystem).' });
+    }
+    const { courseTitle, lessonPrefix, model } = req.body || {};
+    if (!courseTitle || !lessonPrefix) {
+      return res.status(400).json({ error: 'courseTitle e lessonPrefix obrigatorios' });
+    }
+    if (!process.env.DEEPSEEK_API_KEY) {
+      return res.status(500).json({ error: 'DEEPSEEK_API_KEY nao configurada no .env' });
+    }
+    const out = await generatePodcastScript({
+      coursesPath: getCoursesPath(),
+      courseTitle, lessonPrefix,
+      model: model || DEEPSEEK_DEFAULT_MODEL,
+    });
+    res.json(out);
+  } catch (err) {
+    const code = err.code === 'NO_TRANSCRIPT' ? 404
+      : err.code === 'EMPTY_TRANSCRIPT' || err.code === 'BAD_SCRIPT' ? 422 : 500;
+    res.status(code).json({ error: err.message, code: err.code });
+  }
+});
+
+// Passo 2 do podcast: sintetiza o audio (Chatterbox) a partir do roteiro pronto.
+// Nao usa DeepSeek — roda em paralelo com os outros materiais.
+router.post('/api/ia/podcast/audio', async (req, res) => {
+  try {
+    if (getCourseSource() === 'drive') {
+      return res.status(400).json({ error: 'Gerar podcast so funciona no modo local (filesystem).' });
+    }
+    const { courseTitle, lessonPrefix, title, turns } = req.body || {};
+    if (!courseTitle || !lessonPrefix || !Array.isArray(turns)) {
+      return res.status(400).json({ error: 'courseTitle, lessonPrefix e turns[] obrigatorios' });
+    }
+    const out = await synthesizePodcast({
+      coursesPath: getCoursesPath(),
+      courseTitle, lessonPrefix, title, turns,
+    });
+    res.json(out);
+  } catch (err) {
+    const code = err.code === 'NO_TRANSCRIPT' ? 404
+      : err.code === 'BAD_SCRIPT' ? 422
+        : err.code === 'NO_KOKORO' || err.code === 'NO_CHATTERBOX' || err.code === 'NO_VOICE' ? 503 : 500;
+    res.status(code).json({ error: err.message, code: err.code });
+  }
+});
+
+// === Modo Entrevista (por modulo) ===
+// Perguntas: cache GLOBAL (interview_questions), reusado entre usuarios. So
+// roda em modo filesystem (le transcricoes do disco).
+router.post('/api/ia/interview/questions', async (req, res) => {
+  try {
+    if (getCourseSource() === 'drive') {
+      return res.status(400).json({ error: 'Entrevista so funciona no modo local (filesystem).' });
+    }
+    const { courseTitle, modulePath, moduleTitle, model, refresh } = req.body || {};
+    if (!courseTitle || !modulePath) {
+      return res.status(400).json({ error: 'courseTitle e modulePath obrigatorios' });
+    }
+    if (!process.env.DEEPSEEK_API_KEY) {
+      return res.status(500).json({ error: 'DEEPSEEK_API_KEY nao configurada no .env' });
+    }
+
+    if (!refresh) {
+      const cached = await query(
+        'SELECT questions FROM interview_questions WHERE course_title = $1 AND module_path = $2',
+        [courseTitle, modulePath],
+      );
+      if (cached.rows[0]) return res.json({ questions: cached.rows[0].questions, cached: true });
+    }
+
+    const out = await generateInterviewQuestions({
+      coursesPath: getCoursesPath(),
+      courseTitle, modulePath, moduleTitle,
+      model: model || DEEPSEEK_DEFAULT_MODEL,
+    });
+    const saved = await query(
+      `INSERT INTO interview_questions (course_title, module_path, module_title, questions, generated_at)
+       VALUES ($1, $2, $3, $4::jsonb, NOW())
+       ON CONFLICT (course_title, module_path)
+       DO UPDATE SET questions = EXCLUDED.questions, module_title = EXCLUDED.module_title, generated_at = NOW()
+       RETURNING questions`,
+      [courseTitle, modulePath, moduleTitle || null, JSON.stringify(out.questions)],
+    );
+    res.json({ questions: saved.rows[0].questions, usage: out.usage });
+  } catch (err) {
+    const code = err.code === 'EMPTY_MODULE' ? 404 : err.code === 'BAD_QUESTIONS' ? 422 : 500;
+    res.status(code).json({ error: err.message, code: err.code });
+  }
+});
+
+// Avaliacao: roda a IA nas respostas e salva a sessao POR usuario.
+router.post('/api/ia/interview/evaluate', async (req, res) => {
+  try {
+    const { courseTitle, modulePath, moduleTitle, questions, answers, model } = req.body || {};
+    if (!courseTitle || !modulePath || !Array.isArray(questions) || !Array.isArray(answers)) {
+      return res.status(400).json({ error: 'courseTitle, modulePath, questions[] e answers[] obrigatorios' });
+    }
+    if (!process.env.DEEPSEEK_API_KEY) {
+      return res.status(500).json({ error: 'DEEPSEEK_API_KEY nao configurada no .env' });
+    }
+
+    const out = await evaluateInterview({
+      moduleTitle: moduleTitle || modulePath,
+      questions, answers,
+      model: model || DEEPSEEK_DEFAULT_MODEL,
+    });
+
+    const qaForStore = questions.map((q, i) => ({
+      question: q.question,
+      topic: q.topic,
+      answer: String(answers?.[i]?.answer ?? answers?.[i] ?? ''),
+    }));
+    await query(
+      `INSERT INTO interview_sessions (user_id, course_title, module_path, answers, feedback, score, total)
+       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)`,
+      [req.userId, courseTitle, modulePath, JSON.stringify(qaForStore), JSON.stringify(out.feedback), out.score, out.total],
+    );
+
+    res.json({ feedback: out.feedback, score: out.score, total: out.total });
+  } catch (err) {
+    const code = err.code === 'BAD_EVAL' ? 422 : 500;
+    res.status(code).json({ error: err.message, code: err.code });
+  }
+});
+
+// Ultima sessao de entrevista do usuario pra este modulo (pra mostrar o resultado anterior).
+router.get('/api/ia/interview/:courseTitle/:modulePath/last', async (req, res) => {
+  try {
+    const courseTitle = decodeURIComponent(req.params.courseTitle);
+    const modulePath = decodeURIComponent(req.params.modulePath);
+    const { rows } = await query(
+      `SELECT answers, feedback, score, total, created_at
+       FROM interview_sessions
+       WHERE user_id = $1 AND course_title = $2 AND module_path = $3
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [req.userId, courseTitle, modulePath],
+    );
+    res.json(rows[0] || null);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
