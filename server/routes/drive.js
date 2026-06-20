@@ -63,7 +63,8 @@ router.get('/api/drive/auth', (req, res) => {
   }
   const url = createOAuth2Client().generateAuthUrl({
     access_type: 'offline',
-    scope: ['https://www.googleapis.com/auth/drive.readonly'],
+    // Acesso total (read+write) — necessario pra gravar leitura/transcricao/podcast no Drive.
+    scope: ['https://www.googleapis.com/auth/drive'],
     prompt: 'consent', // garante refresh_token mesmo se ja autorizou antes
   });
   res.redirect(url);

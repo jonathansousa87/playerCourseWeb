@@ -22,7 +22,7 @@ const stripCodeFence = (s) => {
 };
 
 // Normaliza o texto bruto de uma transcricao (puro ou VTT).
-const parseTranscriptRaw = (raw, isVtt = false) => {
+export const parseTranscriptRaw = (raw, isVtt = false) => {
   const lines = raw.split(/\r?\n/);
   const out = [];
   for (const line of lines) {

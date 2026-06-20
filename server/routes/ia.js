@@ -53,11 +53,6 @@ router.post('/api/ia/generate', async (req, res) => {
 // transcricoes em .txt). So funciona em modo filesystem (escreve em disco).
 router.post('/api/ia/reading-course/module', async (req, res) => {
   try {
-    if (getCourseSource() === 'drive') {
-      return res.status(400).json({
-        error: 'Gerar curso de leitura so funciona no modo local (filesystem). Troque COURSE_SOURCE.',
-      });
-    }
     const { courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language } = req.body || {};
     if (!courseTitle || !modulePath) {
       return res.status(400).json({ error: 'courseTitle e modulePath obrigatorios' });
@@ -86,11 +81,6 @@ router.post('/api/ia/reading-course/module', async (req, res) => {
 // em modo filesystem (escreve o mp3 em disco).
 router.post('/api/ia/podcast', async (req, res) => {
   try {
-    if (getCourseSource() === 'drive') {
-      return res.status(400).json({
-        error: 'Gerar podcast so funciona no modo local (filesystem). Troque COURSE_SOURCE.',
-      });
-    }
     const { courseTitle, lessonPrefix, model } = req.body || {};
     if (!courseTitle || !lessonPrefix) {
       return res.status(400).json({ error: 'courseTitle e lessonPrefix obrigatorios' });
@@ -119,9 +109,6 @@ router.post('/api/ia/podcast', async (req, res) => {
 // primeiro pra nao competir com os outros materiais na API.
 router.post('/api/ia/podcast/script', async (req, res) => {
   try {
-    if (getCourseSource() === 'drive') {
-      return res.status(400).json({ error: 'Gerar podcast so funciona no modo local (filesystem).' });
-    }
     const { courseTitle, lessonPrefix, model } = req.body || {};
     if (!courseTitle || !lessonPrefix) {
       return res.status(400).json({ error: 'courseTitle e lessonPrefix obrigatorios' });
@@ -146,9 +133,6 @@ router.post('/api/ia/podcast/script', async (req, res) => {
 // Nao usa DeepSeek — roda em paralelo com os outros materiais.
 router.post('/api/ia/podcast/audio', async (req, res) => {
   try {
-    if (getCourseSource() === 'drive') {
-      return res.status(400).json({ error: 'Gerar podcast so funciona no modo local (filesystem).' });
-    }
     const { courseTitle, lessonPrefix, title, turns } = req.body || {};
     if (!courseTitle || !lessonPrefix || !Array.isArray(turns)) {
       return res.status(400).json({ error: 'courseTitle, lessonPrefix e turns[] obrigatorios' });

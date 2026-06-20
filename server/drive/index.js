@@ -1,6 +1,10 @@
 import { google } from 'googleapis';
 
-const SCOPES = ['https://www.googleapis.com/auth/drive.readonly'];
+// Acesso total (read+write): a plataforma precisa gravar no Drive (curso de
+// leitura, transcricoes do WhisperX e o mp3 do podcast). 'drive.file' nao serve
+// porque so deixa mexer em arquivos que o proprio app criou — e gravamos dentro
+// das pastas de curso ja existentes.
+const SCOPES = ['https://www.googleapis.com/auth/drive'];
 
 const createOAuth2Client = () => {
   const client = new google.auth.OAuth2(
@@ -225,6 +229,97 @@ export const findTranscriptInDrive = async (courseTitle, lessonPrefix) => {
       /_dub(?:\.[a-z-]+)?\.vtt$/i.test(f.name),
   );
   return vtt ? { fileId: vtt.id, name: vtt.name } : null;
+};
+
+// === Escrita no Drive ===
+
+// Escapa um valor pra usar entre aspas simples numa query do Drive.
+const q = (s) => `'${String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+
+// Acha um arquivo por nome exato dentro de uma pasta. Retorna {id,name} ou null.
+export const findFileInFolder = async (parentId, name) => {
+  const { data } = await getDrive().files.list({
+    q: `name = ${q(name)} and '${parentId}' in parents and trashed = false`,
+    fields: 'files(id, name)',
+    pageSize: 1,
+  });
+  return data.files?.[0] || null;
+};
+
+// Garante uma subpasta (acha ou cria) e retorna o id.
+export const ensureSubfolder = async (parentId, name) => {
+  const drive = getDrive();
+  const { data } = await drive.files.list({
+    q: `name = ${q(name)} and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+    fields: 'files(id, name)',
+    pageSize: 1,
+  });
+  if (data.files?.[0]) return data.files[0].id;
+  const created = await drive.files.create({
+    requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
+    fields: 'id',
+  });
+  clearCache();
+  return created.data.id;
+};
+
+// id da pasta-mae de um arquivo.
+export const getParentFolderId = async (fileId) => {
+  const { data } = await getDrive().files.get({ fileId, fields: 'parents' });
+  return data.parents?.[0] || null;
+};
+
+// Sobe (cria ou atualiza) um arquivo de TEXTO numa pasta. Retorna o fileId.
+export const uploadText = async (parentId, name, content, mimeType = 'text/plain') => {
+  const drive = getDrive();
+  const existing = await findFileInFolder(parentId, name);
+  if (existing) {
+    await drive.files.update({ fileId: existing.id, media: { mimeType, body: content } });
+    clearCache();
+    return existing.id;
+  }
+  const created = await drive.files.create({
+    requestBody: { name, parents: [parentId] },
+    media: { mimeType, body: content },
+    fields: 'id',
+  });
+  clearCache();
+  return created.data.id;
+};
+
+// Sobe (cria ou atualiza) um arquivo BINARIO a partir de um path local. Retorna o fileId.
+export const uploadFileFromPath = async (parentId, name, localPath, mimeType) => {
+  const { createReadStream } = await import('fs');
+  const drive = getDrive();
+  const existing = await findFileInFolder(parentId, name);
+  if (existing) {
+    await drive.files.update({ fileId: existing.id, media: { mimeType, body: createReadStream(localPath) } });
+    clearCache();
+    return existing.id;
+  }
+  const created = await drive.files.create({
+    requestBody: { name, parents: [parentId] },
+    media: { mimeType, body: createReadStream(localPath) },
+    fields: 'id',
+  });
+  clearCache();
+  return created.data.id;
+};
+
+// Baixa um arquivo do Drive pra um path local (pra rodar WhisperX em audio do Drive).
+export const downloadToFile = async (fileId, destPath) => {
+  const { createWriteStream } = await import('fs');
+  const res = await getDrive().files.get({ fileId, alt: 'media', acknowledgeAbuse: true }, { responseType: 'stream' });
+  await new Promise((resolve, reject) => {
+    res.data.on('error', reject).pipe(createWriteStream(destPath)).on('finish', resolve).on('error', reject);
+  });
+  return destPath;
+};
+
+// Remove uma pasta (e tudo dentro) por id — usado pra re-rodar idempotente.
+export const deleteFile = async (fileId) => {
+  await getDrive().files.delete({ fileId });
+  clearCache();
 };
 
 export { SCOPES };

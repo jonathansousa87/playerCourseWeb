@@ -8,7 +8,7 @@
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { chatCompletion, DEFAULT_MODEL } from './deepseek.js';
-import { parseTranscript } from './generator.js';
+import { parseTranscript, parseTranscriptRaw } from './generator.js';
 import { transcribeToTxt } from './whisperx.js';
 import { query } from '../../db/index.js';
 import {
@@ -212,19 +212,9 @@ const planGrouping = async ({ moduleTitle, transcripts, model }) => {
   }
 };
 
-// Fase 2: condensa as transcricoes de um grupo num texto de leitura.
-const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt' }) => {
-  const parts = [];
-  for (const src of sources) {
-    try {
-      parts.push(await parseTranscript(src.path));
-    } catch {
-      /* ignora transcricao ilegivel */
-    }
-  }
-  const merged = parts.filter(Boolean).join('\n\n');
-  if (merged.length < 40) return null;
-
+// Fase 2 (parte IA): condensa um texto ja montado numa aula de leitura.
+const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt' }) => {
+  if (!merged || merged.length < 40) return null;
   const { content, usage, model: usedModel } = await chatCompletion({
     system: READING_CONDENSE_SYSTEM,
     user: buildReadingCondensePrompt({ lessonTitle, transcript: merged, instruction, sourceLanguage: language }),
@@ -235,9 +225,27 @@ const condenseLesson = async ({ lessonTitle, sources, model, instruction, langua
   return { text: content.trim(), usage, model: usedModel };
 };
 
-// Gera o curso de leitura para UM modulo. Retorna o manifesto do que foi criado.
-// modulePath e relativo a raiz do curso (ex.: "24. [SQL Server] Procedures").
-export const generateReadingModule = async ({
+// fs: le as transcricoes do disco e condensa.
+const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt' }) => {
+  const parts = [];
+  for (const src of sources) {
+    try {
+      parts.push(await parseTranscript(src.path));
+    } catch {
+      /* ignora transcricao ilegivel */
+    }
+  }
+  return condenseText({ lessonTitle, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language });
+};
+
+// Gera o curso de leitura para UM modulo. Despacha pro modo do .env.
+export const generateReadingModule = async (opts) => {
+  const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
+  return isDrive ? generateReadingModuleDrive(opts) : generateReadingModuleFs(opts);
+};
+
+// Versao filesystem (padrao). modulePath e relativo a raiz do curso.
+const generateReadingModuleFs = async ({
   coursesPath,
   courseTitle,
   modulePath,
@@ -335,4 +343,98 @@ export const generateReadingModule = async ({
   });
 
   return { module: moduleTitle, outDir, transcription, created };
+};
+
+// Versao Drive. modulePath = id da pasta do modulo no Drive (vem da arvore).
+// Le transcricoes que JA existem no Drive, condensa/traduz e sobe os .txt na
+// pasta "<curso> - Leitura". WhisperX nao roda aqui (exigiria baixar os videos):
+// aulas sem .txt sao puladas.
+const generateReadingModuleDrive = async ({
+  courseTitle, modulePath, moduleTitle, index = 1,
+  model = DEFAULT_MODEL, instruction = '', language = 'pt',
+}) => {
+  const drive = await import('../drive/index.js');
+  const { getDriveFolderId } = await import('../config.js');
+  const rootId = getDriveFolderId();
+  if (!rootId) throw new Error('DRIVE_COURSES_FOLDER_ID nao configurado');
+
+  const moduleFolderId = modulePath;
+  const transcription = { transcribed: 0, failed: [], skipped: true };
+
+  const files = drive.flattenFiles(await drive.listFilesRecursive(moduleFolderId));
+  const transcripts = files
+    .filter((f) => TRANSCRIPT_RE.test(f.name) && !MATERIAL_TXT_RE.test(f.name))
+    .map((f) => ({ name: f.name, fileId: f.id, title: lessonTitleFromFile(f.name) }))
+    .sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' }))
+    .map((t, id) => ({ id, ...t }));
+  if (transcripts.length === 0) {
+    return { module: moduleTitle, skipped: 'sem transcricoes', transcription, created: [] };
+  }
+
+  const plan = await planGrouping({ moduleTitle, transcripts, model });
+
+  const readingCourseTitle = `${courseTitle} - Leitura`;
+  const leituraRootId = await drive.ensureSubfolder(rootId, readingCourseTitle);
+  const cleanPart = safeName(cleanModuleTitle(moduleTitle));
+  const moduleFolderName = `${pad2(index)} ${cleanPart}`;
+
+  // Idempotente: remove pasta(s) antiga(s) deste modulo + resumos orfaos no DB.
+  try {
+    for (const d of await drive.listFolders(leituraRootId)) {
+      if (!/^\d+\s/.test(d.name) || d.name.replace(/^\d+\s+/, '') !== cleanPart) continue;
+      try {
+        const old = drive.flattenFiles(await drive.listFilesRecursive(d.id));
+        for (const f of old) {
+          const m = f.name.match(TRANSCRIPT_RE);
+          if (!m) continue;
+          await query(
+            "DELETE FROM lesson_materials WHERE course_title = $1 AND lesson_prefix = $2 AND kind = 'resumo'",
+            [readingCourseTitle, f.name.slice(0, m.index)],
+          );
+        }
+      } catch { /* ignora */ }
+      await drive.deleteFile(d.id);
+    }
+  } catch { /* leitura nova */ }
+
+  const outFolderId = await drive.ensureSubfolder(leituraRootId, moduleFolderName);
+
+  const created = await mapPool(plan, 4, async (lesson, idx) => {
+    const title = cleanLessonTitle(lesson.title);
+    const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
+    try {
+      const parts = [];
+      for (const s of sources) {
+        try {
+          parts.push(parseTranscriptRaw(await drive.getFileContent(s.fileId), /\.vtt$/i.test(s.name)));
+        } catch { /* ignora transcricao ilegivel */ }
+      }
+      const out = await condenseText({
+        lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language,
+      });
+      if (!out) return { title, ok: false, error: 'transcricao vazia' };
+
+      const fileTitle = `${pad2(idx + 1)} ${safeName(title)}`;
+      const fileName = `${fileTitle}_dub.txt`;
+      await drive.uploadText(outFolderId, fileName, out.text);
+      try {
+        await query(
+          `INSERT INTO lesson_materials (course_title, lesson_prefix, kind, content)
+           VALUES ($1, $2, 'resumo', $3)
+           ON CONFLICT (course_title, lesson_prefix, kind)
+           DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
+          [readingCourseTitle, fileTitle, out.text],
+        );
+      } catch { /* DB falhou: o .txt ja esta no Drive */ }
+
+      return {
+        title, file: fileName, prefix: fileTitle,
+        sources: sources.map((s) => s.title), ok: true, usage: out.usage,
+      };
+    } catch (err) {
+      return { title, ok: false, error: err.message };
+    }
+  });
+
+  return { module: moduleTitle, outFolderId, transcription, created };
 };

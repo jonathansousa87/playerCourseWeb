@@ -105,13 +105,15 @@ export const synthesizePodcast = async ({
   const voiceSenior = VOICE_SENIOR();
   const voiceJunior = VOICE_JUNIOR();
   const names = { senior: NAME_SENIOR(), junior: NAME_JUNIOR() };
+  const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
 
-  // Pasta da aula (a partir da transcricao) pra gravar o mp3.
+  // Localiza a aula. fs: ref = caminho da transcricao (pasta = onde grava o mp3).
+  // drive: ref = fileId da transcricao (pega a pasta-mae pra subir o mp3 nela).
   const { ref } = await loadTranscriptForLesson({ courseTitle, lessonPrefix, coursesPath });
-  const lessonDir = dirname(ref);
 
   await ensureServer();
 
+  const outName = `${lessonPrefix}_podcast_dub_01.mp3`;
   const work = join(tmpdir(), `podcast-${randomUUID()}`);
   await fs.mkdir(work, { recursive: true });
   const clips = [];
@@ -126,10 +128,21 @@ export const synthesizePodcast = async ({
 
     const listPath = join(work, 'list.txt');
     await fs.writeFile(listPath, clips.map((c) => `file '${c}'`).join('\n'), 'utf8');
-    const outAbs = join(lessonDir, `${lessonPrefix}_podcast_dub_01.mp3`);
-    await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c:a', 'libmp3lame', '-q:a', '4', outAbs]);
+    // Renderiza sempre num temp; depois vai pro disco (fs) ou pro Drive (upload).
+    const tmpMp3 = join(work, outName);
+    await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c:a', 'libmp3lame', '-q:a', '4', tmpMp3]);
 
-    const audioRel = relative(join(coursesPath, courseTitle), outAbs);
+    let audioRel;
+    if (isDrive) {
+      // Sobe o mp3 na pasta da aula no Drive; guarda o fileId (o /cursos/ serve por id).
+      const { getParentFolderId, uploadFileFromPath } = await import('../drive/index.js');
+      const parentId = await getParentFolderId(ref);
+      audioRel = await uploadFileFromPath(parentId, outName, tmpMp3, 'audio/mpeg');
+    } else {
+      const outAbs = join(dirname(ref), outName);
+      await fs.copyFile(tmpMp3, outAbs);
+      audioRel = relative(join(coursesPath, courseTitle), outAbs);
+    }
     const payload = JSON.stringify({ audio: audioRel, title: podcastTitle, turns: clean, names });
     await query(
       `INSERT INTO lesson_materials (course_title, lesson_prefix, kind, content)
