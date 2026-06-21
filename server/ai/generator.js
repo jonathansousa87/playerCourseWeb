@@ -196,6 +196,7 @@ export const generateForLesson = async ({
   lessonPrefix,
   kinds,
   model = DEFAULT_MODEL,
+  instruction = '',
 }) => {
   if (!userId) throw new Error('generateForLesson: userId obrigatorio');
   const { text: transcript, ref: transcriptPath, lessonTitle: lessonTitleFromTranscript } =
@@ -237,7 +238,7 @@ export const generateForLesson = async ({
       return { kind, ok: false, error: `kind desconhecido: ${kind}` };
     }
     try {
-      const user = promptBuilders[kind]({ lessonTitle, transcript, weekLabel });
+      const user = promptBuilders[kind]({ lessonTitle, transcript, weekLabel, instruction });
       const { content, usage, model: usedModel } = await chatCompletion({
         system: SYSTEM_PROMPTS[kind],
         user,

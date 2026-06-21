@@ -44,6 +44,7 @@ export const generatePrequestionsForLesson = async ({
   courseTitle,
   lessonPrefix,
   model = DEFAULT_MODEL,
+  instruction = '',
 }) => {
   const { text: transcript, lessonTitle: lessonTitleFromTranscript } =
     await loadTranscriptForLesson({ courseTitle, lessonPrefix, coursesPath });
@@ -54,7 +55,7 @@ export const generatePrequestionsForLesson = async ({
   }
 
   const lessonTitle = lessonPrefix.replace(/[-_]+$/, '').replace(/-/g, ' ').trim();
-  const user = buildPrequestionsPrompt({ lessonTitle, transcript });
+  const user = buildPrequestionsPrompt({ lessonTitle, transcript, instruction });
 
   const { content, usage, model: usedModel } = await chatCompletion({
     system: SYSTEM_PROMPTS.prequestions,

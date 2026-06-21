@@ -1,6 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { generateIa, generatePrequestions, generatePodcastScript, generatePodcastAudio } from "../utils/progressApi";
+import { INSTRUCTION_PRESETS } from "../utils/instructionPresets";
+
+// kinds que correspondem a uma chave de `materials` (pra detectar "ja gerado").
+// prequiz nao tem material em lesson_materials (e on-demand) — sempre "a gerar".
+const MATERIAL_KEYS = new Set(["resumo", "exemplos", "piada", "quiz", "flashcards", "diario", "podcast"]);
 
 // "prequiz" eh especial: nao gera arquivo no disco, salva no Postgres
 // (lesson_prequestions). Roteado pra um endpoint diferente em handleGenerate.
@@ -54,9 +59,22 @@ const AIGenerateModal = ({
   onClose,
   courseTitle,
   lessonPrefix,
+  existingKinds = [],
   onGenerated,
 }) => {
-  const [selected, setSelected] = useState(() => new Set(["resumo"]));
+  // Default: marca so o que AINDA NAO foi gerado (prequiz sempre conta como nao gerado).
+  const existing = new Set(existingKinds);
+  const [selected, setSelected] = useState(
+    () => new Set(KIND_OPTIONS.filter((o) => !(MATERIAL_KEYS.has(o.key) && existing.has(o.key))).map((o) => o.key)),
+  );
+  // Quando reabrir pra outra aula (muda lessonPrefix), recalcula os nao-gerados.
+  useEffect(() => {
+    const ex = new Set(existingKinds);
+    setSelected(new Set(KIND_OPTIONS.filter((o) => !(MATERIAL_KEYS.has(o.key) && ex.has(o.key))).map((o) => o.key)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lessonPrefix, open]);
+  const [niche, setNiche] = useState("");
+  const [instruction, setInstruction] = useState("");
   const [model, setModel] = useState("deepseek-v4-flash");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -88,13 +106,14 @@ const AIGenerateModal = ({
   // Gera UM material DeepSeek e devolve o resultado normalizado { kind, ok, ... }.
   // (O podcast tem fluxo proprio em handleGenerate: roteiro + audio.)
   const runOne = async (kind) => {
+    const instr = instruction.trim();
     try {
       if (kind === "prequiz") {
         // Pre-quiz salva no DB (lesson_prequestions), nao em arquivo.
-        const out = await generatePrequestions({ courseTitle, lessonPrefix, model });
+        const out = await generatePrequestions({ courseTitle, lessonPrefix, model, instruction: instr });
         return { kind, ok: true, file: `${out.questions.length} perguntas no DB`, usage: out.usage, model: out.model };
       }
-      const out = await generateIa({ courseTitle, lessonPrefix, kinds: [kind], model });
+      const out = await generateIa({ courseTitle, lessonPrefix, kinds: [kind], model, instruction: instr });
       return out.results?.[0] || { kind, ok: false, error: "falha" };
     } catch (err) {
       return { kind, ok: false, error: err.message || "erro" };
@@ -199,6 +218,7 @@ const AIGenerateModal = ({
             <div className="space-y-2 mb-4">
               {KIND_OPTIONS.map((opt) => {
                 const on = selected.has(opt.key);
+                const alreadyGen = MATERIAL_KEYS.has(opt.key) && existing.has(opt.key);
                 return (
                   <button
                     key={opt.key}
@@ -211,6 +231,9 @@ const AIGenerateModal = ({
                   >
                     <span className="text-lg">{opt.icon}</span>
                     <span className="flex-1 font-medium">{opt.label}</span>
+                    {alreadyGen && (
+                      <span className="text-[10px] uppercase tracking-wide text-emerald-400/80 mr-1">ja gerado</span>
+                    )}
                     <span
                       className={`w-4 h-4 rounded border-2 ${
                         on ? "bg-current border-current" : "border-slate-600"
@@ -220,6 +243,32 @@ const AIGenerateModal = ({
                 );
               })}
             </div>
+
+            {/* Nicho/instrucao — OPCIONAL aqui (diferente do curso de leitura). */}
+            <label className="block text-xs text-slate-400 mb-1">Instrucao / nicho <span className="text-slate-600">(opcional)</span></label>
+            <select
+              value={niche}
+              onChange={(e) => {
+                const key = e.target.value;
+                setNiche(key);
+                const preset = INSTRUCTION_PRESETS.find((p) => p.key === key);
+                setInstruction(preset ? preset.text : "");
+              }}
+              className="w-full bg-slate-800/80 border border-slate-700/50 rounded-xl px-3 py-2 text-slate-200 text-sm mb-2 focus:outline-none focus:border-blue-500/40"
+            >
+              <option value="">Sem instrucao extra</option>
+              {INSTRUCTION_PRESETS.map((p) => (
+                <option key={p.key} value={p.key}>{p.label}</option>
+              ))}
+            </select>
+            {niche && (
+              <textarea
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                rows={4}
+                className="w-full bg-slate-800/70 border border-slate-700/50 rounded-xl px-3 py-2 text-slate-200 text-sm mb-4 resize-y focus:outline-none focus:border-blue-500/40"
+              />
+            )}
 
             <label className="block text-xs text-slate-400 mb-1">Modelo</label>
             <select

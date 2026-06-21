@@ -33,25 +33,34 @@ const STEP_CONFIG = [
 // Nó da linha temporal com ícone de linha (lucide). Ativo e concluído usam a
 // MESMA cor (accent do tema); o ativo ganha um anel e o concluído um selo de
 // check sobre o ícone do passo. Futuro = apagado.
-const TimelineNode = ({ step, isActive, isCompleted, onClick }) => {
+const TimelineNode = ({ step, isActive, isCompleted, isGenerated = true, onClick }) => {
   const Icon = step.Icon;
   const accentStyle = isActive || isCompleted;
 
-  const circleStyle = accentStyle
+  // Nao gerado: tracejado e apagado, pra sinalizar "ainda nao existe".
+  const circleStyle = !isGenerated
     ? {
-        background: "var(--accent-soft)",
-        borderColor: "var(--accent)",
-        boxShadow: isActive ? "0 0 0 3px var(--accent-soft)" : "none",
+        background: "transparent",
+        borderColor: "var(--border-strong)",
+        borderStyle: "dashed",
+        opacity: isActive ? 0.95 : 0.5,
+        boxShadow: isActive ? "0 0 0 3px var(--surface-2)" : "none",
       }
-    : { background: "var(--surface-2)", borderColor: "var(--border-strong)" };
+    : accentStyle
+      ? {
+          background: "var(--accent-soft)",
+          borderColor: "var(--accent)",
+          boxShadow: isActive ? "0 0 0 3px var(--accent-soft)" : "none",
+        }
+      : { background: "var(--surface-2)", borderColor: "var(--border-strong)" };
 
-  const iconColor = accentStyle ? "var(--accent)" : "var(--text-muted)";
-  const labelColor = accentStyle ? "var(--accent)" : "var(--text-muted)";
+  const iconColor = !isGenerated ? "var(--text-subtle)" : accentStyle ? "var(--accent)" : "var(--text-muted)";
+  const labelColor = !isGenerated ? "var(--text-subtle)" : accentStyle ? "var(--accent)" : "var(--text-muted)";
 
   return (
     <button
       onClick={onClick}
-      title={step.label}
+      title={isGenerated ? step.label : `${step.label} (nao gerado — use Gerar IA)`}
       className="flex items-center gap-2 shrink-0 focus:outline-none"
     >
       <span
@@ -143,6 +152,23 @@ const LessonStepper = ({
     if (step.requiresTranscript) return !!(materials.video || materials.resumo);
     return !!materials[step.key];
   });
+
+  // Materiais que podem ser GERADOS por IA — aparecem no pipeline mesmo sem
+  // estarem gerados ainda (em cor apagada), pra o aluno ver o que falta.
+  const GENERATABLE = new Set(["resumo", "exemplos", "quiz", "flashcards", "piada", "podcast"]);
+  const hasTranscript = !!(materials.video || materials.resumo);
+  // visibleSteps = tudo que se aplica a esta aula (gerado ou nao).
+  const visibleSteps = STEP_CONFIG.filter((step) => {
+    if (step.always) return true;
+    if (step.requiresTranscript) return hasTranscript;
+    if (step.key === "video") return !!materials.video;
+    if (GENERATABLE.has(step.key)) return hasTranscript; // gera a partir da transcricao
+    return !!materials[step.key];
+  });
+  // Um step "existe" quando nao depende de geracao (video/pessoal/prequiz) ou ja
+  // tem material. GENERATABLE sem material = "a gerar" (apagado no pipeline).
+  const isStepGenerated = (key) =>
+    !GENERATABLE.has(key) || !!materials[key];
 
   // Reset active step when lesson changes. Pre-Quiz vem ANTES do video
   // pra forcar tentativa de recuperacao (Carpenter & Toftness 2017).
@@ -254,7 +280,26 @@ const LessonStepper = ({
     }
 
     const material = materials[activeStep];
-    if (!material) return null;
+    if (!material) {
+      // Step visivel mas ainda nao gerado: orienta a usar o "Gerar IA".
+      const label = STEP_CONFIG.find((s) => s.key === activeStep)?.label || activeStep;
+      return (
+        <div className="h-full flex flex-col items-center justify-center text-center gap-3 p-8">
+          <Sparkles className="w-8 h-8" style={{ color: "var(--text-subtle)" }} />
+          <div className="text-slate-300 font-medium">{label} ainda nao foi gerado</div>
+          <div className="text-sm text-slate-500 max-w-xs">
+            Use o botao <b>Gerar IA</b> (no topo) para criar este material a partir da transcricao da aula.
+          </div>
+          <button
+            onClick={() => setAiModalOpen(true)}
+            className="mt-1 flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium border"
+            style={{ background: "var(--accent-soft)", borderColor: "var(--accent-soft-strong)", color: "var(--accent)" }}
+          >
+            <Sparkles className="w-4 h-4" /> Gerar IA
+          </button>
+        </div>
+      );
+    }
     const fileUrl = buildFileUrl(material);
 
     switch (activeStep) {
@@ -471,13 +516,13 @@ const LessonStepper = ({
 
           {/* Linha temporal dos steps — inline, ocupa o meio */}
           <div className="flex items-center flex-1 min-w-0 overflow-x-auto px-1">
-            {availableSteps.map((step, i) => (
+            {visibleSteps.map((step, i) => (
               <React.Fragment key={step.key}>
                 {i > 0 && (
                   <div
                     className="flex-1 h-0.5 min-w-[1.25rem] mx-1.5 rounded-full transition-colors duration-300"
                     style={{
-                      background: isStepCompleted(availableSteps[i - 1].key) ? "var(--accent)" : "var(--border-strong)",
+                      background: isStepCompleted(visibleSteps[i - 1].key) ? "var(--accent)" : "var(--border-strong)",
                     }}
                   />
                 )}
@@ -485,6 +530,7 @@ const LessonStepper = ({
                   step={step}
                   isActive={activeStep === step.key}
                   isCompleted={isStepCompleted(step.key)}
+                  isGenerated={isStepGenerated(step.key)}
                   onClick={() => { setActiveStep(step.key); onStepChange(step.key); }}
                 />
               </React.Fragment>
@@ -546,6 +592,7 @@ const LessonStepper = ({
         onClose={() => setAiModalOpen(false)}
         courseTitle={courseTitle}
         lessonPrefix={lessonGroup.prefix}
+        existingKinds={Object.keys(materials)}
         onGenerated={() => {
           onMaterialsChanged?.();
         }}

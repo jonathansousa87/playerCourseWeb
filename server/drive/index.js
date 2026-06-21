@@ -87,13 +87,24 @@ export const flattenFiles = (items) => {
   return out;
 };
 
-// Baixa conteudo textual de um arquivo
+// Baixa conteudo textual de um arquivo. Com retry/backoff: sob carga (varias
+// aulas + materiais em paralelo) o Drive falha transitoriamente, e engolir esse
+// erro fazia uma aula de leitura sumir ("transcricao vazia"). Re-tenta antes de propagar.
 export const getFileContent = async (fileId) => {
-  const res = await getDrive().files.get(
-    { fileId, alt: 'media' },
-    { responseType: 'text' },
-  );
-  return typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+  let lastErr;
+  for (let i = 0; i < 4; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 800 * i));
+    try {
+      const res = await getDrive().files.get(
+        { fileId, alt: 'media' },
+        { responseType: 'text' },
+      );
+      return typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
 };
 
 // Retorna Set de emails com acesso à pasta (type=user), ou null se for "anyone".
@@ -275,41 +286,56 @@ export const getParentFolderId = async (fileId) => {
   return data.parents?.[0] || null;
 };
 
+// Retry/backoff p/ operacoes de escrita no Drive (falham transitoriamente sob carga).
+const withRetry = async (fn, tries = 4) => {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 800 * i));
+    try { return await fn(); } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+};
+
 // Sobe (cria ou atualiza) um arquivo de TEXTO numa pasta. Retorna o fileId.
 export const uploadText = async (parentId, name, content, mimeType = 'text/plain') => {
   const drive = getDrive();
   const existing = await findFileInFolder(parentId, name);
-  if (existing) {
-    await drive.files.update({ fileId: existing.id, media: { mimeType, body: content } });
-    clearCache();
-    return existing.id;
-  }
-  const created = await drive.files.create({
-    requestBody: { name, parents: [parentId] },
-    media: { mimeType, body: content },
-    fields: 'id',
+  const id = await withRetry(async () => {
+    if (existing) {
+      await drive.files.update({ fileId: existing.id, media: { mimeType, body: content } });
+      return existing.id;
+    }
+    const created = await drive.files.create({
+      requestBody: { name, parents: [parentId] },
+      media: { mimeType, body: content },
+      fields: 'id',
+    });
+    return created.data.id;
   });
   clearCache();
-  return created.data.id;
+  return id;
 };
 
 // Sobe (cria ou atualiza) um arquivo BINARIO a partir de um path local. Retorna o fileId.
+// createReadStream e recriado a cada tentativa (stream nao pode ser reusado).
 export const uploadFileFromPath = async (parentId, name, localPath, mimeType) => {
   const { createReadStream } = await import('fs');
   const drive = getDrive();
   const existing = await findFileInFolder(parentId, name);
-  if (existing) {
-    await drive.files.update({ fileId: existing.id, media: { mimeType, body: createReadStream(localPath) } });
-    clearCache();
-    return existing.id;
-  }
-  const created = await drive.files.create({
-    requestBody: { name, parents: [parentId] },
-    media: { mimeType, body: createReadStream(localPath) },
-    fields: 'id',
+  const id = await withRetry(async () => {
+    if (existing) {
+      await drive.files.update({ fileId: existing.id, media: { mimeType, body: createReadStream(localPath) } });
+      return existing.id;
+    }
+    const created = await drive.files.create({
+      requestBody: { name, parents: [parentId] },
+      media: { mimeType, body: createReadStream(localPath) },
+      fields: 'id',
+    });
+    return created.data.id;
   });
   clearCache();
-  return created.data.id;
+  return id;
 };
 
 // Baixa um arquivo do Drive pra um path local (pra rodar WhisperX em audio do Drive).

@@ -15,7 +15,7 @@ const ALLOWED_KINDS = new Set(['resumo', 'quiz', 'flashcards', 'diario', 'exempl
 
 router.post('/api/ia/generate', async (req, res) => {
   try {
-    const { courseTitle, lessonPrefix, kinds, model } = req.body || {};
+    const { courseTitle, lessonPrefix, kinds, model, instruction } = req.body || {};
     if (!courseTitle || !lessonPrefix) {
       return res.status(400).json({ error: 'courseTitle e lessonPrefix obrigatorios' });
     }
@@ -36,6 +36,7 @@ router.post('/api/ia/generate', async (req, res) => {
       lessonPrefix,
       kinds: filtered,
       model: model || DEEPSEEK_DEFAULT_MODEL,
+      instruction: typeof instruction === 'string' ? instruction.trim() : '',
     });
     res.json(out);
   } catch (err) {
@@ -402,7 +403,7 @@ router.get('/api/ia/prequestions/:courseTitle/:lessonPrefix', async (req, res) =
 // Geracao das perguntas — escreve no cache global, nao tem user_id.
 router.post('/api/ia/prequestions', async (req, res) => {
   try {
-    const { courseTitle, lessonPrefix, model } = req.body || {};
+    const { courseTitle, lessonPrefix, model, instruction } = req.body || {};
     if (!courseTitle || !lessonPrefix) {
       return res.status(400).json({ error: 'courseTitle e lessonPrefix obrigatorios' });
     }
@@ -415,6 +416,7 @@ router.post('/api/ia/prequestions', async (req, res) => {
       courseTitle,
       lessonPrefix,
       model: model || DEEPSEEK_DEFAULT_MODEL,
+      instruction: typeof instruction === 'string' ? instruction.trim() : '',
     });
 
     const inserted = await query(

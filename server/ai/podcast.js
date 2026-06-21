@@ -39,6 +39,47 @@ const parseJsonLoose = (raw) => {
   }
 };
 
+// Quebra uma fala longa em pedacos <= MAX chars, cortando em fim de frase (ou
+// por espaco se uma frase unica passar do limite). O Kokoro degrada/falha em
+// textos muito longos por requisicao; manter cada clip curto e a defesa de
+// causa raiz (cada pedaco vira um clip; o ffmpeg concatena na ordem).
+const MAX_TTS_CHARS = 400;
+const splitForTTS = (text) => {
+  const t = String(text).trim();
+  if (t.length <= MAX_TTS_CHARS) return [t];
+  const sentences = t.match(/[^.!?]+[.!?]*\s*/g) || [t];
+  const chunks = [];
+  let cur = '';
+  const pushWords = (s) => {
+    // Frase isolada maior que o limite: quebra por palavras.
+    let line = '';
+    for (const w of s.split(/\s+/)) {
+      if ((line + ' ' + w).trim().length > MAX_TTS_CHARS) {
+        if (line) chunks.push(line.trim());
+        line = w;
+      } else {
+        line = (line + ' ' + w).trim();
+      }
+    }
+    if (line) cur = line;
+  };
+  for (const s of sentences) {
+    if (s.trim().length > MAX_TTS_CHARS) {
+      if (cur) { chunks.push(cur.trim()); cur = ''; }
+      pushWords(s.trim());
+      continue;
+    }
+    if ((cur + ' ' + s).trim().length > MAX_TTS_CHARS) {
+      if (cur) chunks.push(cur.trim());
+      cur = s.trim();
+    } else {
+      cur = (cur + ' ' + s).trim();
+    }
+  }
+  if (cur.trim()) chunks.push(cur.trim());
+  return chunks.filter(Boolean);
+};
+
 const runFfmpeg = (args) =>
   new Promise((resolve, reject) => {
     const proc = spawn('ffmpeg', args);
@@ -87,9 +128,38 @@ export const generatePodcastScript = async ({
   return { title, turns, usage };
 };
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Pool com limite de concorrencia preservando indice.
+const mapPool = async (items, limit, fn) => {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+};
+
+// Fila serial de PODCASTS: gera 1 podcast por vez (cada um com ate 4 segmentos
+// em paralelo internamente) e aguarda 5s antes do proximo — da folga pra GPU do
+// Kokoro e elimina a contencao entre podcasts diferentes.
+const PODCAST_GAP_MS = Math.max(0, parseInt(process.env.PODCAST_GAP_MS || '5000', 10));
+let podcastChain = Promise.resolve();
+const enqueuePodcast = (fn) => {
+  const run = podcastChain.then(fn, fn);
+  // proximo so comeca apos este terminar + a pausa (mesmo se este falhar)
+  podcastChain = run.then(() => sleep(PODCAST_GAP_MS), () => sleep(PODCAST_GAP_MS));
+  return run;
+};
+
 // Etapa 2 (Kokoro local): sintetiza o audio a partir de um roteiro pronto,
 // concatena num mp3 na pasta da aula e registra no banco. Nao usa DeepSeek.
-export const synthesizePodcast = async ({
+// Entra na fila serial de podcasts (1 por vez + pausa).
+export const synthesizePodcast = (args) => enqueuePodcast(() => synthesizePodcastNow(args));
+
+const synthesizePodcastNow = async ({
   coursesPath, courseTitle, lessonPrefix, title, turns,
 }) => {
   const clean = (Array.isArray(turns) ? turns : [])
@@ -116,14 +186,23 @@ export const synthesizePodcast = async ({
   const outName = `${lessonPrefix}_podcast_dub_01.mp3`;
   const work = join(tmpdir(), `podcast-${randomUUID()}`);
   await fs.mkdir(work, { recursive: true });
-  const clips = [];
   try {
-    for (let i = 0; i < clean.length; i++) {
-      const t = clean[i];
-      const wav = await synthesize({ text: t.text, voice: t.speaker === 'junior' ? voiceJunior : voiceSenior });
-      const clipPath = join(work, `clip_${String(i).padStart(3, '0')}.wav`);
+    // Monta a lista ordenada de segmentos (falas longas viram varios clips curtos).
+    const segs = [];
+    for (const t of clean) {
+      const voice = t.speaker === 'junior' ? voiceJunior : voiceSenior;
+      for (const piece of splitForTTS(t.text)) segs.push({ text: piece, voice });
+    }
+    // Sintetiza ate 4 segmentos do MESMO podcast em paralelo (como o DubAI), preservando a ordem.
+    const clips = new Array(segs.length);
+    await mapPool(segs, 4, async (seg, i) => {
+      const wav = await synthesize({ text: seg.text, voice: seg.voice });
+      const clipPath = join(work, `clip_${String(i).padStart(4, '0')}.wav`);
       await fs.writeFile(clipPath, wav);
-      clips.push(clipPath);
+      clips[i] = clipPath;
+    });
+    if (clips.length === 0) {
+      const e = new Error('nenhum clip de audio gerado'); e.code = 'BAD_SCRIPT'; throw e;
     }
 
     const listPath = join(work, 'list.txt');

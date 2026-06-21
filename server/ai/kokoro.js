@@ -87,9 +87,34 @@ const prepText = (t) =>
     .replace(/\bshh+\b/gi, 'Xii')
     .replace(/,?\s*né(?=\?)/g, '');
 
+// Semaforo de concorrencia, igual ao DubAI (Semaphore(4)): o Kokoro aguenta
+// bem ate 4 sinteses simultaneas. Serializar tudo (fila unica) criava um
+// engargalamento gigante quando varias aulas geram podcast ao mesmo tempo.
+const KOKORO_CONCURRENCY = Math.max(1, parseInt(process.env.KOKORO_CONCURRENCY || '4', 10));
+let kkActive = 0;
+const kkWaiters = [];
+const kkAcquire = () => new Promise((resolve) => {
+  if (kkActive < KOKORO_CONCURRENCY) { kkActive += 1; resolve(); }
+  else kkWaiters.push(resolve);
+});
+const kkRelease = () => {
+  const next = kkWaiters.shift();
+  if (next) next();
+  else kkActive = Math.max(0, kkActive - 1);
+};
+
 // Sintetiza uma fala. `voice` pode ser uma voz ("pf_dora") ou um blend
 // ("pm_santa+em_santa"). lang_code "p" = portugues. Re-tenta em falha transitoria.
-export const synthesize = async ({ text, voice, speed = 1.0, langCode = 'p' }) => {
+export const synthesize = async (args) => {
+  await kkAcquire();
+  try {
+    return await synthesizeNow(args);
+  } finally {
+    kkRelease();
+  }
+};
+
+const synthesizeNow = async ({ text, voice, speed = 1.0, langCode = 'p' }) => {
   const body = {
     model: 'kokoro',
     input: prepText(text),
@@ -110,11 +135,16 @@ export const synthesize = async ({ text, voice, speed = 1.0, langCode = 'p' }) =
   const ATTEMPTS = 4;
   for (let i = 0; i < ATTEMPTS; i++) {
     if (i > 0) await sleep(1500 * i); // backoff: cobre hiccup/cold-start do Kokoro
+    // Timeout: sem isso, se o Kokoro pendura numa sintese o fetch fica preso pra
+    // sempre (a geracao "trava" sem falhar nem completar). 60s por clip e folgado.
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 60_000);
     try {
       const r = await fetch(`${url()}/v1/audio/speech`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: ctrl.signal,
       });
       if (!r.ok) {
         lastErr = new Error(`kokoro HTTP ${r.status}: ${(await r.text().catch(() => '')).slice(0, 200)}`);
@@ -128,6 +158,8 @@ export const synthesize = async ({ text, voice, speed = 1.0, langCode = 'p' }) =
       return buf;
     } catch (e) {
       lastErr = e;
+    } finally {
+      clearTimeout(to);
     }
   }
   throw lastErr || err('KOKORO_FAILED', 'kokoro falhou');

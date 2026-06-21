@@ -26,8 +26,23 @@ export const SYSTEM_PROMPTS = {
 const trunc = (text, max = 20000) =>
   text.length > max ? text.slice(0, max) + '\n\n[TRANSCRICAO TRUNCADA]' : text;
 
-export const buildResumoPrompt = ({ lessonTitle, transcript }) => `
-Gere um resumo estruturado em Markdown da aula abaixo.
+// Bloco de instrucao do usuario (nicho/modernizacao) reutilizado por todos os
+// materiais. Tem prioridade sobre a fidelidade literal, mas nao muda a materia.
+const instructionBlock = (instruction) =>
+  instruction && instruction.trim()
+    ? `
+
+INSTRUCAO ADICIONAL (PRIORIDADE — aplique ao gerar este material; modernize a FORMA:
+versoes, sintaxe, APIs, ferramentas e boas praticas conforme pedido. Vale mais que a
+fidelidade literal a transcricao, mas NAO mude a materia/conceitos da aula):
+"""
+${instruction.trim()}
+"""
+`
+    : '';
+
+export const buildResumoPrompt = ({ lessonTitle, transcript, instruction }) => `
+Gere um resumo estruturado em Markdown da aula abaixo.${instructionBlock(instruction)}
 
 Formato obrigatorio (preserve os cabecalhos):
 
@@ -53,11 +68,11 @@ Transcricao:
 ${trunc(transcript)}
 ---`.trim();
 
-export const buildFlashcardsPrompt = ({ lessonTitle, transcript }) => {
+export const buildFlashcardsPrompt = ({ lessonTitle, transcript, instruction }) => {
   // Exemplo com separador TAB real (caractere ASCII 9)
   const TAB = '\t';
   return `
-Gere flashcards no formato Anki importavel (tab-separated) a partir da aula abaixo.
+Gere flashcards no formato Anki importavel (tab-separated) a partir da aula abaixo.${instructionBlock(instruction)}
 
 Formato obrigatorio (EXATO, sem desvios):
 - Linha 1: #separator:tab
@@ -97,8 +112,8 @@ ${trunc(transcript)}
 Retorne APENAS o conteudo do arquivo .txt, sem fences de codigo, sem explicacao, sem conversas.`.trim();
 };
 
-export const buildQuizPrompt = ({ lessonTitle, transcript }) => `
-Gere um quiz em Markdown sobre a aula abaixo, com 8 a 12 questoes de multipla escolha (4 alternativas cada, 1 correta).
+export const buildQuizPrompt = ({ lessonTitle, transcript, instruction }) => `
+Gere um quiz em Markdown sobre a aula abaixo, com 8 a 12 questoes de multipla escolha (4 alternativas cada, 1 correta).${instructionBlock(instruction)}
 
 Formato obrigatorio EXATO por questao (o parser depende desse formato):
 
@@ -130,9 +145,9 @@ ${trunc(transcript)}
 
 Retorne APENAS o Markdown, sem fences de codigo.`.trim();
 
-export const buildExemplosPrompt = ({ lessonTitle, transcript }) => `
+export const buildExemplosPrompt = ({ lessonTitle, transcript, instruction }) => `
 Gere um material de PRATICA em Markdown pra aula abaixo. Ele deve ser 100% SOBRE ESTA AULA:
-praticar e reproduzir o que ELA ensinou — nada de assunto/recurso que a aula nao mostrou.
+praticar e reproduzir o que ELA ensinou — nada de assunto/recurso que a aula nao mostrou.${instructionBlock(instruction)}
 
 PRIMEIRO, decida o tipo da aula e escolha UM dos dois modos:
 - MODO A (mao na massa): a aula MOSTROU algo reproduzivel — codigo, comandos, consultas,
@@ -200,10 +215,10 @@ Retorne APENAS o Markdown (de UM dos modos), sem fences externas de codigo.`.tri
 // Pre-questoes (Carpenter & Toftness 2017): perguntas geradas ANTES do
 // video, pra forcar tentativa de recuperacao. O retorno DEVE ser JSON
 // puro pra o backend parsear sem regex maluco.
-export const buildPrequestionsPrompt = ({ lessonTitle, transcript }) => `
+export const buildPrequestionsPrompt = ({ lessonTitle, transcript, instruction }) => `
 Gere perguntas de PRE-AULA sobre o conteudo abaixo. O aluno respondera ANTES de assistir,
 pra ativar tentativa de recuperacao (efeito de pre-questao). Errar eh OK — o ato de tentar
-adivinhar prepara a codificacao.
+adivinhar prepara a codificacao.${instructionBlock(instruction)}
 
 Regras:
 - Gere EXATAMENTE 3 perguntas de multipla escolha (4 alternativas cada, 1 correta).
@@ -236,8 +251,8 @@ ${trunc(transcript)}
 
 Retorne APENAS o JSON.`.trim();
 
-export const buildPiadaPrompt = ({ lessonTitle, transcript }) => `
-Gere 2 piadas curtas e inteligentes sobre o conteudo da aula abaixo.
+export const buildPiadaPrompt = ({ lessonTitle, transcript, instruction }) => `
+Gere 2 piadas curtas e inteligentes sobre o conteudo da aula abaixo.${instructionBlock(instruction)}
 
 Regras CRITICAS:
 - Cada piada DEVE referenciar conceitos especificos da aula (nomes de funcoes, algoritmos, ferramentas, termos tecnicos ensinados) — nada generico
@@ -322,8 +337,8 @@ ${trunc(transcript)}
 
 Retorne APENAS o JSON.`.trim();
 
-export const buildDiarioPrompt = ({ lessonTitle, transcript, weekLabel }) => `
-Gere um template de diario tecnico em Markdown pra aula abaixo. Use EXATAMENTE este formato, preenchendo APENAS a parte do "O que aprendi" com 3 a 5 bullets de sintese; os outros campos deixe em branco (o aluno preenche depois).
+export const buildDiarioPrompt = ({ lessonTitle, transcript, weekLabel, instruction }) => `
+Gere um template de diario tecnico em Markdown pra aula abaixo. Use EXATAMENTE este formato, preenchendo APENAS a parte do "O que aprendi" com 3 a 5 bullets de sintese; os outros campos deixe em branco (o aluno preenche depois).${instructionBlock(instruction)}
 
 # Diario Tecnico - ${weekLabel || 'Semana atual'}
 > Video: ${lessonTitle}

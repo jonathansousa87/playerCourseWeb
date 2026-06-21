@@ -7,6 +7,7 @@ import {
   generatePodcastScript,
   generatePodcastAudio,
 } from "../utils/progressApi";
+import { INSTRUCTION_PRESETS } from "../utils/instructionPresets";
 
 // Materiais que podem ser gerados automaticamente apos a leitura. O "resumo"
 // NAO entra: a propria leitura ja e' o resumo (sobrescrever pela versao fraca
@@ -50,11 +51,6 @@ const Dots = ({ states }) => (
 // Prompt padrao do campo "Instrucao extra": modernizar pra o estado da arte do
 // ANO ATUAL (pego do sistema), mesmo que o curso use versoes antigas. O usuario
 // pode editar ou limpar antes de gerar.
-const DEFAULT_INSTRUCTION =
-  `Modernize o conteudo e os exemplos para as versoes e tecnologias mais atuais ` +
-  `disponiveis em ${new Date().getFullYear()} (linguagem, frameworks, bibliotecas, ` +
-  `sintaxe e boas praticas), mesmo que o curso original use versoes antigas. ` +
-  `Mantenha a materia e os conceitos da aula; atualize apenas a forma (codigo, APIs e padroes).`;
 
 // Coleta modulos "folha" (que contem aulas diretamente) preservando o path
 // relativo ao curso, usado pelo backend pra achar as transcricoes.
@@ -87,11 +83,10 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
   const modules = useMemo(() => collectModules(courseContent), [courseContent]);
   const [selected, setSelected] = useState(() => new Set(modules.map((m) => m.path)));
   const [model, setModel] = useState("deepseek-v4-flash");
-  const [instruction, setInstruction] = useState(DEFAULT_INSTRUCTION);
-  // O botao "Gerar" so libera depois que o usuario revisa/ajusta a instrucao
-  // (ex.: fixar a versao certa — Java 25, Spring Boot 4.x). Editar ja marca como
-  // revisado; quem mantem o padrao confirma no checkbox.
-  const [instructionOk, setInstructionOk] = useState(false);
+  // Nicho do curso (OBRIGATORIO): escolher preenche a instrucao com o preset.
+  // Sem nicho escolhido, o botao "Gerar" fica travado.
+  const [niche, setNiche] = useState("");
+  const [instruction, setInstruction] = useState("");
   const [autoTranscribe, setAutoTranscribe] = useState(true);
   const [language, setLanguage] = useState("pt"); // idioma do curso ORIGINAL
   const [genMaterials, setGenMaterials] = useState(true);
@@ -120,17 +115,22 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
       return next;
     });
 
-  // Gera os materiais (IA) de UMA aula de leitura ja criada. Texto vai junto num
-  // generateIa; pre-quiz e podcast tem fluxo proprio. Sem 'resumo' (e a leitura).
+  // Gera os materiais (IA) de UMA aula de leitura ja criada. Texto/pre-quiz em
+  // paralelo (DeepSeek aguenta); podcast serializado. Sem 'resumo' (e a leitura).
   const runLessonMaterials = async (leituraTitle, prefix, kinds) => {
+    // Mesma instrucao de nicho da leitura — pros materiais saírem modernizados
+    // (codigo/quiz/pratica com as boas praticas escolhidas), nao so por heranca.
+    const instr = instruction.trim();
     const text = kinds.filter((k) => TEXT_KINDS.has(k));
     if (text.length) {
-      await generateIa({ courseTitle: leituraTitle, lessonPrefix: prefix, kinds: text, model });
+      await generateIa({ courseTitle: leituraTitle, lessonPrefix: prefix, kinds: text, model, instruction: instr });
     }
     if (kinds.includes("prequiz")) {
-      await generatePrequestions({ courseTitle: leituraTitle, lessonPrefix: prefix, model });
+      await generatePrequestions({ courseTitle: leituraTitle, lessonPrefix: prefix, model, instruction: instr });
     }
     if (kinds.includes("podcast")) {
+      // A concorrencia do Kokoro e controlada no backend (Semaphore(4), igual ao
+      // DubAI), entao aqui pode chamar direto — sem serializar no front.
       const s = await generatePodcastScript({ courseTitle: leituraTitle, lessonPrefix: prefix, model });
       await generatePodcastAudio({ courseTitle: leituraTitle, lessonPrefix: prefix, title: s.title, turns: s.turns, model });
     }
@@ -253,31 +253,41 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
           <div>
             <label className="text-xs uppercase tracking-wide text-slate-500">
-              Instrucao extra <span className="text-slate-600 normal-case">(opcional)</span>
+              Nicho do curso <span className="text-rose-400 normal-case">(obrigatorio)</span>
+            </label>
+            <select
+              value={niche}
+              onChange={(e) => {
+                const key = e.target.value;
+                setNiche(key);
+                const preset = INSTRUCTION_PRESETS.find((p) => p.key === key);
+                setInstruction(preset ? preset.text : "");
+              }}
+              disabled={loading}
+              className={`mt-1.5 w-full bg-slate-800/70 border rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none disabled:opacity-50 ${
+                niche ? "border-slate-700 focus:border-emerald-500/50" : "border-rose-500/50"
+              }`}
+            >
+              <option value="">— Selecione o nicho do curso —</option>
+              {INSTRUCTION_PRESETS.map((p) => (
+                <option key={p.key} value={p.key}>{p.label}</option>
+              ))}
+            </select>
+
+            <label className="text-xs uppercase tracking-wide text-slate-500 mt-3 block">
+              Instrucao extra <span className="text-slate-600 normal-case">(revise/edite)</span>
             </label>
             <textarea
               value={instruction}
-              onChange={(e) => { setInstruction(e.target.value); setInstructionOk(true); }}
-              disabled={loading}
-              rows={4}
-              placeholder="Ex.: modernize o conteudo e os exemplos para Spring Boot 4.x e Java 25, mesmo que o curso original use versoes antigas."
+              onChange={(e) => setInstruction(e.target.value)}
+              disabled={loading || !niche}
+              rows={5}
+              placeholder="Escolha um nicho acima para preencher — depois ajuste (versoes, ferramentas) se quiser."
               className="mt-1.5 w-full bg-slate-800/70 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 resize-y focus:outline-none focus:border-emerald-500/50 disabled:opacity-50"
             />
             <p className="text-[11px] text-slate-500 mt-1">
-              Aplicada na geracao da leitura de cada aula. Tem prioridade sobre a fidelidade a transcricao.
+              Aplicada na geracao da leitura de cada aula. Tem prioridade sobre a fidelidade a transcricao. Confira as <b>versoes/tecnologias</b> antes de gerar.
             </p>
-            <label className="flex items-start gap-2 cursor-pointer select-none mt-2">
-              <input
-                type="checkbox"
-                checked={instructionOk}
-                onChange={(e) => setInstructionOk(e.target.checked)}
-                disabled={loading}
-                className="mt-0.5 accent-emerald-500"
-              />
-              <span className="text-[12px] text-amber-300/90">
-                Revisei a instrucao acima (confira as <b>versoes/tecnologias</b>, ex.: Java 25, Spring Boot 4.x — o modelo as vezes chuta versoes antigas).
-              </span>
-            </label>
           </div>
 
           <label className="flex items-start gap-2 cursor-pointer select-none">
@@ -487,8 +497,8 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
             ))}
           </select>
           <div className="flex items-center gap-3">
-            {!loading && !instructionOk && (
-              <span className="text-xs text-amber-400">Revise a instrucao pra liberar</span>
+            {!loading && !niche && (
+              <span className="text-xs text-amber-400">Escolha o nicho pra liberar</span>
             )}
             {done.length > 0 && !loading && (
               <span className="text-xs text-slate-400">{okLessons} aulas geradas</span>
@@ -503,8 +513,8 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
             ) : (
               <button
                 onClick={handleGenerate}
-                disabled={selected.size === 0 || !instructionOk}
-                title={!instructionOk ? "Revise/ajuste a instrucao extra e marque a confirmacao" : undefined}
+                disabled={selected.size === 0 || !niche || !instruction.trim()}
+                title={!niche ? "Escolha o nicho do curso primeiro" : undefined}
                 className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Gerar {selected.size > 0 ? selected.size : ""} modulo{selected.size > 1 ? "s" : ""}

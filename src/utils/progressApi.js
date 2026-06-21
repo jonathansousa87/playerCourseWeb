@@ -310,11 +310,11 @@ export const clearCourseMaterials = (courseTitle) =>
 
 // === IA (DeepSeek) ===
 // kinds: array de 'resumo' | 'quiz' | 'flashcards' | 'diario'
-export const generateIa = ({ courseTitle, lessonPrefix, kinds, model }) =>
+export const generateIa = ({ courseTitle, lessonPrefix, kinds, model, instruction }) =>
   fetch(`${API_BASE}/api/ia/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ courseTitle, lessonPrefix, kinds, model }),
+    body: JSON.stringify({ courseTitle, lessonPrefix, kinds, model, instruction }),
   }).then(async (res) => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -439,11 +439,11 @@ export const fetchPrequestions = (courseTitle, lessonPrefix) =>
     `${API_BASE}/api/ia/prequestions/${enc(courseTitle)}/${enc(lessonPrefix)}`,
   ).then(json);
 
-export const generatePrequestions = ({ courseTitle, lessonPrefix, model }) =>
+export const generatePrequestions = ({ courseTitle, lessonPrefix, model, instruction }) =>
   fetch(`${API_BASE}/api/ia/prequestions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ courseTitle, lessonPrefix, model }),
+    body: JSON.stringify({ courseTitle, lessonPrefix, model, instruction }),
   }).then(async (res) => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);

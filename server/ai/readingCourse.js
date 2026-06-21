@@ -406,10 +406,16 @@ const generateReadingModuleDrive = async ({
     let res;
     try {
       const parts = [];
+      let readErrors = 0;
       for (const s of sources) {
         try {
           parts.push(parseTranscriptRaw(await drive.getFileContent(s.fileId), /\.vtt$/i.test(s.name)));
-        } catch { /* ignora transcricao ilegivel */ }
+        } catch { readErrors += 1; }
+      }
+      // Se havia fontes e NENHUMA foi lida, foi erro de leitura (Drive), nao aula
+      // vazia: falha visivel (com mensagem) em vez de sumir silenciosamente.
+      if (parts.length === 0 && sources.length > 0) {
+        throw new Error(`falha ao ler ${readErrors}/${sources.length} transcricao(oes) no Drive`);
       }
       const out = await condenseText({
         lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language,

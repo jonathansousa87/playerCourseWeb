@@ -1,5 +1,8 @@
 import React from "react";
-import { CheckCircle, ChevronDown, ChevronRight, Circle, AlertTriangle, Clock, Briefcase } from "lucide-react";
+import {
+  CheckCircle, ChevronDown, ChevronRight, Circle, AlertTriangle, Clock, Briefcase,
+  Play, FileText, Dumbbell, Coffee, HelpCircle, Repeat, NotebookPen, Mic, PenLine, Target,
+} from "lucide-react";
 import Collapsible from "react-collapsible";
 import { useCourse } from "./CourseContext";
 import { getFileIcon, formatTime, isVideoFile } from "../utils/fileUtils";
@@ -47,13 +50,18 @@ const accuracyBadge = (accuracy) => {
   return { label: `${pct}%`, cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30", needsReview: false };
 };
 
+// Ícones lucide por tipo de material (alinhados ao pipeline da aula).
 const STEP_ICONS = {
-  video: "▶",
-  resumo: "📄",
-  exemplos: "💡",
-  quiz: "❓",
-  flashcards: "🔁",
-  pessoal: "✏️",
+  prequiz: Target,
+  video: Play,
+  podcast: Mic,
+  resumo: FileText,
+  exemplos: Dumbbell,
+  piada: Coffee,
+  quiz: HelpCircle,
+  flashcards: Repeat,
+  diario: NotebookPen,
+  pessoal: PenLine,
 };
 
 // Classes do container de uma linha (lição ou lesson-group). Extrair a lógica
@@ -164,17 +172,18 @@ const LessonGroupItem = ({ item, level }) => {
           <div className="flex items-center gap-1.5 mt-2">
             {stepKeys.map((key) => {
               const isDone = completedSteps?.[`${item.prefix}__${key}`];
+              const Icon = STEP_ICONS[key];
               return (
                 <div
                   key={key}
-                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${
+                  className={`flex items-center justify-center w-5 h-5 rounded ${
                     isDone
                       ? "bg-emerald-500/20 text-emerald-400"
-                      : "bg-slate-700/30 text-slate-500"
+                      : "bg-slate-700/30 text-slate-400"
                   }`}
                   title={key}
                 >
-                  <span className="text-[10px]">{STEP_ICONS[key] || "•"}</span>
+                  {Icon ? <Icon className="w-3 h-3" /> : <span className="text-[10px]">•</span>}
                 </div>
               );
             })}
