@@ -10,6 +10,36 @@ router.get('/api/db/health', async (_req, res) => {
   res.status(ok ? 200 : 503).json({ ok });
 });
 
+// Bloco de notas global do usuario (scratchpad) — UM por usuario, igual em
+// todas as aulas; sincroniza entre maquinas.
+router.get('/api/db/notes/scratchpad', async (req, res) => {
+  try {
+    const { rows } = await query(
+      'SELECT content, updated_at FROM user_notes WHERE user_id = $1',
+      [req.userId],
+    );
+    res.json({ content: rows[0]?.content || '', updatedAt: rows[0]?.updated_at || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/api/db/notes/scratchpad', async (req, res) => {
+  try {
+    const content = typeof req.body?.content === 'string' ? req.body.content : '';
+    const { rows } = await query(
+      `INSERT INTO user_notes (user_id, content, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (user_id) DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()
+       RETURNING updated_at`,
+      [req.userId, content],
+    );
+    res.json({ success: true, updatedAt: rows[0]?.updated_at });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Snapshot de TODOS os cursos do usuario logado — usado na home.
 router.get('/api/progress/all', async (req, res) => {
   try {

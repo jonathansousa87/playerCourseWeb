@@ -20,7 +20,9 @@ const err = (code, message) => {
 
 const reachable = async () => {
   try {
-    const r = await fetch(`${url()}/v1/audio/voices`);
+    // timeout curto: sem Kokoro a conexao e recusada na hora, mas se a porta
+    // existir e nao responder (firewall) o boot/rota nao deve pendurar.
+    const r = await fetch(`${url()}/v1/audio/voices`, { signal: AbortSignal.timeout(2500) });
     return r.ok;
   } catch {
     return false;

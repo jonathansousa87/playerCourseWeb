@@ -13,6 +13,7 @@ import PodcastPlayer from "./PodcastPlayer";
 import PersonalSummary from "./PersonalSummary";
 import PreQuiz from "./PreQuiz";
 import AIGenerateModal from "./AIGenerateModal";
+import FloatingNotes from "./FloatingNotes";
 import { API_BASE } from "../config";
 
 // "requiresVideo": step depende de transcricao (.txt/.vtt) que so existe
@@ -597,6 +598,7 @@ const LessonStepper = ({
           onMaterialsChanged?.();
         }}
       />
+      <FloatingNotes />
     </div>
   );
 };

@@ -37,17 +37,36 @@ export const INSTRUCTION_PRESETS = [
     key: 'sql',
     label: 'Banco de dados (MySQL / Oracle / SQL Server)',
     text:
-      `Curso de banco de dados (SQL). Modernize os exemplos com SQL atual e boas praticas: ` +
-      `CTEs (WITH), window functions, JOINs explicitos, nomes claros e indices quando relevante. ` +
-      `Respeite a sintaxe do SGBD da aula (MySQL, Oracle ou SQL Server).` + KEEP,
+      `Curso de banco de dados (SQL). Use as versoes atuais do SGBD da aula (MySQL 8.x, ` +
+      `Oracle 23ai, SQL Server 2022/2025) e respeite a sintaxe especifica de cada um.\n` +
+      `CONSULTAS — adote, quando couber: CTEs (WITH) e CTEs recursivas no lugar de subqueries ` +
+      `aninhadas, window functions (ROW_NUMBER, RANK, LAG/LEAD, SUM OVER), JOINs explicitos ` +
+      `(nunca virgula no FROM), GROUP BY com filtros em HAVING, EXISTS no lugar de IN com ` +
+      `subquery, e funcoes de JSON quando fizer sentido.\n` +
+      `MODELAGEM — chaves primarias e estrangeiras explicitas, normalizacao adequada, tipos ` +
+      `corretos (DECIMAL pra dinheiro, nao FLOAT; TIMESTAMP/DATE pra datas), constraints ` +
+      `(NOT NULL, UNIQUE, CHECK) e nomes claros e consistentes.\n` +
+      `DESEMPENHO E SEGURANCA — crie indices nas colunas de filtro/junção, explique o plano de ` +
+      `execucao (EXPLAIN/EXPLAIN ANALYZE) quando relevante, e SEMPRE use consultas ` +
+      `parametrizadas/prepared statements (nunca concatenacao de strings — evita SQL injection). ` +
+      `Prefira transacoes explicitas onde houver multiplas escritas.` + KEEP,
   },
   {
     key: 'arquitetura',
     label: 'Arquitetura / Desenho de software',
     text:
-      `Curso de arquitetura e desenho de software. Atualize exemplos e referencias com padroes ` +
-      `e praticas atuais (clean architecture, DDD, microsservicos, event-driven, observabilidade) ` +
-      `quando couber, com diagramas claros.` + KEEP,
+      `Curso de arquitetura e desenho de software. Atualize exemplos, decisoes e diagramas com ` +
+      `o estado da arte atual.\n` +
+      `ESTILOS E PADROES — quando couber: clean/hexagonal architecture (ports & adapters), DDD ` +
+      `(bounded contexts, aggregates, domain events), CQRS e event sourcing, microsservicos vs ` +
+      `monolito modular (e quando preferir cada um), arquitetura event-driven (mensageria, ` +
+      `outbox pattern, idempotencia) e os principais design patterns (GoF) e principios (SOLID).\n` +
+      `DIAGRAMAS — use o modelo C4 (contexto, container, componente) e descreva diagramas em ` +
+      `Mermaid (flowchart, sequence, ER) quando ajudar a visualizar.\n` +
+      `DECISOES E QUALIDADES — registre trade-offs no estilo ADR (Architecture Decision Record) ` +
+      `e enderece atributos de qualidade: escalabilidade, resiliencia (retry, circuit breaker, ` +
+      `bulkhead), observabilidade (logs, metricas, tracing distribuido), seguranca e custo.\n` +
+      `NUVEM — cite praticas cloud-native atuais (containers, 12-factor, IaC) quando o tema pedir.` + KEEP,
   },
   {
     key: 'eng',

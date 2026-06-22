@@ -11,6 +11,17 @@ const json = (res) => {
 export const fetchAllProgress = () =>
   fetch(`${API_BASE}/api/progress/all`).then(json);
 
+// === Bloco de notas global (scratchpad) ===
+export const getScratchpad = () =>
+  fetch(`${API_BASE}/api/db/notes/scratchpad`).then(json);
+
+export const saveScratchpad = (content) =>
+  fetch(`${API_BASE}/api/db/notes/scratchpad`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  }).then(json);
+
 // === Lessons ===
 export const markLessonComplete = (courseTitle, lessonPath) =>
   fetch(`${API_BASE}/api/progress/${enc(courseTitle)}/lessons`, {
