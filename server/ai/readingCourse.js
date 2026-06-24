@@ -43,6 +43,34 @@ const cleanLessonTitle = (title) => title.replace(/^\s*\d+\s*[.)-]\s*/, '').trim
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
+// Remove do banco TUDO atrelado a uma aula (prefix) orfa ao regenerar. Duas
+// categorias, ambas invalidas apos a regeneracao:
+//  1. Materiais gerados pela IA: lesson_materials (resumo/quiz/exemplos/diario/
+//     piada/podcast), deck de flashcards (cascateia pros cards/reviews) e a
+//     pre-quiz (lesson_prequestions).
+//  2. Progresso do aluno: tentativas de quiz/pre-quiz, chat da aula, etapas
+//     concluidas e resumo pessoal. Como o material foi regerado (logo, o antigo
+//     nao servia) e a aula nova nunca foi assistida, esse progresso e "morto" —
+//     marcacao invalida que so confundiria as estatisticas se sobrevivesse.
+// Sem isso, regerar uma aula cujo titulo (= prefix) mudou deixaria tudo isso
+// orfao no Supabase, apontando pra um prefixo que nao existe mais.
+const purgeLessonDb = async (courseTitle, prefix) => {
+  for (const sql of [
+    'DELETE FROM lesson_materials WHERE course_title = $1 AND lesson_prefix = $2',
+    'DELETE FROM flashcard_decks WHERE course_title = $1 AND lesson_prefix = $2',
+    'DELETE FROM lesson_prequestions WHERE course_title = $1 AND lesson_prefix = $2',
+    'DELETE FROM quiz_attempts WHERE course_title = $1 AND lesson_prefix = $2',
+    'DELETE FROM prequestion_attempts WHERE course_title = $1 AND lesson_prefix = $2',
+    'DELETE FROM lesson_chats WHERE course_title = $1 AND lesson_prefix = $2',
+    'DELETE FROM step_completions WHERE course_title = $1 AND lesson_prefix = $2',
+    'DELETE FROM personal_notes WHERE course_title = $1 AND lesson_prefix = $2',
+  ]) {
+    try {
+      await query(sql, [courseTitle, prefix]);
+    } catch { /* ignora erro de banco */ }
+  }
+};
+
 // Parse de JSON tolerante: tira fences ```json e, se falhar, tenta extrair o
 // objeto do primeiro "{" ao ultimo "}". Retorna null se nao der.
 const parseJsonLoose = (raw) => {
@@ -286,8 +314,8 @@ const generateReadingModuleFs = async ({
 
   // Re-rodar deve ser 100% idempotente: remove QUALQUER pasta anterior deste
   // modulo (mesmo com numero diferente — o indice ou o agrupamento podem ter
-  // mudado) e apaga os resumos orfaos correspondentes no banco. Assim nao
-  // duplica pasta nem deixa lixo no Supabase.
+  // mudado) e apaga TODOS os materiais orfaos correspondentes no banco. Assim
+  // nao duplica pasta nem deixa lixo no Supabase.
   try {
     for (const d of await fs.readdir(outRoot)) {
       if (!/^\d+\s/.test(d) || d.replace(/^\d+\s+/, '') !== moduleFolderName) continue;
@@ -296,11 +324,7 @@ const generateReadingModuleFs = async ({
         for (const f of await fs.readdir(oldDir)) {
           const m = f.match(TRANSCRIPT_RE);
           if (!m) continue;
-          const prefix = f.slice(0, m.index);
-          await query(
-            "DELETE FROM lesson_materials WHERE course_title = $1 AND lesson_prefix = $2 AND kind = 'resumo'",
-            [readingCourseTitle, prefix],
-          );
+          await purgeLessonDb(readingCourseTitle, f.slice(0, m.index));
         }
       } catch { /* ignora erro de leitura/banco */ }
       await fs.rm(oldDir, { recursive: true, force: true });
@@ -381,7 +405,7 @@ const generateReadingModuleDrive = async ({
   const cleanPart = safeName(cleanModuleTitle(moduleTitle));
   const moduleFolderName = `${pad2(index)} ${cleanPart}`;
 
-  // Idempotente: remove pasta(s) antiga(s) deste modulo + resumos orfaos no DB.
+  // Idempotente: remove pasta(s) antiga(s) deste modulo + materiais orfaos no DB.
   try {
     for (const d of await drive.listFolders(leituraRootId)) {
       if (!/^\d+\s/.test(d.name) || d.name.replace(/^\d+\s+/, '') !== cleanPart) continue;
@@ -390,10 +414,7 @@ const generateReadingModuleDrive = async ({
         for (const f of old) {
           const m = f.name.match(TRANSCRIPT_RE);
           if (!m) continue;
-          await query(
-            "DELETE FROM lesson_materials WHERE course_title = $1 AND lesson_prefix = $2 AND kind = 'resumo'",
-            [readingCourseTitle, f.name.slice(0, m.index)],
-          );
+          await purgeLessonDb(readingCourseTitle, f.name.slice(0, m.index));
         }
       } catch { /* ignora */ }
       await drive.deleteFile(d.id);
