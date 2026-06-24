@@ -11,9 +11,8 @@ const MATERIAL_KEYS = new Set(["resumo", "exemplos", "piada", "quiz", "flashcard
 // (lesson_prequestions). Roteado pra um endpoint diferente em handleGenerate.
 const KIND_OPTIONS = [
   { key: "prequiz", label: "Pre-Quiz (perguntas-iscas)", icon: "🎯", color: "yellow" },
-  { key: "resumo", label: "Resumo", icon: "📄", color: "emerald" },
+  { key: "resumo", label: "Leitura (texto rico)", icon: "📄", color: "emerald" },
   { key: "exemplos", label: "Pratica", icon: "💪", color: "amber" },
-  { key: "piada", label: "Piada da aula", icon: "😄", color: "pink" },
   { key: "quiz", label: "Quiz", icon: "❓", color: "purple" },
   { key: "flashcards", label: "Flashcards", icon: "🔁", color: "cyan" },
   { key: "diario", label: "Diario tecnico", icon: "📓", color: "rose" },

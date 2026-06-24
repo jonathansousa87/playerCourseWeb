@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
   CheckCircle, Circle, Sparkles, ArrowLeft, Check, Clock,
-  Target, Play, FileText, Coffee, HelpCircle, Repeat, PenLine, Dumbbell, Mic,
+  Target, Play, FileText, HelpCircle, Repeat, PenLine, Dumbbell, Mic,
 } from "lucide-react";
 import { getMediaUrl } from "../utils/fileUtils";
 import VideoPlayer from "./VideoPlayer";
@@ -19,15 +19,17 @@ import { API_BASE } from "../config";
 // "requiresVideo": step depende de transcricao (.txt/.vtt) que so existe
 // se a aula tem video. Aparece sempre que materials.video existir.
 // "always": step nao depende de arquivos da aula.
+// Ordem pedagogica: ativa (pre-quiz) -> adquire (video) -> consolida (resumo) ->
+// elabora em outro formato (podcast) -> aplica (pratica) -> testa (quiz) ->
+// memoriza no longo prazo (flashcards) -> produz com as proprias palavras (meu resumo).
 const STEP_CONFIG = [
   { key: "prequiz", label: "Pre-Quiz", Icon: Target, requiresTranscript: true },
   { key: "video", label: "Video", Icon: Play },
+  { key: "resumo", label: "Leitura", Icon: FileText },
   { key: "podcast", label: "Podcast", Icon: Mic },
-  { key: "resumo", label: "Resumo", Icon: FileText },
-  { key: "piada", label: "Pausa", Icon: Coffee },
+  { key: "exemplos", label: "Pratica", Icon: Dumbbell },
   { key: "quiz", label: "Quiz", Icon: HelpCircle },
   { key: "flashcards", label: "Flashcards", Icon: Repeat },
-  { key: "exemplos", label: "Pratica", Icon: Dumbbell },
   { key: "pessoal", label: "Meu Resumo", Icon: PenLine, always: true },
 ];
 
@@ -156,7 +158,7 @@ const LessonStepper = ({
 
   // Materiais que podem ser GERADOS por IA — aparecem no pipeline mesmo sem
   // estarem gerados ainda (em cor apagada), pra o aluno ver o que falta.
-  const GENERATABLE = new Set(["resumo", "exemplos", "quiz", "flashcards", "piada", "podcast"]);
+  const GENERATABLE = new Set(["resumo", "exemplos", "quiz", "flashcards", "podcast"]);
   const hasTranscript = !!(materials.video || materials.resumo);
   // visibleSteps = tudo que se aplica a esta aula (gerado ou nao).
   const visibleSteps = STEP_CONFIG.filter((step) => {
@@ -421,31 +423,6 @@ const LessonStepper = ({
             />
             <div className="flex-1 overflow-hidden">
               <FlashcardViewer
-                courseTitle={courseTitle}
-                lessonPrefix={lessonGroup.prefix}
-              />
-            </div>
-          </div>
-        );
-
-      case "piada":
-        return (
-          <div className="flex flex-col h-full">
-            <StepHeader
-              title={
-                <>
-                  😄 Intervalo Descontraído
-                  <span className="ml-2 text-xs text-pink-400 font-normal">piada sobre o assunto da aula</span>
-                </>
-              }
-              stepKey="piada"
-              isCompleted={isStepCompleted("piada")}
-              onMarkComplete={handleMarkComplete}
-              borderClass="border-pink-500/20"
-            />
-            <div className="flex-1 overflow-hidden">
-              <MarkdownViewer
-                fileUrl={fileUrl}
                 courseTitle={courseTitle}
                 lessonPrefix={lessonGroup.prefix}
               />

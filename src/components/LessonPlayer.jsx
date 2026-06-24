@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { CourseProvider } from "./CourseContext";
 import ModuleItem from "./ModuleItem";
 import { ArrowLeft, CheckCircle, Circle } from "lucide-react";
@@ -318,45 +318,47 @@ const LegacyVideoPlayer = ({
 };
 
 // Sidebar colapsavel (hover-driven) usada no modo normal.
-// Agora usa absolute/z-index para nao empurrar o conteudo principal,
-// permitindo que a aula ocupe 100% da largura.
-const SidebarSlideout = ({ sidebar }) => (
-  <div
-    className={`absolute ${
-      sidebar.sidebarPosition === "right" ? "right-0" : "left-0"
-    } top-0 h-full z-50 transition-all duration-300 ease-in-out`}
-    style={{
-      width:
-        sidebar.sidebarHovered || sidebar.sidebarLocked
-          ? "min(28rem, 90vw)"
-          : "0.5rem",
-    }}
-    onMouseEnter={() => sidebar.setSidebarHovered(true)}
-    onMouseLeave={() => !sidebar.sidebarLocked && sidebar.setSidebarHovered(false)}
-  >
+// Usa absolute/z-index para nao empurrar o conteudo principal.
+//
+// O estado de hover e LOCAL (useState aqui), nao o global do useSidebar: se
+// usasse o global, abrir/fechar no hover re-renderizava TODO o LessonPlayer
+// (incluindo o conteudo da aula — markdown/Mermaid), fazendo a tela "piscar".
+// Com estado local, so esta sidebar re-renderiza. O `sidebarLocked` (fixar
+// aberta por clique) continua global.
+const SidebarSlideout = ({ sidebar }) => {
+  const [hovered, setHovered] = useState(false);
+  const open = hovered || sidebar.sidebarLocked;
+  return (
     <div
-      className={`h-full bg-gradient-to-b from-slate-900 to-slate-900/95 shadow-2xl overflow-hidden transition-opacity duration-300 ${
-        sidebar.sidebarHovered || sidebar.sidebarLocked ? "opacity-100" : "opacity-0 pointer-events-none"
-      }`}
+      className={`absolute ${
+        sidebar.sidebarPosition === "right" ? "right-0" : "left-0"
+      } top-0 h-full z-50 transition-all duration-300 ease-in-out`}
+      style={{ width: open ? "min(28rem, 90vw)" : "0.5rem" }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => !sidebar.sidebarLocked && setHovered(false)}
     >
-      {/* Monta a lista de aulas só quando aberta. Colapsada, a árvore pesada de
-          ModuleItem ficaria re-renderizando a cada tick de currentTime durante
-          o vídeo, saturando a main thread e travando o hover. */}
-      {(sidebar.sidebarHovered || sidebar.sidebarLocked) && (
-        <CourseSidebar
-          sidebarPosition={sidebar.sidebarPosition}
-          onTogglePosition={sidebar.toggleSidebarPosition}
-        />
+      <div
+        className={`h-full bg-gradient-to-b from-slate-900 to-slate-900/95 shadow-2xl overflow-hidden transition-opacity duration-300 ${
+          open ? "opacity-100" : "opacity-0 pointer-events-none"
+        }`}
+      >
+        {/* Monta a lista de aulas só quando aberta (evita re-render pesado). */}
+        {open && (
+          <CourseSidebar
+            sidebarPosition={sidebar.sidebarPosition}
+            onTogglePosition={sidebar.toggleSidebarPosition}
+          />
+        )}
+      </div>
+      {/* Indicador visual de que ha uma sidebar ali */}
+      {!open && (
+        <div className={`absolute top-1/2 -translate-y-1/2 w-1.5 h-16 bg-blue-500/20 rounded-full ${
+          sidebar.sidebarPosition === "right" ? "right-1" : "left-1"
+        }`} />
       )}
     </div>
-    {/* Indicador visual de que ha uma sidebar ali */}
-    {!sidebar.sidebarHovered && !sidebar.sidebarLocked && (
-      <div className={`absolute top-1/2 -translate-y-1/2 w-1.5 h-16 bg-blue-500/20 rounded-full ${
-        sidebar.sidebarPosition === "right" ? "right-1" : "left-1"
-      }`} />
-    )}
-  </div>
-);
+  );
+};
 
 // Sidebar que desliza quando o video esta em fullscreen.
 const FullscreenSidebar = ({ sidebar }) => (

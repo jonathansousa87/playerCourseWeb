@@ -61,7 +61,7 @@ export const listFilesRecursive = (folderId, depth = 0) =>
     if (depth > 6) return [];
     const { data } = await getDrive().files.list({
       q: `'${folderId}' in parents and trashed = false`,
-      fields: 'files(id, name, mimeType)',
+      fields: 'files(id, name, mimeType, size)',
       pageSize: 1000,
       orderBy: 'name',
     });

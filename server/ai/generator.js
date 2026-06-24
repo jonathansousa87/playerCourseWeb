@@ -2,12 +2,13 @@ import { promises as fs } from 'fs';
 import { join, dirname, basename } from 'path';
 import { chatCompletion, DEFAULT_MODEL } from './deepseek.js';
 import {
-  buildResumoPrompt,
   buildFlashcardsPrompt,
   buildQuizPrompt,
   buildDiarioPrompt,
   buildExemplosPrompt,
   buildPiadaPrompt,
+  buildUpdateReadingPrompt,
+  UPDATE_READING_SYSTEM,
   SYSTEM_PROMPTS,
 } from './prompts.js';
 import { importDeckFromContent, parseAnkiFlashcards } from '../flashcards.js';
@@ -166,14 +167,19 @@ const findLessonDir = async (courseRoot, lessonPrefix) => {
   return any ? dirname(any) : null;
 };
 
+// "resumo" = a LEITURA. No "Gerar IA" ele NAO recondensa (isso e do "Gerar curso
+// de leitura"): pega a leitura existente e so ATUALIZA os diagramas (formato flow
+// novo) + aplica a instrucao. Preserva o texto.
 const promptBuilders = {
-  resumo: buildResumoPrompt,
+  resumo: ({ lessonTitle, transcript, instruction }) => buildUpdateReadingPrompt({ lessonTitle, transcript, instruction }),
   flashcards: buildFlashcardsPrompt,
   quiz: buildQuizPrompt,
   diario: buildDiarioPrompt,
   exemplos: buildExemplosPrompt,
   piada: buildPiadaPrompt,
 };
+// system por kind; resumo usa o system de atualizacao de leitura.
+const systemForKind = { ...SYSTEM_PROMPTS, resumo: UPDATE_READING_SYSTEM };
 
 // Roda fn sobre items com no maximo `limit` em paralelo, preservando a ordem.
 const mapPool = async (items, limit, fn) => {
@@ -240,11 +246,13 @@ export const generateForLesson = async ({
     try {
       const user = promptBuilders[kind]({ lessonTitle, transcript, weekLabel, instruction });
       const { content, usage, model: usedModel } = await chatCompletion({
-        system: SYSTEM_PROMPTS[kind],
+        system: systemForKind[kind],
         user,
         model,
         temperature: kind === 'quiz' ? 0.5 : 0.3,
-        maxTokens: kind === 'quiz' || kind === 'exemplos' ? 8000 : 6000,
+        // resumo=LEITURA e exemplos podem ter varios diagramas flow (JSON longo)
+        // -> tokens generosos pra o JSON NAO truncar (senao vira fallback de codigo).
+        maxTokens: kind === 'exemplos' || kind === 'resumo' ? 13000 : kind === 'quiz' ? 8000 : 6000,
       });
       const cleaned = stripCodeFence(content);
 

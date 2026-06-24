@@ -11,6 +11,10 @@ const json = (res) => {
 export const fetchAllProgress = () =>
   fetch(`${API_BASE}/api/progress/all`).then(json);
 
+// === Saldo DeepSeek ===
+export const fetchDeepseekBalance = () =>
+  fetch(`${API_BASE}/api/ia/balance`).then(json);
+
 // === Bloco de notas global (scratchpad) ===
 export const getScratchpad = () =>
   fetch(`${API_BASE}/api/db/notes/scratchpad`).then(json);

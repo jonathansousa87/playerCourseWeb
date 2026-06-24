@@ -41,6 +41,48 @@ ${instruction.trim()}
 `
     : '';
 
+// Bloco de diagrama React Flow (JSON). Render PRIMARIO da plataforma; o estilo e
+// o layout sao deterministicos (do codigo) — a IA so fornece nodes/edges.
+const FLOW_DIAGRAM_RULES =
+`Inclua o diagrama num bloco \`\`\`flow contendo APENAS JSON valido (nada de texto fora do JSON):
+\`\`\`flow
+{ "type": "flow", "direction": "TB",
+  "nodes": [ {"id":"a","label":"Cliente","kind":"entity"}, {"id":"b","label":"Processar","kind":"process"} ],
+  "edges": [ {"source":"a","target":"b","label":"envia"} ] }
+\`\`\`
+Regras (siga TODAS, senao fica baguncado e ilegivel):
+- MACRO: no MAXIMO 8 nos (so os principais). Se o cenario for grande, modele SO o nucleo.
+- "direction": "TB" (vertical) ou "LR" (horizontal).
+- kind de cada no: entity (ator/entidade externa), process (acao/processo), store (dados/
+  armazenamento), decision (decisao/condicao) ou step (etapa generica).
+- labels de NO curtos: 2 a 4 palavras.
+- label de ARESTA: NO MAXIMO 2 PALAVRAS, ou "" (vazio). NUNCA uma frase. Ex.: use "envia" ou
+  "valida" — NUNCA "envia credenciais de login para validacao". Label longo se sobrepoe e
+  vira um borrao. Na duvida, deixe "".
+- Poucas arestas por no (evite um no com muitas conexoes cruzando).
+- Conecte os nos que se relacionam. Um no SO pode ficar sem conexao se for REALMENTE
+  independente no conteudo (ex.: uma classe/entidade/servico que de fato nao se relaciona com
+  as outras, comum em diagrama de classe DDD ou microsservicos). NUNCA deixe um no solto por
+  esquecimento.
+- IDS DEVEM CASAR EXATAMENTE: o "id" de cada node tem que ser identico ao usado em "source"/
+  "target" das arestas (mesma grafia, mesmas maiusculas). A causa mais comum de um no aparecer
+  "solto sem querer" e o id divergente entre o node e a aresta — confira ANTES de responder.`;
+
+const FLOW_MINDMAP_RULES =
+`Inclua o mapa mental num bloco \`\`\`flow contendo APENAS JSON valido (nada de texto fora do JSON):
+\`\`\`flow
+{ "type": "mindmap",
+  "nodes": [ {"id":"r","label":"Tema central","kind":"root"},
+             {"id":"b1","label":"Ramo","kind":"branch"},
+             {"id":"l1","label":"Detalhe","kind":"leaf"} ],
+  "edges": [ {"source":"r","target":"b1"}, {"source":"b1","target":"l1"} ] }
+\`\`\`
+Regras (formato ESTRELA — raso e largo, NUNCA arvore profunda):
+- 1 no raiz (kind "root"); de 4 a 7 ramos DIRETOS da raiz (kind "branch"); 1 a 3 folhas por
+  ramo (kind "leaf"). NO MAXIMO 2 niveis abaixo da raiz.
+- labels CURTOS (1-4 palavras). CADA no conectado (sem nos soltos); os ids em "source"/"target"
+  devem casar EXATAMENTE com o "id" dos nodes.`;
+
 export const buildResumoPrompt = ({ lessonTitle, transcript, instruction }) => `
 Gere um resumo estruturado em Markdown da aula abaixo.${instructionBlock(instruction)}
 
@@ -95,6 +137,11 @@ Regras de qualidade:
 - Resposta curta (1 frase ou 1 termo) com a ideia-chave em <b>
 - Cobrir os conceitos mais importantes da aula, nao exemplos passageiros
 - NAO duplicar perguntas com o mesmo sentido
+- PROIBIDO perguntas rasas/obvias de definicao pura ("O que e X?"). Foque em APLICACAO,
+  mecanica, comportamento, QUANDO/POR QUE usar, diferencas entre conceitos, ou a solucao
+  de um problema concreto trazido na aula.
+- Varie os tipos: "quando usar X?", "qual a diferenca entre X e Y?", "o que acontece se...",
+  "como resolver...", "por que X em vez de Y?" — recuperacao ativa, nao reconhecimento.
 
 Exemplo do formato esperado (separador entre pergunta e resposta DEVE ser TAB real):
 #separator:tab
@@ -133,8 +180,23 @@ Regras CRITICAS:
 - Sempre 4 alternativas por questao (3 x [ ] e 1 x [x])
 - Alternativas incorretas plausiveis (distratores reais, nao absurdos)
 - Ordem das alternativas aleatoria por questao
-- Explicacao: 1-2 frases diretas, sem inventar conteudo
 - NAO adicione texto fora do formato acima (sem introducao, sem conclusao)
+
+Qualidade cognitiva (importante):
+- NAO faca so perguntas de definicao/memorizacao. PELO MENOS METADE deve exigir raciocinio:
+  aplicacao ("dado este cenario, o que acontece?"), analise ("qual o problema deste codigo?"),
+  comparacao ("qual a diferenca entre X e Y?") ou causa/efeito ("por que isso falha?").
+- Tudo baseado SO no que a aula ensinou (cenarios podem variar o contexto, sem recursos novos).
+
+Qualidade dos distratores (psicometria):
+- As 4 alternativas devem ter tamanho e estrutura SEMELHANTES — a correta NAO pode ser
+  sistematicamente a mais longa/detalhada (entrega a resposta).
+- Distratores devem refletir ERROS/equivocos comuns reais, nao opcoes absurdas.
+- PROIBIDO "todas as anteriores", "nenhuma das anteriores" e "todas estao corretas".
+
+Explicacao (feedback formativo):
+- 1-2 frases: por que a correta esta certa E, quando ajudar, qual o equivoco por tras do
+  distrator mais tentador. Sem inventar conteudo fora da aula.
 
 Titulo da aula: ${lessonTitle}
 
@@ -150,31 +212,41 @@ Gere um material de PRATICA em Markdown pra aula abaixo. Ele deve ser 100% SOBRE
 praticar e reproduzir o que ELA ensinou — nada de assunto/recurso que a aula nao mostrou.${instructionBlock(instruction)}
 
 PRIMEIRO, decida o tipo da aula e escolha UM dos dois modos:
-- MODO A (mao na massa): a aula MOSTROU algo reproduzivel — codigo, comandos, consultas,
-  configuracao, uso de uma ferramenta, um passo a passo. Aqui da pra praticar de verdade.
+- MODO A (mao na massa): a aula MOSTROU algo reproduzivel. Dois casos (escolha o que se aplica):
+  - (A1) CODIGO/FERRAMENTA: codigo, comandos, consultas, configuracao, uso de ferramenta, passo
+    a passo. Praticar = REPRODUZIR e ESCREVER codigo.
+  - (A2) MODELAGEM/DIAGRAMA: a aula ensinou OU demonstrou uma NOTACAO/tecnica de diagrama (BPMN,
+    UML incluindo CASOS DE USO, fluxograma, DFD, ER, C4) — MESMO que seja "exemplo real" ou
+    pareca so explicacao da notacao. Praticar = MODELAR cenarios com essa notacao (desenhar o
+    diagrama), nao escrever codigo. Aula sobre um tipo de diagrama eh SEMPRE A2, nunca MODO B.
 - MODO B (teorica/conceitual): a aula so EXPLICOU conceitos, panorama, historia, "o que e /
-  por que", sem nada concreto pra reproduzir. Aqui NAO invente exercicios praticos — reforce
-  a teoria com recuperacao ativa.
+  por que", sem nada concreto pra reproduzir NEM modelar. Aqui NAO invente exercicios praticos —
+  reforce a teoria com recuperacao ativa.
 
 NAO escreva NADA antes do primeiro \`##\`. Use SOMENTE as secoes do modo escolhido.
 
-=== MODO A — aula mao na massa ===
+=== MODO A — aula mao na massa (A1 codigo OU A2 modelagem) ===
 ## Como praticar
-Ambiente/ferramenta minima pra reproduzir (console, editor, playground, arquivo de teste) e o
-setup minimo pra comecar. Concreto, sem inventar ferramentas que nao existam.
+Ambiente/ferramenta minima pra praticar e o setup pra comecar. A1: console, editor, playground,
+arquivo de teste. A2: a ferramenta de modelagem da aula (ou Draw.io/papel) e como representar.
+Concreto, sem inventar ferramentas que nao existam.
 
 ## Passo a passo
-Reproduza PASSO A PASSO exatamente o que a aula demonstrou, mostrando o resultado esperado em
-cada etapa. Use blocos \`\`\` com a linguagem correta quando houver codigo/comando. So o que a
-aula mostrou.
+Reproduza PASSO A PASSO o que a aula demonstrou. Em cada etapa, explique o PORQUE dela (nao so o
+"como") e mostre o resultado esperado. A1: blocos \`\`\` com a linguagem correta. A2: e
+OBRIGATORIO MOSTRAR o diagrama (nao apenas descrever em texto nem so dar instrucoes de
+ferramenta). So o que a aula mostrou.
+${FLOW_DIAGRAM_RULES}
 
 ## Exercicios
-3 a 5 exercicios progressivos (do mais simples ao mais completo) pro aluno fazer SOZINHO, cada
-um com uma dica curta. Baseados no que a aula ensinou — pode variar o contexto, sem usar
-recursos que a aula nao mostrou.
+3 a 5 exercicios progressivos (do mais simples ao mais completo) pro aluno fazer SOZINHO. Cada
+um com: enunciado claro, uma **dica** curta e o **resultado esperado**. A1 = escrever codigo.
+A2 = MODELAR o cenario; FORNECA a solucao esperada como um bloco \`\`\`flow. Mantenha cada
+diagrama SIMPLES (poucos nos) — varios diagramas pequenos e claros, um por exercicio.
 
 ## Desafio
-1 desafio que integra os pontos principais da aula.
+1 desafio que integra os pontos principais da aula (codigo OU modelo, conforme A1/A2), com
+enunciado + resultado esperado. Em A2, inclua UM bloco \`\`\`flow com a solucao modelada.
 
 ## Checklist
 4 a 6 itens "Voce consegue...?" pro aluno se autoavaliar antes de seguir.
@@ -311,10 +383,15 @@ Regras de conteudo:
   encerrando o episodio.
 - Tom de conversa real: natural, com reacoes ("ah, entendi", "faz sentido"), sem ser robotico.
 - Use os nomes de vez em quando ao se dirigir um ao outro ("Boa pergunta, ${juniorName}").
+- Inclua 1 ou 2 momentos leves/bem-humorados (uma analogia divertida ou um comentario
+  descontraido sobre o tema), sem forcar e sem virar piada — so pra deixar a conversa humana.
 
 Regras de formato (CRITICAS — cada turno vira audio de voz):
 - Texto FALAVEL: portugues por extenso. NADA de markdown, listas, codigo, fences, emojis,
   URLs ou simbolos. Numeros e termos devem estar escritos como se fala.
+- SIGLAS: escreva como se falam. Se a sigla e lida letra a letra, soletre foneticamente
+  (ex.: "JWT" -> "jota-dablio-te", "SQL" -> "esse-que-ele", "API" -> "a-pe-i"); se e lida
+  como palavra, mantenha (ex.: "REST", "JSON", "JPA"). Na duvida, prefira soletrar.
 - Cada turno tem 1 a 4 frases. Alterne os falantes (nao dois turnos seguidos do mesmo).
 - Entre 18 e 30 turnos no total (pra dar ~5 minutos de audio).
 
@@ -380,8 +457,25 @@ export const READING_PLAN_SYSTEM =
   'cada aula resultante cobre INTEGRALMENTE suas fontes (sem ficar rasa). Responda SEMPRE com ' +
   'JSON puro, sem texto antes ou depois.';
 
-// lessons: [{ id: number, title: string }]
-export const buildReadingPlanPrompt = ({ moduleTitle, lessons }) => `
+// lessons: [{ id: number, title: string, bytes?: number }]
+// bytes = tamanho da transcricao (proxy de densidade/duracao da aula).
+export const buildReadingPlanPrompt = ({ moduleTitle, lessons }) => {
+  const hasSize = lessons.some((l) => (l.bytes || 0) > 0);
+  // Classifica o tamanho relativo de cada aula em curto/medio/longo (terços),
+  // pra IA equilibrar a MASSA dos grupos, nao so a contagem de aulas.
+  let sizeTag = () => '';
+  if (hasSize) {
+    const sorted = [...lessons].map((l) => l.bytes || 0).sort((a, b) => a - b);
+    const q1 = sorted[Math.floor(sorted.length / 3)] || 0;
+    const q2 = sorted[Math.floor((2 * sorted.length) / 3)] || 0;
+    sizeTag = (b) => {
+      const n = b || 0;
+      if (n <= q1) return ' (curta)';
+      if (n <= q2) return ' (media)';
+      return ' (LONGA)';
+    };
+  }
+  return `
 Modulo: ${moduleTitle}
 
 Abaixo a lista de aulas em video deste modulo (na ordem original). Planeje um curso de LEITURA
@@ -390,7 +484,12 @@ conteudo. Busque o EQUILIBRIO — nem 1 aula gigante e rasa, nem 1-pra-1.
 
 Meta: um modulo com varias aulas curtas costuma virar ~METADE (ex.: 5 aulas -> 2 ou 3 aulas de
 leitura). Cada aula de leitura normalmente reune 2 a 3 aulas originais relacionadas.
-
+${hasSize ? `
+DENSIDADE (importante): cada aula vem marcada como (curta), (media) ou (LONGA) pelo tamanho da
+transcricao. Equilibre a MASSA dos grupos, nao so a contagem: uma aula (LONGA) sozinha ja pode
+virar uma aula de leitura; varias (curtas) relacionadas se juntam numa so. Evite um grupo
+massivo (varias LONGAS juntas) ou um grupo raquitico.
+` : ''}
 REGRA DE OURO (cobertura): a aula de leitura resultante precisa COBRIR INTEGRALMENTE tudo o que
 as aulas-fonte ensinam — nada raso, nada cortado. Se juntar muita coisa deixaria o texto
 superficial, agrupe MENOS (divida em mais aulas).
@@ -410,7 +509,7 @@ Regras:
 - Titulos claros e diretos, SEM numero no inicio (nada de "1." ou "01").
 
 Aulas:
-${lessons.map((l) => `- [${l.id}] ${l.title}`).join('\n')}
+${lessons.map((l) => `- [${l.id}] ${l.title}${sizeTag(l.bytes)}`).join('\n')}
 
 Responda APENAS com JSON puro neste schema EXATO:
 {
@@ -420,6 +519,7 @@ Responda APENAS com JSON puro neste schema EXATO:
 }
 onde "sources" sao os ids (os numeros entre colchetes) das aulas originais que compoem
 aquela aula de leitura.`.trim();
+};
 
 // Fase 2: condensa a(s) transcricao(oes) de uma aula planejada num texto de leitura
 // limpo e completo. Esse texto vira o .txt do curso de leitura, que depois alimenta
@@ -465,27 +565,28 @@ texto que ENSINA por escrito — nao um resumo de topicos seco, e sim uma aula b
 Estrutura recomendada (adapte ao conteudo, nao force secoes que nao fazem sentido):
 - Um titulo \`#\` e, logo abaixo, 1 paragrafo curto de CONTEXTO ("por que isso importa" /
   pra que serve na pratica).
-- Logo apos o contexto, QUANDO o tema tiver estrutura visual (fluxo/etapas, relacoes
-  entre componentes/classes/servicos, hierarquia ou arquitetura), inclua uma secao
-  "## Mapa mental" com UM diagrama Mermaid (veja as regras de Mermaid abaixo). Se o
-  assunto for puramente textual/teorico e um diagrama nao agregar, OMITA esta secao.
+- Logo apos o contexto, QUANDO o tema tiver estrutura visual (hierarquia de conceitos,
+  categorias, partes de um todo), inclua uma secao "## Mapa mental" com UM bloco \`\`\`flow
+  (veja as regras abaixo). Se o assunto for puramente textual/teorico e um diagrama nao
+  agregar, OMITA esta secao.
 - Secoes \`##\` desenvolvendo o conteudo na ordem logica de aprendizado, explicando o
   CONCEITO e o PORQUE, nao so a sintaxe.
 - Exemplos de codigo em blocos \`\`\` com a linguagem correta, comentados quando ajudar.
+- Se houver um FLUXO/PROCESSO/sequencia ou relacoes a mostrar, use um bloco \`\`\`flow (diagrama),
+  veja as regras abaixo.
 - Quando fizer sentido: uma secao de "Quando usar / cuidados" e/ou tabelas comparativas.
 - Destaque **armadilhas** e **boas praticas** que aparecerem na transcricao.
 - Termine com "## Resumo rapido" — 4 a 7 bullets com o que o aluno deve levar.
 
-REGRAS DO DIAGRAMA MERMAID (so quando incluir o "## Mapa mental"):
-- Use um bloco fechado \`\`\`mermaid ... \`\`\` com codigo Mermaid VALIDO.
-- Escolha o tipo que melhor representa o conteudo: \`flowchart TD\` (fluxo/etapas),
-  \`classDiagram\` (classes/relacoes), \`sequenceDiagram\` (interacao/requisicoes),
-  \`mindmap\` (hierarquia de conceitos) ou \`erDiagram\` (modelo de dados).
-- Rotulos curtos, em portugues, refletindo SO o que a aula mostrou (nao invente).
-- Entre 4 e 12 nos — visao geral, nao o conteudo inteiro.
-- Para evitar erro de sintaxe: se um rotulo tiver espaco, pontuacao, parenteses ou
-  dois-pontos, coloque-o entre aspas duplas (ex.: \`A["Cliente HTTP"] --> B["Controller"]\`).
-  Nao use \`(\`, \`)\`, \`:\`, \`;\` soltos dentro de rotulos sem aspas.
+DIAGRAMAS — REGRA ABSOLUTA:
+- TODO diagrama (mapa mental, fluxo, processo, hierarquia, relacoes) DEVE usar um bloco
+  \`\`\`flow (JSON). E TERMINANTEMENTE PROIBIDO usar \`\`\`mermaid, PlantUML, arte ASCII ou
+  "descricao aproximada de diagrama". Nada de "representacao com Mermaid". So \`\`\`flow.
+- MAPA MENTAL (hierarquia de conceitos) -> use o formato mindmap:
+${FLOW_MINDMAP_RULES}
+- FLUXO / PROCESSO / DFD -> use o formato de fluxograma:
+${FLOW_DIAGRAM_RULES}
+- Os rotulos refletem SO o que a aula mostrou (nao invente conceitos).
 
 REGRA DE FIDELIDADE (a mais importante):
 - Seu papel eh EXPLICAR MELHOR o que esta na transcricao — NAO ampliar o conteudo.
@@ -509,6 +610,38 @@ ${trunc(transcript, 28000)}
 ---
 
 Retorne APENAS a aula em Markdown, sem fences externas e sem comentarios sobre a tarefa.`.trim();
+
+// === Atualizar leitura existente (sem recondensar) ===
+// Usado pelo "Gerar IA": pega a leitura JA escrita e so atualiza diagramas
+// (formato ```flow novo) + aplica a instrucao do usuario. NAO recondensa nem
+// corta conteudo (isso e papel do "Gerar curso de leitura").
+export const UPDATE_READING_SYSTEM =
+  'Voce atualiza aulas de leitura JA escritas: preserva integralmente o texto e a explicacao, ' +
+  'so moderniza/converte os diagramas para o formato pedido e aplica o que o usuario pedir. ' +
+  'NUNCA recondensa, resume ou corta conteudo. Responda em Markdown.';
+
+export const buildUpdateReadingPrompt = ({ lessonTitle, transcript, instruction }) => `
+Abaixo esta uma AULA DE LEITURA ja escrita em Markdown sobre "${lessonTitle}". NAO reescreva,
+NAO condense e NAO corte conteudo — PRESERVE todo o texto e a explicacao como estao.
+
+Sua tarefa e APENAS atualizar:
+- Converta QUALQUER diagrama existente (bloco \`\`\`mermaid, arte ASCII, ou descricao textual de
+  um diagrama/fluxo/mapa) para o novo formato \`\`\`flow (JSON) descrito abaixo.
+- Se o tema tiver estrutura visual (hierarquia de conceitos/categorias) e NAO houver uma secao
+  "## Mapa mental", adicione UMA logo apos o paragrafo de contexto, com um bloco \`\`\`flow.
+${instruction && instruction.trim() ? `- Aplique tambem esta instrucao do usuario: ${instruction.trim()}\n` : ''}Mantenha o restante IDENTICO. Retorne a aula COMPLETA em Markdown.
+
+Para MAPA MENTAL (hierarquia de conceitos) use:
+${FLOW_MINDMAP_RULES}
+
+Para FLUXOGRAMA/DIAGRAMA de processo use:
+${FLOW_DIAGRAM_RULES}
+
+Aula de leitura atual:
+---
+${trunc(transcript, 28000)}
+---
+Retorne APENAS o Markdown da aula completa, sem fences externas e sem comentarios sobre a tarefa.`.trim();
 
 // === Modo Entrevista de Emprego (por modulo) ===
 // Fase 1: gera 5 perguntas tecnicas progressivas a partir do conteudo do modulo.

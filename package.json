@@ -15,10 +15,13 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@supabase/supabase-js": "^2.105.3",
     "@tailwindcss/typography": "^0.5.16",
+    "@xyflow/react": "^12.11.1",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
+    "elkjs": "^0.11.1",
     "express": "^4.21.2",
     "googleapis": "^171.4.0",
     "jose": "^6.2.3",

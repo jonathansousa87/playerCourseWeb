@@ -1,15 +1,17 @@
 import React, { useEffect, useState } from "react";
-import { LogOut, Settings, BarChart3, RefreshCw, Keyboard, ChevronRight, Bell, AlertTriangle, ShieldAlert } from "lucide-react";
+import { LogOut, Settings, BarChart3, RefreshCw, Keyboard, ChevronRight, Bell, AlertTriangle, ShieldAlert, BookOpenText, Wallet } from "lucide-react";
 import CourseCard from "./CourseCard";
 import ConfigModal from "./ConfigModal";
 import OrphanCoursesModal from "./OrphanCoursesModal";
 import AdminModal from "./AdminModal";
+import ReadingBatchPicker from "./ReadingBatchPicker";
+import ReadingBatchScreen from "./ReadingBatchScreen";
 import {
   countLessons,
   countCompletedLessons,
   calculateModuleDuration,
 } from "../utils/courseUtils";
-import { fetchFlashcardSummary, fetchOrphanCourses } from "../utils/progressApi";
+import { fetchFlashcardSummary, fetchOrphanCourses, fetchDeepseekBalance } from "../utils/progressApi";
 import { TYPING_TOTAL } from "../typing/curriculum";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -53,6 +55,13 @@ const CoursesScreen = ({
   const [orphanCount, setOrphanCount] = useState(0);
   const [showOrphans, setShowOrphans] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  // Geracao de curso de leitura em lote: o picker escolhe os cursos; a
+  // ReadingBatchScreen (3 colunas) configura e processa todos.
+  const [showReadingPicker, setShowReadingPicker] = useState(false);
+  const [batchCourses, setBatchCourses] = useState([]);
+  // Saldo DeepSeek (consulta leve, nao gasta creditos de geracao).
+  const [balance, setBalance] = useState(null);
+  useEffect(() => { fetchDeepseekBalance().then(setBalance).catch(() => {}); }, []);
   const reloadOrphans = () =>
     fetchOrphanCourses()
       .then((res) => setOrphanCount((res.orphans || []).length))
@@ -108,6 +117,21 @@ const CoursesScreen = ({
                 </div>
               </div>
             )}
+            {balance && balance.balance != null && (
+              <div
+                title="Saldo DeepSeek (creditos de IA)"
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-sm ${
+                  balance.balance < 1
+                    ? "bg-red-600/15 border-red-500/30 text-red-300"
+                    : balance.balance < 3
+                      ? "bg-amber-600/15 border-amber-500/30 text-amber-300"
+                      : "bg-slate-800/60 border-slate-700/50 text-slate-300"
+                }`}
+              >
+                <Wallet className="w-4 h-4" />
+                <span className="tabular-nums">{balance.currency === "USD" ? "$" : ""}{balance.balance.toFixed(2)}</span>
+              </div>
+            )}
             <button
               onClick={() => onView("dashboard")}
               className="flex items-center gap-2 px-3.5 py-2 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 rounded-xl transition-all text-sm text-emerald-300 hover:text-emerald-200"
@@ -123,6 +147,14 @@ const CoursesScreen = ({
             >
               <RefreshCw className="w-4 h-4" />
               <span className="hidden sm:inline">Revisar</span>
+            </button>
+            <button
+              onClick={() => setShowReadingPicker(true)}
+              className="flex items-center gap-2 px-3.5 py-2 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 rounded-xl transition-all text-sm text-emerald-300 hover:text-emerald-200"
+              title="Gerar curso de leitura (escolha varios cursos)"
+            >
+              <BookOpenText className="w-4 h-4" />
+              <span className="hidden sm:inline">Gerar leitura</span>
             </button>
             <button
               onClick={() => setShowAdmin(true)}
@@ -289,6 +321,22 @@ const CoursesScreen = ({
           onChanged={() => { onCoursesChanged?.(); reloadOrphans(); }}
         />
       )}
+
+      {showReadingPicker && (
+        <ReadingBatchPicker
+          courses={courses}
+          onClose={() => setShowReadingPicker(false)}
+          onStart={(queue) => { setBatchCourses(queue); setShowReadingPicker(false); }}
+        />
+      )}
+
+      {batchCourses.length > 0 && (
+        <ReadingBatchScreen
+          courses={batchCourses}
+          onClose={() => { setBatchCourses([]); onCoursesChanged?.(); }}
+        />
+      )}
+
     </div>
   );
 };

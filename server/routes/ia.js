@@ -13,6 +13,27 @@ const router = express.Router();
 
 const ALLOWED_KINDS = new Set(['resumo', 'quiz', 'flashcards', 'diario', 'exemplos', 'piada']);
 
+// Saldo da conta DeepSeek (nao consome creditos de geracao — e so consulta).
+router.get('/api/ia/balance', async (_req, res) => {
+  try {
+    if (!process.env.DEEPSEEK_API_KEY) return res.status(500).json({ error: 'DEEPSEEK_API_KEY nao configurada' });
+    const r = await fetch('https://api.deepseek.com/user/balance', {
+      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return res.status(502).json({ error: `deepseek HTTP ${r.status}` });
+    const data = await r.json();
+    const info = (data.balance_infos || [])[0] || {};
+    res.json({
+      available: data.is_available,
+      balance: info.total_balance != null ? Number(info.total_balance) : null,
+      currency: info.currency || 'USD',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post('/api/ia/generate', async (req, res) => {
   try {
     const { courseTitle, lessonPrefix, kinds, model, instruction } = req.body || {};

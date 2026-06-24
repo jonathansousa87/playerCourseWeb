@@ -17,11 +17,10 @@ const MATERIAL_KINDS = [
   { key: "exemplos", label: "Pratica" },
   { key: "quiz", label: "Quiz" },
   { key: "flashcards", label: "Flashcards" },
-  { key: "piada", label: "Piada" },
   { key: "diario", label: "Diario" },
   { key: "podcast", label: "Podcast" },
 ];
-const TEXT_KINDS = new Set(["exemplos", "quiz", "piada", "flashcards", "diario"]);
+const TEXT_KINDS = new Set(["exemplos", "quiz", "flashcards", "diario"]);
 
 // Concorrencia da fase de materiais (varias aulas ao mesmo tempo). O backend
 // (semaforo do DeepSeek) limita a concorrencia real na API.
@@ -79,7 +78,7 @@ const MODELS = [
   { key: "deepseek-v4-pro", label: "Mais fiel a fonte — raciocina mais, +caro" },
 ];
 
-const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
+const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent, queueLabel }) => {
   const modules = useMemo(() => collectModules(courseContent), [courseContent]);
   const [selected, setSelected] = useState(() => new Set(modules.map((m) => m.path)));
   const [model, setModel] = useState("deepseek-v4-flash");
@@ -234,7 +233,10 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent }) => {
               <BookOpenText className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-slate-100 font-semibold text-lg">Gerar curso de leitura</h3>
+              <h3 className="text-slate-100 font-semibold text-lg">
+                Gerar curso de leitura
+                {queueLabel && <span className="ml-2 text-xs font-normal text-emerald-400">{queueLabel}</span>}
+              </h3>
               <p className="text-slate-400 text-sm mt-0.5">
                 A IA agrupa as aulas e condensa as transcricoes em texto enxuto. Cria a pasta{" "}
                 <span className="text-slate-300 font-mono">{courseTitle} - Leitura</span>.

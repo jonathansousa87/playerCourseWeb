@@ -23,7 +23,18 @@ export const INSTRUCTION_PRESETS = [
       `SPRING — use jakarta.* (nao javax.*), injecao por construtor, RestClient/HTTP Interfaces ` +
       `(@HttpExchange) no lugar de RestTemplate, tratamento de erros com Problem Details ` +
       `(ProblemDetail/RFC 9457), records como DTOs, Bean Validation (jakarta.validation) e as ` +
-      `anotacoes/APIs atuais do Spring MVC e Spring Data.` + KEEP,
+      `anotacoes/APIs atuais do Spring MVC e Spring Data.\n` +
+      `SPRING SECURITY — adote a abordagem moderna baseada em Lambdas para o SecurityFilterChain ` +
+      `(definido como @Bean), eliminando completamente encadeamentos antigos: use ` +
+      `.authorizeHttpRequests(auth -> auth...) em vez dos metodos sem lambda (nada de .and() nem ` +
+      `authorizeRequests(), removidos no Spring Security 7). Configure a arquitetura como totalmente ` +
+      `STATELESS com JWT usando SessionCreationPolicy.STATELESS e desabilite o CSRF de forma ` +
+      `explicita via lambda. Para controle de acesso, use seguranca baseada em metodos com ` +
+      `@EnableMethodSecurity e @PreAuthorize, aplicando record patterns / pattern matching se houver ` +
+      `logica customizada de extracao de roles dentro do JwtAuthenticationFilter (estendendo ` +
+      `OncePerRequestFilter). Centralize o tratamento de falhas de autenticacao convertendo o ` +
+      `AuthenticationEntryPoint para Problem Details (ProblemDetail / RFC 9457), garantindo ` +
+      `respostas JSON limpas em vez de paginas HTML de erro.` + KEEP,
   },
   {
     key: 'python',
@@ -59,14 +70,36 @@ export const INSTRUCTION_PRESETS = [
       `o estado da arte atual.\n` +
       `ESTILOS E PADROES — quando couber: clean/hexagonal architecture (ports & adapters), DDD ` +
       `(bounded contexts, aggregates, domain events), CQRS e event sourcing, microsservicos vs ` +
-      `monolito modular (e quando preferir cada um), arquitetura event-driven (mensageria, ` +
-      `outbox pattern, idempotencia) e os principais design patterns (GoF) e principios (SOLID).\n` +
-      `DIAGRAMAS — use o modelo C4 (contexto, container, componente) e descreva diagramas em ` +
-      `Mermaid (flowchart, sequence, ER) quando ajudar a visualizar.\n` +
+      `monolito modular (e quando preferir cada um) e os principais design patterns (GoF) e ` +
+      `principios (SOLID).\n` +
+      `EVENT-DRIVEN E MENSAGERIA — Apache Kafka e RabbitMQ: topicos/filas, particoes, consumer ` +
+      `groups, ordenacao, entrega (at-least-once / exactly-once), idempotencia, dead-letter queue ` +
+      `(DLQ) e os padroes outbox, saga e event sourcing. Explique quando usar mensageria vs ` +
+      `chamada sincrona.\n` +
+      `DIAGRAMAS — modelo C4 (contexto, container, componente, codigo) e diagramas UML (sequencia, ` +
+      `componentes, deployment, estados) quando ajudar, descritos em Mermaid.\n` +
       `DECISOES E QUALIDADES — registre trade-offs no estilo ADR (Architecture Decision Record) ` +
       `e enderece atributos de qualidade: escalabilidade, resiliencia (retry, circuit breaker, ` +
       `bulkhead), observabilidade (logs, metricas, tracing distribuido), seguranca e custo.\n` +
       `NUVEM — cite praticas cloud-native atuais (containers, 12-factor, IaC) quando o tema pedir.` + KEEP,
+  },
+  {
+    key: 'modelagem',
+    label: 'Modelagem & Diagramas (BPMN, UML, DFD, C4)',
+    text:
+      `Curso de modelagem e diagramacao (analise/engenharia de requisitos e desenho visual). ` +
+      `Ensine as notacoes com rigor, simbolos corretos e exemplos do mundo real.\n` +
+      `NOTACOES — quando o tema pedir: BPMN 2.0 (eventos, atividades, gateways, pools/lanes, ` +
+      `fluxos), UML (casos de uso, atividade, maquina de estados, classes, sequencia, componentes), ` +
+      `Diagrama de Fluxo de Dados (DFD) e diagrama de contexto, fluxogramas, modelo ` +
+      `Entidade-Relacionamento (ER), decomposicao funcional, e analise de decisao (tabelas e ` +
+      `arvores de decisao). Para arquitetura, modelo C4 (contexto/container/componente).\n` +
+      `BOAS PRATICAS — para cada notacao, explique o PROPOSITO (o que modela e quando usar), os ` +
+      `elementos/simbolos corretos e os erros comuns; use exemplos concretos e passo a passo.\n` +
+      `DIAGRAMAS NO TEXTO — represente em Mermaid quando houver suporte (flowchart para ` +
+      `fluxograma/BPMN/DFD aproximados, sequenceDiagram, classDiagram, stateDiagram, erDiagram) e ` +
+      `tabelas markdown para tabelas de decisao. OBS.: BPMN, DFD e casos de uso nao tem notacao ` +
+      `nativa em Mermaid — use o flowchart como aproximacao fiel e descreva os simbolos no texto.` + KEEP,
   },
   {
     key: 'eng',

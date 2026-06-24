@@ -95,7 +95,10 @@ const collectModuleTranscripts = async (moduleDir) => {
       if (e.isDirectory()) {
         await walk(full);
       } else if (TRANSCRIPT_RE.test(e.name) && !MATERIAL_TXT_RE.test(e.name)) {
-        found.push({ name: e.name, path: full, title: lessonTitleFromFile(e.name) });
+        // bytes ~ densidade da aula (proxy de duracao) p/ o plano equilibrar grupos.
+        let bytes = 0;
+        try { bytes = (await fs.stat(full)).size; } catch { /* sem stat */ }
+        found.push({ name: e.name, path: full, title: lessonTitleFromFile(e.name), bytes });
       }
     }
   };
@@ -176,7 +179,7 @@ const planGrouping = async ({ moduleTitle, transcripts, model }) => {
       system: READING_PLAN_SYSTEM,
       user: buildReadingPlanPrompt({
         moduleTitle,
-        lessons: transcripts.map((t) => ({ id: t.id, title: t.title })),
+        lessons: transcripts.map((t) => ({ id: t.id, title: t.title, bytes: t.bytes || 0 })),
       }),
       model,
       temperature: 0.2,
@@ -362,7 +365,7 @@ const generateReadingModuleDrive = async ({
   const files = drive.flattenFiles(await drive.listFilesRecursive(moduleFolderId));
   const transcripts = files
     .filter((f) => TRANSCRIPT_RE.test(f.name) && !MATERIAL_TXT_RE.test(f.name))
-    .map((f) => ({ name: f.name, fileId: f.id, title: lessonTitleFromFile(f.name) }))
+    .map((f) => ({ name: f.name, fileId: f.id, title: lessonTitleFromFile(f.name), bytes: Number(f.size) || 0 }))
     .sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' }))
     .map((t, id) => ({ id, ...t }));
   if (transcripts.length === 0) {

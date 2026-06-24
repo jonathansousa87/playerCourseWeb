@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import MermaidDiagram from "./MermaidDiagram";
+import FlowDiagram from "./FlowDiagram";
 import remarkGfm from "remark-gfm";
 import { parseExemplosHtml, parseExemplosMd } from "../utils/examplesParser";
 import { useReadTimer } from "../hooks/useReadTimer";
@@ -83,6 +85,13 @@ const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
                     ),
                     code: ({ node, children, ...props }) => {
                       const isInline = !node?.position?.start.line || node?.position?.start.line === node?.position?.end.line;
+                      // Bloco ```flow -> diagrama React Flow (primario). ```mermaid = fallback.
+                      if (!isInline && /\blanguage-flow\b/.test(props.className || "")) {
+                        return <FlowDiagram spec={String(children).replace(/\n$/, "")} />;
+                      }
+                      if (!isInline && /\blanguage-mermaid\b/.test(props.className || "")) {
+                        return <MermaidDiagram chart={String(children).replace(/\n$/, "")} />;
+                      }
                       return isInline ? (
                         <code className="text-[12px] font-mono bg-slate-800/70 text-cyan-300 px-1.5 py-0.5 rounded border border-slate-700/40" {...props}>
                           {children}
@@ -112,6 +121,17 @@ const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
                     ),
                     h3: ({ children }) => (
                       <h3 className="text-purple-300 font-medium text-sm mt-4 mb-2">{children}</h3>
+                    ),
+                    table: ({ children }) => (
+                      <div className="my-4 overflow-x-auto">
+                        <table className="w-full text-sm border-collapse">{children}</table>
+                      </div>
+                    ),
+                    th: ({ children }) => (
+                      <th className="text-left font-semibold text-slate-200 px-3 py-2 border border-slate-700/60 bg-slate-800/40">{children}</th>
+                    ),
+                    td: ({ children }) => (
+                      <td className="px-3 py-2 border border-slate-700/40 text-slate-300 align-top">{children}</td>
                     ),
                   }}
                 >

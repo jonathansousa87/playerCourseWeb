@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { generateIa, generatePrequestions, generatePodcastScript, generatePodcastAudio } from "../utils/progressApi";
+import { INSTRUCTION_PRESETS } from "../utils/instructionPresets";
 
 const KIND_OPTIONS = [
   { key: "prequiz", label: "Pre-Quiz", icon: "🎯" },
-  { key: "resumo", label: "Resumo", icon: "📄" },
+  { key: "resumo", label: "Leitura", icon: "📄" },
   { key: "exemplos", label: "Pratica", icon: "💪" },
-  { key: "piada", label: "Piada", icon: "😄" },
   { key: "quiz", label: "Quiz", icon: "❓" },
   { key: "flashcards", label: "Flashcards", icon: "🔁" },
   { key: "diario", label: "Diario", icon: "📓" },
@@ -82,6 +82,8 @@ const BulkAIGenerateModal = ({
         ),
       ),
   );
+  const [niche, setNiche] = useState("");
+  const [instruction, setInstruction] = useState("");
   const [model, setModel] = useState("deepseek-v4-flash");
   const [loading, setLoading] = useState(false);
   const [currentPrefix, setCurrentPrefix] = useState(null);
@@ -171,14 +173,15 @@ const BulkAIGenerateModal = ({
 
     // Gera UM par (aula, tipo) DeepSeek e devolve o resultado normalizado.
     // (O podcast tem fluxo proprio: roteiro + audio.)
+    const instr = instruction.trim();
     const runPair = async (lesson, kind) => {
       const base = { prefix: lesson.prefix, title: lesson.title, kind };
       try {
         if (kind === "prequiz") {
-          const out = await generatePrequestions({ courseTitle, lessonPrefix: lesson.prefix, model });
+          const out = await generatePrequestions({ courseTitle, lessonPrefix: lesson.prefix, model, instruction: instr });
           return { ...base, ok: true, error: null, file: `${out.questions.length} perguntas no DB` };
         }
-        const out = await generateIa({ courseTitle, lessonPrefix: lesson.prefix, kinds: [kind], model });
+        const out = await generateIa({ courseTitle, lessonPrefix: lesson.prefix, kinds: [kind], model, instruction: instr });
         const res = out.results?.[0];
         return { ...base, ok: !!res?.ok, error: res?.ok ? null : res?.error || "falha", file: res?.file || null };
       } catch (err) {
@@ -391,7 +394,34 @@ const BulkAIGenerateModal = ({
               )}
             </div>
 
+            {/* Nicho/instrucao (opcional) — mesmo dos outros modais; moderniza os materiais */}
+            {!loading && niche && (
+              <div className="px-6 pt-3">
+                <textarea
+                  value={instruction}
+                  onChange={(e) => setInstruction(e.target.value)}
+                  rows={3}
+                  className="w-full bg-slate-800/70 border border-slate-700/50 rounded-lg px-3 py-2 text-slate-200 text-xs resize-y focus:outline-none focus:border-blue-500/40"
+                />
+              </div>
+            )}
             <div className="px-6 py-3 border-t border-slate-800/60 bg-slate-900/80 flex items-center gap-3 flex-wrap">
+              <label className="text-xs text-slate-400">Nicho</label>
+              <select
+                value={niche}
+                onChange={(e) => {
+                  const key = e.target.value;
+                  setNiche(key);
+                  const preset = INSTRUCTION_PRESETS.find((p) => p.key === key);
+                  setInstruction(preset ? preset.text : "");
+                }}
+                className="bg-slate-800/80 border border-slate-700/50 rounded-lg px-2.5 py-1.5 text-slate-200 text-xs focus:outline-none focus:border-blue-500/40"
+              >
+                <option value="">Sem instrucao</option>
+                {INSTRUCTION_PRESETS.map((p) => (
+                  <option key={p.key} value={p.key}>{p.label}</option>
+                ))}
+              </select>
               <label className="text-xs text-slate-400">Modelo</label>
               <select
                 value={model}

@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { useReadTimer } from "../hooks/useReadTimer";
 import { LoadingState } from "./StateViews";
 import MermaidDiagram from "./MermaidDiagram";
+import FlowDiagram from "./FlowDiagram";
 
 const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   const [content, setContent] = useState("");
@@ -108,7 +109,11 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
               ),
               code: ({ node, children, ...props }) => {
                 const isInline = !node?.position?.start.line || node?.position?.start.line === node?.position?.end.line;
-                // Bloco ```mermaid -> renderiza o diagrama (mapa mental/fluxograma).
+                // Bloco ```flow -> diagrama React Flow (JSON nodes/edges). Primario.
+                if (!isInline && /\blanguage-flow\b/.test(props.className || "")) {
+                  return <FlowDiagram spec={String(children).replace(/\n$/, "")} />;
+                }
+                // Bloco ```mermaid -> fallback (diagramas antigos/legados).
                 if (!isInline && /\blanguage-mermaid\b/.test(props.className || "")) {
                   return <MermaidDiagram chart={String(children).replace(/\n$/, "")} />;
                 }
