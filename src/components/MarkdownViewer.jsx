@@ -5,6 +5,7 @@ import { useReadTimer } from "../hooks/useReadTimer";
 import { LoadingState } from "./StateViews";
 import MermaidDiagram from "./MermaidDiagram";
 import FlowDiagram from "./FlowDiagram";
+import CodeBlock from "./CodeBlock";
 
 const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   const [content, setContent] = useState("");
@@ -128,23 +129,7 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
                     {children}
                   </code>
                 ) : (
-                  <div className="my-5 bg-slate-900/80 border border-slate-700/40 rounded-xl overflow-hidden">
-                    <div className="flex items-center px-4 py-2 bg-slate-800/40 border-b border-slate-700/30">
-                      <div className="flex gap-1.5">
-                        <div className="w-2.5 h-2.5 rounded-full bg-red-400/40" />
-                        <div className="w-2.5 h-2.5 rounded-full bg-yellow-400/40" />
-                        <div className="w-2.5 h-2.5 rounded-full bg-green-400/40" />
-                      </div>
-                    </div>
-                    <pre className="p-4 overflow-x-auto">
-                      <code
-                        className="text-[13px] font-mono text-slate-300 leading-relaxed"
-                        {...props}
-                      >
-                        {children}
-                      </code>
-                    </pre>
-                  </div>
+                  <CodeBlock className={props.className}>{children}</CodeBlock>
                 );
               },
               pre: ({ children }) => <>{children}</>,
