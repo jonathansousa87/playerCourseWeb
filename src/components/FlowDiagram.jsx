@@ -22,6 +22,7 @@ const Canvas = ({ nodes, edges, interactive = false }) => (
     preventScrolling={interactive}
     proOptions={{ hideAttribution: true }}
   >
+    <UmlMarkers />
     <Background color="#1e293b" gap={20} />
     <Controls showInteractive={false} />
   </ReactFlow>
@@ -58,7 +59,49 @@ const CardNode = ({ data }) => {
     </div>
   );
 };
-const nodeTypes = { card: CardNode };
+// No de CLASSE UML/DDD: estereotipo + nome + atributos (compartimentos).
+const ClassNode = ({ data }) => {
+  const lr = data.dir === "LR";
+  return (
+    <div style={{ width: data.w || 190, background: "#1e293b", border: "1.5px solid #64748b", borderRadius: 6, color: "#e8eef6", boxShadow: "0 6px 18px rgba(0,0,0,0.35)", overflow: "hidden", fontSize: 12 }}>
+      <Handle type="target" position={lr ? Position.Left : Position.Top} style={{ opacity: 0 }} />
+      <div style={{ padding: "6px 10px", textAlign: "center", borderBottom: data.attrs?.length ? "1px solid #475569" : "none", background: "#0f2a3f" }}>
+        {data.stereotype && <div style={{ fontSize: 10, color: "#93c5fd", fontStyle: "italic" }}>«{data.stereotype}»</div>}
+        <div style={{ fontWeight: 700 }}>{data.name}</div>
+      </div>
+      {data.attrs?.length > 0 && (
+        <div style={{ padding: "5px 10px", lineHeight: 1.55, color: "#cbd5e1" }}>
+          {data.attrs.map((a, i) => (
+            <div key={i} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a}</div>
+          ))}
+        </div>
+      )}
+      <Handle type="source" position={lr ? Position.Right : Position.Bottom} style={{ opacity: 0 }} />
+    </div>
+  );
+};
+const nodeTypes = { card: CardNode, classNode: ClassNode };
+
+// Marcadores UML (ponta da aresta no lado do "todo"/"pai").
+const UmlMarkers = () => (
+  <svg style={{ position: "absolute", width: 0, height: 0 }} aria-hidden="true">
+    <defs>
+      <marker id="uml-inherit" markerWidth="16" markerHeight="14" refX="13" refY="6" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+        <path d="M1,1 L13,6 L1,11 Z" fill="#0f172a" stroke="#94a3b8" strokeWidth="1" />
+      </marker>
+      <marker id="uml-compos" markerWidth="22" markerHeight="12" refX="17" refY="5" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+        <path d="M1,5 L9,1 L17,5 L9,9 Z" fill="#94a3b8" stroke="#94a3b8" />
+      </marker>
+      <marker id="uml-aggreg" markerWidth="22" markerHeight="12" refX="17" refY="5" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+        <path d="M1,5 L9,1 L17,5 L9,9 Z" fill="#0f172a" stroke="#94a3b8" />
+      </marker>
+      <marker id="uml-assoc" markerWidth="14" markerHeight="12" refX="9" refY="6" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+        <path d="M2,2 L10,6 L2,10" fill="none" stroke="#94a3b8" strokeWidth="1.2" />
+      </marker>
+    </defs>
+  </svg>
+);
+const REL_MARKER = { inheritance: "url(#uml-inherit)", composition: "url(#uml-compos)", aggregation: "url(#uml-aggreg)", association: "url(#uml-assoc)" };
 
 // Aresta reta flutuante (mapa mental): sai da borda na direcao do outro no.
 const nodeCenter = (n) => ({ x: n.internals.positionAbsolute.x + (n.measured?.width || NODE_W) / 2, y: n.internals.positionAbsolute.y + (n.measured?.height || NODE_H) / 2 });
@@ -137,7 +180,7 @@ const elkLayout = async (nodes, edges, dir = "TB") => {
       "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
       "elk.spacing.edgeLabel": "8",
     },
-    children: nodes.map((n) => ({ id: n.id, width: n.data?.w || NODE_W, height: NODE_H })),
+    children: nodes.map((n) => ({ id: n.id, width: n.data?.w || NODE_W, height: n.data?.h || NODE_H })),
     // passa os labels pro ELK posicionar (ele evita colisao entre eles).
     edges: edges.map((e, i) => {
       const lbl = e.label ? String(e.label) : "";
@@ -160,7 +203,7 @@ const elkLayout = async (nodes, edges, dir = "TB") => {
     if (l && l.x != null) edgeLabelPos[e.id] = { x: l.x + (l.width || 0) / 2, y: l.y + (l.height || 0) / 2 };
   });
   const rfNodes = nodes.map((n) => ({
-    ...n, type: "card", data: { ...n.data, dir },
+    ...n, type: n.type || "card", data: { ...n.data, dir },
     position: pos[n.id] || { x: 0, y: 0 },
     sourcePosition: dir === "LR" ? Position.Right : Position.Bottom,
     targetPosition: dir === "LR" ? Position.Left : Position.Top,
@@ -168,37 +211,54 @@ const elkLayout = async (nodes, edges, dir = "TB") => {
   return { rfNodes, edgePoints, edgeLabelPos };
 };
 
-// Layout radial por setores (mapa mental estrela).
+// Layout radial (mapa mental). Em vez de orbitar TUDO ao redor da raiz (que
+// espalhava as folhas dos ramos num circulo so, sobrepostas), cada no distribui
+// os filhos num LEQUE: a raiz usa o circulo inteiro; os niveis seguintes usam um
+// cone apontando pra fora (direcao raiz->no), agrupando os filhos perto do pai.
 const radialLayout = (nodes, edges) => {
   const children = {}, parent = {};
   edges.forEach((e) => { (children[e.source] = children[e.source] || []).push(e.target); parent[e.target] = e.source; });
   const root = nodes.find((n) => !parent[n.id]) || nodes[0];
-  const depth = {}, leafCount = {};
-  const calc = (id, d, seen) => {
+
+  // nº de folhas por subarvore -> peso angular de cada ramo (ramos maiores
+  // recebem um setor proporcionalmente maior).
+  const leaf = {};
+  const countLeaves = (id, seen) => {
     if (seen.has(id)) return 1;
-    seen.add(id); depth[id] = d;
+    seen.add(id);
     const ch = children[id] || [];
-    if (ch.length === 0) { leafCount[id] = 1; return 1; }
-    let sum = 0; ch.forEach((c) => { sum += calc(c, d + 1, seen); });
-    leafCount[id] = sum; return sum;
+    leaf[id] = ch.length ? ch.reduce((s, c) => s + countLeaves(c, seen), 0) : 1;
+    return leaf[id];
   };
-  calc(root.id, 0, new Set());
-  const ang = {};
-  const assign = (id, a0, a1, seen) => {
+  countLeaves(root.id, new Set());
+
+  const pos = { [root.id]: { x: 0, y: 0 } };
+  const RING = 280; // raio por nivel
+  // `dir` = direcao do leque; `half` = meia-abertura (raiz: PI = 360°; demais: 60°).
+  const place = (id, depth, dir, half, seen) => {
     if (seen.has(id)) return;
     seen.add(id);
-    ang[id] = (a0 + a1) / 2;
     const ch = children[id] || [];
-    const total = leafCount[id] || 1;
-    let cur = a0;
-    ch.forEach((c) => { const span = (a1 - a0) * ((leafCount[c] || 1) / total); assign(c, cur, cur + span, seen); cur += span; });
+    if (!ch.length) return;
+    const total = ch.reduce((s, c) => s + (leaf[c] || 1), 0) || 1;
+    let cur = dir - half;
+    for (const c of ch) {
+      const span = (2 * half) * ((leaf[c] || 1) / total);
+      const a = cur + span / 2;
+      const r = RING * (depth + 1);
+      pos[c] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
+      // netos: cone de ate 120°, mas NUNCA maior que o setor do proprio ramo
+      // (span) — senao ramos vizinhos invadem um ao outro e as folhas colidem.
+      place(c, depth + 1, a, Math.min(Math.PI / 3, span / 2), seen);
+      cur += span;
+    }
   };
-  assign(root.id, -Math.PI / 2, (3 * Math.PI) / 2, new Set());
-  const ringRadius = (d) => (d <= 0 ? 0 : 200 + (d - 1) * 165);
-  return nodes.map((n) => {
-    const d = depth[n.id] ?? 1, a = ang[n.id] ?? 0, r = ringRadius(d);
-    return { ...n, type: "card", data: { ...n.data, dir: "radial" }, position: d === 0 ? { x: 0, y: 0 } : { x: Math.cos(a) * r, y: Math.sin(a) * r } };
-  });
+  place(root.id, 0, Math.PI / 2, Math.PI, new Set());
+
+  return nodes.map((n) => ({
+    ...n, type: "card", data: { ...n.data, dir: "radial" },
+    position: pos[n.id] || { x: 0, y: 0 },
+  }));
 };
 
 // Parseia + valida o spec. Retorna { ok, type, dir, rawNodes, rawEdges }.
@@ -207,11 +267,29 @@ const parseSpec = (spec) => {
     const s = typeof spec === "string" ? JSON.parse(spec) : spec;
     if (!s || !Array.isArray(s.nodes) || !Array.isArray(s.edges) || s.nodes.length === 0) return { ok: false };
     const ids = new Set(s.nodes.map((n) => n.id));
+    const dir = s.direction === "LR" ? "LR" : "TB";
+
+    // Diagrama de CLASSES UML/DDD: nos com estereotipo + atributos; arestas com
+    // tipo de relacao (heranca/composicao/agregacao/associacao) + multiplicidade.
+    if (s.type === "classes") {
+      const rawNodes = s.nodes.map((n) => {
+        const attrs = Array.isArray(n.attrs) ? n.attrs.map(String).slice(0, 8) : [];
+        const longest = Math.max(String(n.name || "").length, String(n.stereotype || "").length + 2, ...attrs.map((a) => a.length), 0);
+        const w = Math.max(150, Math.min(270, longest * 6.6 + 26));
+        const h = 28 + (n.stereotype ? 13 : 0) + (attrs.length ? attrs.length * 18 + 10 : 0);
+        return { id: String(n.id), type: "classNode", data: { name: n.name, stereotype: n.stereotype, attrs, w, h }, position: { x: 0, y: 0 } };
+      });
+      const rawEdges = s.edges
+        .filter((e) => ids.has(e.source) && ids.has(e.target))
+        .map((e, i) => ({ id: `e${i}`, source: String(e.source), target: String(e.target), rel: e.rel || "association", label: e.label || e.card || undefined }));
+      return { ok: true, type: "classes", dir, rawNodes, rawEdges };
+    }
+
     const rawNodes = s.nodes.map((n) => ({ id: String(n.id), data: { label: n.label, kind: n.kind, w: estW(n.label) }, position: { x: 0, y: 0 } }));
     const rawEdges = s.edges
       .filter((e) => ids.has(e.source) && ids.has(e.target))
       .map((e, i) => ({ id: `e${i}`, source: String(e.source), target: String(e.target), label: e.label || undefined }));
-    return { ok: true, type: s.type === "mindmap" ? "mindmap" : "flow", dir: s.direction === "LR" ? "LR" : "TB", rawNodes, rawEdges };
+    return { ok: true, type: s.type === "mindmap" ? "mindmap" : "flow", dir, rawNodes, rawEdges };
   } catch {
     return { ok: false };
   }
@@ -235,14 +313,16 @@ const FlowDiagram = ({ spec }) => {
       return;
     }
 
+    const isClasses = parsed.type === "classes";
     setState({ status: "loading" });
     elkLayout(parsed.rawNodes, parsed.rawEdges, parsed.dir)
       .then(({ rfNodes, edgePoints, edgeLabelPos }) => {
         if (cancelled) return;
         const rfEdges = parsed.rawEdges.map((e, i) => {
           const points = edgePoints[`le${i}`];
-          const common = { ...e, label: trunc(e.label), style: { stroke: "#94a3b8", strokeWidth: 1.5 }, markerEnd: { type: "arrowclosed", color: "#94a3b8" } };
-          // ELK roteou? usa os pontos ortogonais + posicao de label do ELK. Senao, smoothstep.
+          // classes: marcador UML por tipo de relacao; flow/DFD: seta normal.
+          const markerEnd = isClasses ? REL_MARKER[e.rel] || REL_MARKER.association : { type: "arrowclosed", color: "#94a3b8" };
+          const common = { ...e, label: trunc(e.label), style: { stroke: "#94a3b8", strokeWidth: 1.5 }, markerEnd };
           if (points && points.length >= 2) return { ...common, type: "elk", data: { points, labelPos: edgeLabelPos[`le${i}`] } };
           return { ...common, type: "smoothstep", pathOptions: { borderRadius: 12 }, labelStyle: { fill: "#cbd5e1", fontSize: 11 }, labelBgStyle: { fill: "#0f172a", fillOpacity: 0.92 }, labelBgPadding: [5, 2], labelBgBorderRadius: 4 };
         });

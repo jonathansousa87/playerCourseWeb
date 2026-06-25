@@ -41,47 +41,85 @@ ${instruction.trim()}
 `
     : '';
 
-// Bloco de diagrama React Flow (JSON). Render PRIMARIO da plataforma; o estilo e
-// o layout sao deterministicos (do codigo) — a IA so fornece nodes/edges.
-const FLOW_DIAGRAM_RULES =
-`Inclua o diagrama num bloco \`\`\`flow contendo APENAS JSON valido (nada de texto fora do JSON):
-\`\`\`flow
-{ "type": "flow", "direction": "TB",
-  "nodes": [ {"id":"a","label":"Cliente","kind":"entity"}, {"id":"b","label":"Processar","kind":"process"} ],
-  "edges": [ {"source":"a","target":"b","label":"envia"} ] }
-\`\`\`
-Regras (siga TODAS, senao fica baguncado e ilegivel):
-- MACRO: no MAXIMO 8 nos (so os principais). Se o cenario for grande, modele SO o nucleo.
-- "direction": "TB" (vertical) ou "LR" (horizontal).
-- kind de cada no: entity (ator/entidade externa), process (acao/processo), store (dados/
-  armazenamento), decision (decisao/condicao) ou step (etapa generica).
-- labels de NO curtos: 2 a 4 palavras.
-- label de ARESTA: NO MAXIMO 2 PALAVRAS, ou "" (vazio). NUNCA uma frase. Ex.: use "envia" ou
-  "valida" — NUNCA "envia credenciais de login para validacao". Label longo se sobrepoe e
-  vira um borrao. Na duvida, deixe "".
-- Poucas arestas por no (evite um no com muitas conexoes cruzando).
-- Conecte os nos que se relacionam. Um no SO pode ficar sem conexao se for REALMENTE
-  independente no conteudo (ex.: uma classe/entidade/servico que de fato nao se relaciona com
-  as outras, comum em diagrama de classe DDD ou microsservicos). NUNCA deixe um no solto por
-  esquecimento.
-- IDS DEVEM CASAR EXATAMENTE: o "id" de cada node tem que ser identico ao usado em "source"/
-  "target" das arestas (mesma grafia, mesmas maiusculas). A causa mais comum de um no aparecer
-  "solto sem querer" e o id divergente entre o node e a aresta — confira ANTES de responder.`;
+// Estilo padrao dos diagramas Mermaid: um bloco classDef que espelha a paleta
+// por tipo do FlowDiagram (entity=slate, process=sky, store=violeta,
+// decision=ambar, step=esmeralda). A IA cola este bloco no fluxograma e marca
+// cada no com :::tipo. O MermaidDiagram ainda normaliza o contraste do texto.
+const MERMAID_CLASSDEF =
+`  classDef entity fill:#1e293b,stroke:#94a3b8,stroke-width:2px,color:#e8eef6;
+  classDef process fill:#0e2a3f,stroke:#38bdf8,stroke-width:2px,color:#e0f2fe;
+  classDef store fill:#1f2937,stroke:#a78bfa,stroke-width:2px,color:#ede9fe;
+  classDef decision fill:#3a2a0e,stroke:#fbbf24,stroke-width:2px,color:#fef3c7;
+  classDef step fill:#0f2a22,stroke:#34d399,stroke-width:2px,color:#d1fae5;`;
 
-const FLOW_MINDMAP_RULES =
-`Inclua o mapa mental num bloco \`\`\`flow contendo APENAS JSON valido (nada de texto fora do JSON):
-\`\`\`flow
-{ "type": "mindmap",
-  "nodes": [ {"id":"r","label":"Tema central","kind":"root"},
-             {"id":"b1","label":"Ramo","kind":"branch"},
-             {"id":"l1","label":"Detalhe","kind":"leaf"} ],
-  "edges": [ {"source":"r","target":"b1"}, {"source":"b1","target":"l1"} ] }
+// Diagrama PADRAO da plataforma = Mermaid (a IA gera Mermaid com mais facilidade
+// e o estilo agora casa com o FlowDiagram via classDef/tema). O formato ```flow
+// (React Flow/JSON) continua suportado no render, mas nao e o que a IA emite.
+const MERMAID_FLOW_RULES =
+`Inclua o diagrama num bloco \`\`\`mermaid com 'flowchart':
+\`\`\`mermaid
+flowchart TB
+  A[Cliente]:::entity --> B(Validar pedido):::process
+  B --> C{Estoque ok?}:::decision
+  C -->|sim| D[(Banco)]:::store
+  C -->|nao| E([Notificar]):::step
+${MERMAID_CLASSDEF}
+\`\`\`
+Serve para FLUXO/PROCESSO/DFD/ARQUITETURA/COMPONENTES (e relacoes simples entre
+servicos/componentes).
+Regras (siga TODAS, senao quebra ou fica ilegivel):
+- COMECE com 'flowchart TB' (vertical) ou 'flowchart LR' (horizontal).
+- COLE o bloco classDef acima EXATAMENTE como esta (define as cores por tipo). NAO mude as cores.
+- Cada no leva a CLASSE do seu tipo (com ':::') e a FORMA correspondente:
+    entity   (ator/entidade/classe/componente): A[Texto]:::entity
+    process  (acao/processo/servico):            B(Texto):::process
+    store    (dados/tabela/banco):               D[(Texto)]:::store
+    decision (decisao):                          C{Texto?}:::decision
+    step     (etapa generica):                   E([Texto]):::step
+- MACRO: no MAXIMO 8 nos. Labels de no curtos (2-4 palavras).
+- Aresta com label: '-->|texto|' com NO MAXIMO 2 palavras; ou sem label ('-->'). Nunca uma frase.
+- Defina cada no UMA vez (com forma+classe); depois referencie SO pelo id (A, B, C...).
+- NO TEXTO do no, evite os caracteres que quebram o Mermaid: ( ) [ ] { } " ; e ':'.
+  Use texto limpo (acentos podem). Na duvida, simplifique o label.`;
+
+const MERMAID_MINDMAP_RULES =
+`Inclua o mapa mental num bloco \`\`\`mermaid com 'mindmap' (a INDENTACAO define a hierarquia):
+\`\`\`mermaid
+mindmap
+  root((Tema central))
+    Ramo 1
+      Detalhe
+      Detalhe
+    Ramo 2
+      Detalhe
 \`\`\`
 Regras (formato ESTRELA — raso e largo, NUNCA arvore profunda):
-- 1 no raiz (kind "root"); de 4 a 7 ramos DIRETOS da raiz (kind "branch"); 1 a 3 folhas por
-  ramo (kind "leaf"). NO MAXIMO 2 niveis abaixo da raiz.
-- labels CURTOS (1-4 palavras). CADA no conectado (sem nos soltos); os ids em "source"/"target"
-  devem casar EXATAMENTE com o "id" dos nodes.`;
+- 1 raiz 'root((Tema))'; de 4 a 7 ramos diretos; 1 a 3 folhas por ramo. NO MAXIMO 2 niveis abaixo da raiz.
+- Use 2 espacos de indentacao por nivel (raiz / ramo / folha). labels CURTOS (1-4 palavras).
+- So a RAIZ usa '((...))'; ramos e folhas sao texto puro, SEM parenteses/colchetes/chaves.`;
+
+// Diagrama de CLASSES UML / modelo de dominio DDD.
+const MERMAID_CLASSES_RULES =
+`Inclua o diagrama num bloco \`\`\`mermaid com 'classDiagram':
+\`\`\`mermaid
+classDiagram
+  class Pedido {
+    +Long id
+    +BigDecimal valorTotal
+    +StatusPedido status
+  }
+  class ItemPedido {
+    +Integer quantidade
+    +BigDecimal precoUnitario
+  }
+  Pedido "1" *-- "*" ItemPedido : contem
+  Pedido --> Restaurante : feito para
+\`\`\`
+Regras:
+- Cada 'class Nome { ... }' com 2 a 6 atributos no formato '+Tipo nome'. So o que a aula mostrou (nao invente).
+- Relacoes: heranca 'A <|-- B'; composicao 'A *-- B'; agregacao 'A o-- B'; associacao 'A --> B'.
+  Multiplicidade entre aspas e label curto apos ' : '. Ex.: 'Pedido "1" *-- "*" Item : contem'.
+- NO MAXIMO 8 classes (so o nucleo do dominio). Nomes de classe SEM espacos.`;
 
 export const buildResumoPrompt = ({ lessonTitle, transcript, instruction }) => `
 Gere um resumo estruturado em Markdown da aula abaixo.${instructionBlock(instruction)}
@@ -236,17 +274,17 @@ Reproduza PASSO A PASSO o que a aula demonstrou. Em cada etapa, explique o PORQU
 "como") e mostre o resultado esperado. A1: blocos \`\`\` com a linguagem correta. A2: e
 OBRIGATORIO MOSTRAR o diagrama (nao apenas descrever em texto nem so dar instrucoes de
 ferramenta). So o que a aula mostrou.
-${FLOW_DIAGRAM_RULES}
+${MERMAID_FLOW_RULES}
 
 ## Exercicios
 3 a 5 exercicios progressivos (do mais simples ao mais completo) pro aluno fazer SOZINHO. Cada
 um com: enunciado claro, uma **dica** curta e o **resultado esperado**. A1 = escrever codigo.
-A2 = MODELAR o cenario; FORNECA a solucao esperada como um bloco \`\`\`flow. Mantenha cada
+A2 = MODELAR o cenario; FORNECA a solucao esperada como um bloco \`\`\`mermaid. Mantenha cada
 diagrama SIMPLES (poucos nos) — varios diagramas pequenos e claros, um por exercicio.
 
 ## Desafio
 1 desafio que integra os pontos principais da aula (codigo OU modelo, conforme A1/A2), com
-enunciado + resultado esperado. Em A2, inclua UM bloco \`\`\`flow com a solucao modelada.
+enunciado + resultado esperado. Em A2, inclua UM bloco \`\`\`mermaid com a solucao modelada.
 
 ## Checklist
 4 a 6 itens "Voce consegue...?" pro aluno se autoavaliar antes de seguir.
@@ -565,14 +603,22 @@ texto que ENSINA por escrito — nao um resumo de topicos seco, e sim uma aula b
 Estrutura recomendada (adapte ao conteudo, nao force secoes que nao fazem sentido):
 - Um titulo \`#\` e, logo abaixo, 1 paragrafo curto de CONTEXTO ("por que isso importa" /
   pra que serve na pratica).
-- Logo apos o contexto, QUANDO o tema tiver estrutura visual (hierarquia de conceitos,
-  categorias, partes de um todo), inclua uma secao "## Mapa mental" com UM bloco \`\`\`flow
-  (veja as regras abaixo). Se o assunto for puramente textual/teorico e um diagrama nao
-  agregar, OMITA esta secao.
+- Logo apos o contexto, QUANDO o tema tiver estrutura visual, inclua UMA secao com um diagrama
+  \`\`\`mermaid. ESCOLHA o tipo certo conforme o conteudo (nao force sempre mapa mental):
+  - CLASSES / MODELO DE DOMINIO (DDD): a aula mostra classes/entidades com atributos e relacoes
+    (ex.: entidades JPA, agregados DDD, diagrama de classes UML) -> titulo "## Diagrama de
+    classes", formato classDiagram (classes com atributos e tipo de relacao).
+  - ARQUITETURA / COMPONENTES / FLUXO: camadas (Controller/Service/Repository), componentes,
+    microsservicos, ou fluxo/processo/sequencia -> titulo "## Arquitetura" ou "## Fluxo",
+    formato flowchart.
+  - HIERARQUIA de conceitos/categorias/partes de um todo -> titulo "## Mapa mental", formato mindmap.
+  Prefira o diagrama que mostra a ESTRUTURA TECNICA da aula (classes/arquitetura/fluxo) quando
+  ela existir; use mapa mental quando o conteudo for um panorama de conceitos. Se o assunto for
+  puramente textual e um diagrama nao agregar, OMITA.
 - Secoes \`##\` desenvolvendo o conteudo na ordem logica de aprendizado, explicando o
   CONCEITO e o PORQUE, nao so a sintaxe.
 - Exemplos de codigo em blocos \`\`\` com a linguagem correta, comentados quando ajudar.
-- Se houver um FLUXO/PROCESSO/sequencia ou relacoes a mostrar, use um bloco \`\`\`flow (diagrama),
+- Se houver um FLUXO/PROCESSO/sequencia ou relacoes a mostrar, use um bloco \`\`\`mermaid (diagrama),
   veja as regras abaixo.
 - Quando fizer sentido: uma secao de "Quando usar / cuidados" e/ou tabelas comparativas.
 - Destaque **armadilhas** e **boas praticas** que aparecerem na transcricao.
@@ -580,12 +626,14 @@ Estrutura recomendada (adapte ao conteudo, nao force secoes que nao fazem sentid
 
 DIAGRAMAS — REGRA ABSOLUTA:
 - TODO diagrama (mapa mental, fluxo, processo, hierarquia, relacoes) DEVE usar um bloco
-  \`\`\`flow (JSON). E TERMINANTEMENTE PROIBIDO usar \`\`\`mermaid, PlantUML, arte ASCII ou
-  "descricao aproximada de diagrama". Nada de "representacao com Mermaid". So \`\`\`flow.
-- MAPA MENTAL (hierarquia de conceitos) -> use o formato mindmap:
-${FLOW_MINDMAP_RULES}
-- FLUXO / PROCESSO / DFD -> use o formato de fluxograma:
-${FLOW_DIAGRAM_RULES}
+  \`\`\`mermaid. E PROIBIDO PlantUML, arte ASCII ou "descricao aproximada de diagrama".
+- Nos fluxogramas, COLE SEMPRE o bloco classDef padrao e marque cada no com :::tipo (cores por tipo).
+- MAPA MENTAL (hierarquia de conceitos) -> use mindmap:
+${MERMAID_MINDMAP_RULES}
+- FLUXO / PROCESSO / DFD / ARQUITETURA / COMPONENTES -> use flowchart:
+${MERMAID_FLOW_RULES}
+- DIAGRAMA DE CLASSES / MODELO DE DOMINIO (DDD, entidades com atributos) -> use classDiagram:
+${MERMAID_CLASSES_RULES}
 - Os rotulos refletem SO o que a aula mostrou (nao invente conceitos).
 
 REGRA DE FIDELIDADE (a mais importante):
@@ -613,8 +661,8 @@ Retorne APENAS a aula em Markdown, sem fences externas e sem comentarios sobre a
 
 // === Atualizar leitura existente (sem recondensar) ===
 // Usado pelo "Gerar IA": pega a leitura JA escrita e so atualiza diagramas
-// (formato ```flow novo) + aplica a instrucao do usuario. NAO recondensa nem
-// corta conteudo (isso e papel do "Gerar curso de leitura").
+// (padrao ```mermaid com classDef) + aplica a instrucao do usuario. NAO recondensa
+// nem corta conteudo (isso e papel do "Gerar curso de leitura").
 export const UPDATE_READING_SYSTEM =
   'Voce atualiza aulas de leitura JA escritas: preserva integralmente o texto e a explicacao, ' +
   'so moderniza/converte os diagramas para o formato pedido e aplica o que o usuario pedir. ' +
@@ -625,17 +673,18 @@ Abaixo esta uma AULA DE LEITURA ja escrita em Markdown sobre "${lessonTitle}". N
 NAO condense e NAO corte conteudo — PRESERVE todo o texto e a explicacao como estao.
 
 Sua tarefa e APENAS atualizar:
-- Converta QUALQUER diagrama existente (bloco \`\`\`mermaid, arte ASCII, ou descricao textual de
-  um diagrama/fluxo/mapa) para o novo formato \`\`\`flow (JSON) descrito abaixo.
+- Converta QUALQUER diagrama existente (bloco \`\`\`flow JSON antigo, arte ASCII, ou descricao
+  textual de um diagrama/fluxo/mapa) para o novo padrao \`\`\`mermaid (com o classDef de cores)
+  descrito abaixo.
 - Se o tema tiver estrutura visual (hierarquia de conceitos/categorias) e NAO houver uma secao
-  "## Mapa mental", adicione UMA logo apos o paragrafo de contexto, com um bloco \`\`\`flow.
+  "## Mapa mental", adicione UMA logo apos o paragrafo de contexto, com um bloco \`\`\`mermaid.
 ${instruction && instruction.trim() ? `- Aplique tambem esta instrucao do usuario: ${instruction.trim()}\n` : ''}Mantenha o restante IDENTICO. Retorne a aula COMPLETA em Markdown.
 
 Para MAPA MENTAL (hierarquia de conceitos) use:
-${FLOW_MINDMAP_RULES}
+${MERMAID_MINDMAP_RULES}
 
 Para FLUXOGRAMA/DIAGRAMA de processo use:
-${FLOW_DIAGRAM_RULES}
+${MERMAID_FLOW_RULES}
 
 Aula de leitura atual:
 ---

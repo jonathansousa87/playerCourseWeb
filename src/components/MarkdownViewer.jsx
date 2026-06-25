@@ -109,13 +109,16 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
               ),
               code: ({ node, children, ...props }) => {
                 const isInline = !node?.position?.start.line || node?.position?.start.line === node?.position?.end.line;
-                // Bloco ```flow -> diagrama React Flow (JSON nodes/edges). Primario.
-                if (!isInline && /\blanguage-flow\b/.test(props.className || "")) {
-                  return <FlowDiagram spec={String(children).replace(/\n$/, "")} />;
-                }
-                // Bloco ```mermaid -> fallback (diagramas antigos/legados).
+                // Bloco ```mermaid -> render PADRAO (a IA emite Mermaid). O
+                // MermaidDiagram estiliza flowchart/classes/etc. e redireciona
+                // mindmap pro FlowDiagram.
                 if (!isInline && /\blanguage-mermaid\b/.test(props.className || "")) {
                   return <MermaidDiagram chart={String(children).replace(/\n$/, "")} />;
+                }
+                // Bloco ```flow -> React Flow (JSON). Mantido no sistema (secundario/
+                // legado); o render continua funcionando pros diagramas ja gerados.
+                if (!isInline && /\blanguage-flow\b/.test(props.className || "")) {
+                  return <FlowDiagram spec={String(children).replace(/\n$/, "")} />;
                 }
                 return isInline ? (
                   <code

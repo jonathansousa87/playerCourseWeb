@@ -85,12 +85,12 @@ const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
                     ),
                     code: ({ node, children, ...props }) => {
                       const isInline = !node?.position?.start.line || node?.position?.start.line === node?.position?.end.line;
-                      // Bloco ```flow -> diagrama React Flow (primario). ```mermaid = fallback.
-                      if (!isInline && /\blanguage-flow\b/.test(props.className || "")) {
-                        return <FlowDiagram spec={String(children).replace(/\n$/, "")} />;
-                      }
+                      // ```mermaid -> render PADRAO; ```flow -> React Flow (secundario/legado).
                       if (!isInline && /\blanguage-mermaid\b/.test(props.className || "")) {
                         return <MermaidDiagram chart={String(children).replace(/\n$/, "")} />;
+                      }
+                      if (!isInline && /\blanguage-flow\b/.test(props.className || "")) {
+                        return <FlowDiagram spec={String(children).replace(/\n$/, "")} />;
                       }
                       return isInline ? (
                         <code className="text-[12px] font-mono bg-slate-800/70 text-cyan-300 px-1.5 py-0.5 rounded border border-slate-700/40" {...props}>

@@ -168,8 +168,8 @@ const findLessonDir = async (courseRoot, lessonPrefix) => {
 };
 
 // "resumo" = a LEITURA. No "Gerar IA" ele NAO recondensa (isso e do "Gerar curso
-// de leitura"): pega a leitura existente e so ATUALIZA os diagramas (formato flow
-// novo) + aplica a instrucao. Preserva o texto.
+// de leitura"): pega a leitura existente e so ATUALIZA os diagramas (padrao
+// ```mermaid com classDef) + aplica a instrucao. Preserva o texto.
 const promptBuilders = {
   resumo: ({ lessonTitle, transcript, instruction }) => buildUpdateReadingPrompt({ lessonTitle, transcript, instruction }),
   flashcards: buildFlashcardsPrompt,
@@ -250,8 +250,8 @@ export const generateForLesson = async ({
         user,
         model,
         temperature: kind === 'quiz' ? 0.5 : 0.3,
-        // resumo=LEITURA e exemplos podem ter varios diagramas flow (JSON longo)
-        // -> tokens generosos pra o JSON NAO truncar (senao vira fallback de codigo).
+        // resumo=LEITURA e exemplos podem ter varios diagramas Mermaid (texto
+        // longo) -> tokens generosos pra o codigo NAO truncar (senao quebra a sintaxe).
         maxTokens: kind === 'exemplos' || kind === 'resumo' ? 13000 : kind === 'quiz' ? 8000 : 6000,
       });
       const cleaned = stripCodeFence(content);

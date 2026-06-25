@@ -35,8 +35,8 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
     for (const c of courses) m[c.title] = new Set((modulesByCourse[c.title] || []).map((x) => x.path));
     return m;
   });
-  // Quais cursos estao expandidos (varios ao mesmo tempo). Default: todos fechados.
-  const [expanded, setExpanded] = useState(() => new Set());
+  // Quais cursos estao expandidos (varios ao mesmo tempo). Default: TODOS abertos.
+  const [expanded, setExpanded] = useState(() => new Set(courses.map((c) => c.title)));
   const toggleExpanded = (title) =>
     setExpanded((prev) => {
       const s = new Set(prev);
