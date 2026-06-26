@@ -127,6 +127,28 @@ mermaid.initialize({
 
 let idSeq = 0;
 
+// Rede de seguranca pra deslizes da IA em FLOWCHART: cita o texto de TODO no que
+// ainda nao esta entre aspas. Sem aspas, varios caracteres quebram o parser do
+// Mermaid (':' e principalmente '@', reservado pra nova sintaxe de shapes), e o
+// diagrama cai no fallback de codigo cru. So roda em flowchart/graph — em
+// classDiagram/sequence o ':' E sintaxe e nao pode ser tocado. O guard "inner ja
+// tem aspas" evita citar duas vezes e reprocessar os shapes duplos ([(...)] etc).
+const quoteRiskyLabels = (code) => {
+  if (!/^\s*(flowchart|graph)\b/.test(code)) return code;
+  const wrap = (open, close) => (m, inner) => {
+    const t = inner.trim();
+    return !t || t.includes('"') ? m : `${open}"${t}"${close}`;
+  };
+  return code
+    .replace(/\[\(([^\]]*?)\)\]/g, wrap("[(", ")]"))
+    .replace(/\(\[([^)]*?)\]\)/g, wrap("([", "])"))
+    .replace(/\(\(([^)]*?)\)\)/g, wrap("((", "))"))
+    .replace(/\{\{([^}]*?)\}\}/g, wrap("{{", "}}"))
+    .replace(/\[([^\]]*?)\]/g, wrap("[", "]"))
+    .replace(/\{([^}]*?)\}/g, wrap("{", "}"))
+    .replace(/\(([^)]*?)\)/g, wrap("(", ")"));
+};
+
 // Luminancia relativa de uma cor "rgb(r,g,b)" (0 = escuro, 1 = claro).
 const luminanceOf = (rgb) => {
   const m = /rgba?\(([^)]+)\)/.exec(rgb || "");
@@ -314,10 +336,11 @@ const MermaidNative = ({ chart }) => {
         // Valida ANTES de renderizar. mermaid.parse com suppressErrors retorna
         // false (sem lancar e SEM injetar o "Syntax error in text" no DOM) se o
         // codigo for invalido — ai caimos no fallback limpo (mostra o codigo).
-        const ok = await mermaid.parse(chart, { suppressErrors: true });
+        const code = quoteRiskyLabels(chart);
+        const ok = await mermaid.parse(code, { suppressErrors: true });
         if (ok === false) throw new Error("mermaid: sintaxe invalida");
         const id = `mermaid-${++idSeq}`;
-        const { svg: out } = await mermaid.render(id, chart);
+        const { svg: out } = await mermaid.render(id, code);
         if (!cancelled) setSvg(out);
       } catch {
         if (!cancelled) setError(true);

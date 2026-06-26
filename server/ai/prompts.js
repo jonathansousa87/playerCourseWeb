@@ -59,10 +59,10 @@ const MERMAID_FLOW_RULES =
 `Inclua o diagrama num bloco \`\`\`mermaid com 'flowchart':
 \`\`\`mermaid
 flowchart TB
-  A[Cliente]:::entity --> B(Validar pedido):::process
-  B --> C{Estoque ok?}:::decision
-  C -->|sim| D[(Banco)]:::store
-  C -->|nao| E([Notificar]):::step
+  A["Cliente"]:::entity --> B("Validar pedido"):::process
+  B --> C{"Estoque ok?"}:::decision
+  C -->|sim| D[("Banco")]:::store
+  C -->|nao| E(["Notificar"]):::step
 ${MERMAID_CLASSDEF}
 \`\`\`
 Serve para FLUXO/PROCESSO/DFD/ARQUITETURA/COMPONENTES (e relacoes simples entre
@@ -70,17 +70,18 @@ servicos/componentes).
 Regras (siga TODAS, senao quebra ou fica ilegivel):
 - COMECE com 'flowchart TB' (vertical) ou 'flowchart LR' (horizontal).
 - COLE o bloco classDef acima EXATAMENTE como esta (define as cores por tipo). NAO mude as cores.
+- SEMPRE coloque o texto do no entre ASPAS DUPLAS — aspas evitam erro de sintaxe com
+  ':', '@', '(', etc. (ex.: A["@Primary: bean unico"]). NUNCA use aspas DENTRO do texto.
 - Cada no leva a CLASSE do seu tipo (com ':::') e a FORMA correspondente:
-    entity   (ator/entidade/classe/componente): A[Texto]:::entity
-    process  (acao/processo/servico):            B(Texto):::process
-    store    (dados/tabela/banco):               D[(Texto)]:::store
-    decision (decisao):                          C{Texto?}:::decision
-    step     (etapa generica):                   E([Texto]):::step
+    entity   (ator/entidade/classe/componente): A["Texto"]:::entity
+    process  (acao/processo/servico):            B("Texto"):::process
+    store    (dados/tabela/banco):               D[("Texto")]:::store
+    decision (decisao):                          C{"Texto?"}:::decision
+    step     (etapa generica):                   E(["Texto"]):::step
 - MACRO: no MAXIMO 8 nos. Labels de no curtos (2-4 palavras).
 - Aresta com label: '-->|texto|' com NO MAXIMO 2 palavras; ou sem label ('-->'). Nunca uma frase.
 - Defina cada no UMA vez (com forma+classe); depois referencie SO pelo id (A, B, C...).
-- NO TEXTO do no, evite os caracteres que quebram o Mermaid: ( ) [ ] { } " ; e ':'.
-  Use texto limpo (acentos podem). Na duvida, simplifique o label.`;
+- Texto de no: 2-4 palavras, sem ';'. Acentos podem (estao entre aspas).`;
 
 const MERMAID_MINDMAP_RULES =
 `Inclua o mapa mental num bloco \`\`\`mermaid com 'mindmap' (a INDENTACAO define a hierarquia):
@@ -116,7 +117,15 @@ classDiagram
   Pedido --> Restaurante : feito para
 \`\`\`
 Regras:
+- ESCOPO: o classDiagram e do MODELO DE DOMINIO — as ENTIDADES com seus ATRIBUTOS (ex.: FotoProduto,
+  Produto). As CAMADAS da aplicacao (Controller/Service/Repository) e o FLUXO de uma requisicao
+  entre elas NAO entram aqui: isso vira um FLOWCHART separado. Se a aula mostra a arquitetura E as
+  entidades, gere OS DOIS (um flowchart da arquitetura/fluxo + este classDiagram das entidades).
 - Cada 'class Nome { ... }' com 2 a 6 atributos no formato '+Tipo nome'. So o que a aula mostrou (nao invente).
+- MEMBROS CURTOS (o classDiagram NAO quebra linha — assinatura longa estoura a largura da caixa):
+  metodos so com o NOME e parametros VAZIOS/resumidos (ex.: '+salvar()'), NUNCA assinatura longa
+  como '+ResponseEntity atualizarFoto(Long restauranteId, Long produtoId, ... arquivo)'. Poucos
+  metodos (0 a 4); o detalhe de parametros fica no codigo, nao no diagrama.
 - Relacoes: heranca 'A <|-- B'; composicao 'A *-- B'; agregacao 'A o-- B'; associacao 'A --> B'.
   Multiplicidade entre aspas e label curto apos ' : '. Ex.: 'Pedido "1" *-- "*" Item : contem'.
 - NO MAXIMO 8 classes (so o nucleo do dominio). Nomes de classe SEM espacos.`;
@@ -603,8 +612,8 @@ texto que ENSINA por escrito — nao um resumo de topicos seco, e sim uma aula b
 Estrutura recomendada (adapte ao conteudo, nao force secoes que nao fazem sentido):
 - Um titulo \`#\` e, logo abaixo, 1 paragrafo curto de CONTEXTO ("por que isso importa" /
   pra que serve na pratica).
-- Logo apos o contexto, QUANDO o tema tiver estrutura visual, inclua UMA secao com um diagrama
-  \`\`\`mermaid. ESCOLHA o tipo certo conforme o conteudo (nao force sempre mapa mental):
+- Logo apos o contexto, QUANDO o tema tiver estrutura visual, inclua UMA OU MAIS secoes com
+  diagrama \`\`\`mermaid. ESCOLHA o(s) tipo(s) certo(s) conforme o conteudo (nao force sempre mapa mental):
   - CLASSES / MODELO DE DOMINIO (DDD): a aula mostra classes/entidades com atributos e relacoes
     (ex.: entidades JPA, agregados DDD, diagrama de classes UML) -> titulo "## Diagrama de
     classes", formato classDiagram (classes com atributos e tipo de relacao).
@@ -612,9 +621,11 @@ Estrutura recomendada (adapte ao conteudo, nao force secoes que nao fazem sentid
     microsservicos, ou fluxo/processo/sequencia -> titulo "## Arquitetura" ou "## Fluxo",
     formato flowchart.
   - HIERARQUIA de conceitos/categorias/partes de um todo -> titulo "## Mapa mental", formato mindmap.
-  Prefira o diagrama que mostra a ESTRUTURA TECNICA da aula (classes/arquitetura/fluxo) quando
-  ela existir; use mapa mental quando o conteudo for um panorama de conceitos. Se o assunto for
-  puramente textual e um diagrama nao agregar, OMITA.
+  Se a aula tiver TANTO um modelo de dominio (classes com atributos) QUANTO um fluxo/processo,
+  inclua OS DOIS (um classDiagram E um flowchart) — voce decide o que cabe. NUNCA troque um
+  diagrama de classes por um fluxograma: o classDiagram mostra os ATRIBUTOS, o flowchart nao.
+  Use mapa mental quando o conteudo for um panorama de conceitos. Se o assunto for puramente
+  textual e um diagrama nao agregar, OMITA.
 - Secoes \`##\` desenvolvendo o conteudo na ordem logica de aprendizado, explicando o
   CONCEITO e o PORQUE, nao so a sintaxe.
 - Exemplos de codigo em blocos \`\`\` com a linguagem correta, comentados quando ajudar.
@@ -675,7 +686,12 @@ NAO condense e NAO corte conteudo — PRESERVE todo o texto e a explicacao como 
 Sua tarefa e APENAS atualizar:
 - Converta QUALQUER diagrama existente (bloco \`\`\`flow JSON antigo, arte ASCII, ou descricao
   textual de um diagrama/fluxo/mapa) para o novo padrao \`\`\`mermaid (com o classDef de cores)
-  descrito abaixo.
+  descrito abaixo, PRESERVANDO O TIPO do diagrama: diagrama de CLASSES / modelo de dominio
+  (classes com atributos) -> classDiagram (NUNCA vire flowchart e NUNCA perca os atributos);
+  fluxo/processo/arquitetura -> flowchart; hierarquia de conceitos -> mindmap.
+- Se a aula tiver TANTO um modelo de dominio (classes) QUANTO um fluxo/processo, pode haver OS
+  DOIS diagramas (classDiagram E flowchart) — voce decide o que cabe, mas nunca abra mao do
+  diagrama de classes quando a aula tem entidades com atributos.
 - Se o tema tiver estrutura visual (hierarquia de conceitos/categorias) e NAO houver uma secao
   "## Mapa mental", adicione UMA logo apos o paragrafo de contexto, com um bloco \`\`\`mermaid.
 ${instruction && instruction.trim() ? `- Aplique tambem esta instrucao do usuario: ${instruction.trim()}\n` : ''}Mantenha o restante IDENTICO. Retorne a aula COMPLETA em Markdown.
@@ -685,6 +701,9 @@ ${MERMAID_MINDMAP_RULES}
 
 Para FLUXOGRAMA/DIAGRAMA de processo use:
 ${MERMAID_FLOW_RULES}
+
+Para DIAGRAMA DE CLASSES / modelo de dominio (DDD, entidades com atributos) use:
+${MERMAID_CLASSES_RULES}
 
 Aula de leitura atual:
 ---

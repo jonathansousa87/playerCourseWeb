@@ -62,8 +62,12 @@ export const loadTranscriptForLesson = async ({ courseTitle, lessonPrefix, cours
       throw err;
     }
     const raw = await getFileContent(result.fileId);
+    const isVtt = /\.vtt$/i.test(result.name);
     return {
-      text: parseTranscriptRaw(raw, /\.vtt$/i.test(result.name)),
+      text: parseTranscriptRaw(raw, isVtt),
+      // markdown = conteudo CRU (quebras preservadas). Consumido SO no update da
+      // Leitura (ver isReadingMarkdown); pro resto o `text` achatado serve.
+      markdown: isVtt ? null : raw,
       ref: result.fileId,
       lessonTitle: result.name.replace(/_dub.*$/i, '').trim(),
     };
@@ -76,12 +80,21 @@ export const loadTranscriptForLesson = async ({ courseTitle, lessonPrefix, cours
     err.code = 'NO_TRANSCRIPT';
     throw err;
   }
+  const raw = await fs.readFile(transcriptPath, 'utf8');
+  const isVtt = /\.vtt$/i.test(transcriptPath);
   return {
-    text: await parseTranscript(transcriptPath),
+    text: parseTranscriptRaw(raw, isVtt),
+    markdown: isVtt ? null : raw, // cru (quebras) — usado so no update da Leitura
     ref: transcriptPath,
     lessonTitle: basename(transcriptPath).replace(/_dub.*$/i, '').trim(),
   };
 };
+
+// A Leitura e markdown ESTRUTURADO (curso "- Leitura" + cabecalhos ##); ja a
+// transcricao de video e texto corrido (sem ##). So preservamos as quebras
+// quando as DUAS condicoes batem — senao, fallback pro `text` achatado de sempre.
+const isReadingMarkdown = (courseTitle, md) =>
+  /\s-\sLeitura$/.test(courseTitle) && !!md && /\n#{1,3}\s/.test(md);
 
 // Alias mantido pra compatibilidade. Usar `parseTranscript` em codigo novo.
 export const parseVtt = parseTranscript;
@@ -205,7 +218,7 @@ export const generateForLesson = async ({
   instruction = '',
 }) => {
   if (!userId) throw new Error('generateForLesson: userId obrigatorio');
-  const { text: transcript, ref: transcriptPath, lessonTitle: lessonTitleFromTranscript } =
+  const { text: transcript, markdown: readingMarkdown, ref: transcriptPath, lessonTitle: lessonTitleFromTranscript } =
     await loadTranscriptForLesson({ courseTitle, lessonPrefix, coursesPath });
 
   if (transcript.length < 50) {
@@ -244,7 +257,14 @@ export const generateForLesson = async ({
       return { kind, ok: false, error: `kind desconhecido: ${kind}` };
     }
     try {
-      const user = promptBuilders[kind]({ lessonTitle, transcript, weekLabel, instruction });
+      // Leitura (kind 'resumo' = a LEITURA): se for curso "- Leitura" com
+      // markdown estruturado, manda o CRU (quebras preservadas) pra IA so
+      // atualizar/preservar — sem isso o parseTranscript achata e a leitura
+      // pode voltar como 1 linha so. Os demais kinds usam o transcript de sempre.
+      const source = kind === 'resumo' && isReadingMarkdown(courseTitle, readingMarkdown)
+        ? readingMarkdown
+        : transcript;
+      const user = promptBuilders[kind]({ lessonTitle, transcript: source, weekLabel, instruction });
       const { content, usage, model: usedModel } = await chatCompletion({
         system: systemForKind[kind],
         user,
