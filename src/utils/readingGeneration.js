@@ -3,6 +3,7 @@
 // UI desenhar a pipeline; nao depende de React.
 import {
   generateReadingModule,
+  generateReadingBatch,
   generateIa,
   generatePrequestions,
   generatePodcastScript,
@@ -49,21 +50,28 @@ export const collectModules = (content, acc = []) => {
   return acc;
 };
 
-// Gera os materiais (IA) de UMA aula de leitura ja criada.
+// Gera os materiais (IA) de UMA aula de leitura ja criada. Retorna o custo
+// DeepSeek (USD) dos materiais de texto (prequiz/podcast nao reportam custo).
 const runLessonMaterials = async ({ leituraTitle, prefix, kinds, model, instruction }) => {
   const instr = (instruction || "").trim();
   const text = kinds.filter((k) => TEXT_KINDS.has(k));
+  let cost = 0;
   if (text.length) {
-    await generateIa({ courseTitle: leituraTitle, lessonPrefix: prefix, kinds: text, model, instruction: instr });
+    const r = await generateIa({ courseTitle: leituraTitle, lessonPrefix: prefix, kinds: text, model, instruction: instr });
+    cost += r?.cost || 0;
   }
   if (kinds.includes("prequiz")) {
-    await generatePrequestions({ courseTitle: leituraTitle, lessonPrefix: prefix, model, instruction: instr });
+    const pq = await generatePrequestions({ courseTitle: leituraTitle, lessonPrefix: prefix, model, instruction: instr });
+    cost += pq?.cost || 0;
   }
   if (kinds.includes("podcast")) {
     // Concorrencia do Kokoro e controlada no backend (fila + Semaphore).
+    // So o roteiro usa DeepSeek (tem custo); o audio (TTS) e local, sem custo.
     const s = await generatePodcastScript({ courseTitle: leituraTitle, lessonPrefix: prefix, model });
+    cost += s?.cost || 0;
     await generatePodcastAudio({ courseTitle: leituraTitle, lessonPrefix: prefix, title: s.title, turns: s.turns, model });
   }
+  return cost;
 };
 
 // Gera a leitura de UM curso. `modules` = todos os modulos do curso (pra index
@@ -83,6 +91,7 @@ export const generateCourseReading = async ({
   instruction,
   autoTranscribe,
   language,
+  preCondense,
   genMaterials,
   materialKinds,
   cancelRef,
@@ -115,6 +124,7 @@ export const generateCourseReading = async ({
         instruction: (instruction || "").trim(),
         autoTranscribe,
         language,
+        preCondense,
         onProgress: onModuleProgress,
       });
 
@@ -148,5 +158,102 @@ export const generateCourseReading = async ({
       onProgress({ kind: "module-error", module: mod.title, error: err.message });
     }
   }
+  return results;
+};
+
+// Geracao EM LOTE de TODOS os cursos/modulos selecionados, com revezamento de
+// VRAM no backend (WhisperX -> Qwen -> DeepSeek, nessa ordem, limpando a GPU
+// entre as fases). Depois da leitura, gera os materiais (DeepSeek, sem VRAM).
+// Eventos de progresso (onProgress) sempre carregam { courseTitle, modulePath }:
+//   { kind:'phase', phase:'whisper'|'qwen'|'deepseek'|'materials'|'done', status }
+//   { kind:'module-transcribe'|'module-precondense', courseTitle, modulePath, status }
+//   { kind:'module-start' } / { kind:'reading', total } / { kind:'reading-lesson', status }
+//   { kind:'module-done', result } / { kind:'module-error', error }
+//   { kind:'materials-init', total } / { kind:'material', i, status } / { kind:'materials-errors', errors }
+export const generateReadingCourseBatch = async ({
+  courses,
+  modulesByCourse,
+  selectedModules,
+  model,
+  instruction,
+  autoTranscribe,
+  language,
+  preCondense,
+  genMaterials,
+  materialKinds,
+  cancelRef,
+  signal,
+  onProgress = () => {},
+}) => {
+  // jobs com index estavel (posicao do modulo na lista do curso + 1).
+  const jobs = [];
+  for (const c of courses) {
+    const all = modulesByCourse[c.title] || [];
+    const sel = selectedModules[c.title] || new Set();
+    all.forEach((m, i) => {
+      if (sel.has(m.path)) jobs.push({ courseTitle: c.title, modulePath: m.path, moduleTitle: m.title, index: i + 1 });
+    });
+  }
+  if (jobs.length === 0) return [];
+
+  const instr = (instruction || "").trim();
+
+  // ---- Leitura (as 3 fases de GPU acontecem no backend) ----
+  const results = await generateReadingBatch({
+    jobs,
+    model,
+    instruction: instr,
+    autoTranscribe,
+    language,
+    preCondense,
+    signal,
+    onProgress: (ev) => {
+      const tag = { courseTitle: ev.courseTitle, modulePath: ev.modulePath };
+      switch (ev.type) {
+        case "phase": onProgress({ kind: "phase", phase: ev.phase, status: ev.status }); break;
+        case "transcricao": onProgress({ kind: "module-transcribe", ...tag, status: ev.status, transcribed: ev.transcribed }); break;
+        case "precondense": onProgress({ kind: "module-precondense", ...tag, status: ev.status }); break;
+        case "module-start": onProgress({ kind: "module-start", ...tag }); break;
+        case "plano": onProgress({ kind: "reading", ...tag, total: ev.total }); break;
+        case "aula": onProgress({ kind: "reading-lesson", ...tag, status: ev.status === "start" ? "doing" : ev.ok ? "ok" : "fail" }); break;
+        case "module-result": onProgress({ kind: "module-done", ...tag, result: ev.result }); break;
+        case "module-error": onProgress({ kind: "module-error", ...tag, error: ev.error }); break;
+        default: break;
+      }
+    },
+  });
+
+  // ---- Materiais (DeepSeek, remoto, sem VRAM) — "segue como ja e" ----
+  const kinds = [...(materialKinds || [])];
+  if (genMaterials && kinds.length) {
+    onProgress({ kind: "phase", phase: "materials", status: "start" });
+    for (const r of results) {
+      if (cancelRef?.current) break;
+      if (r.error) continue;
+      const lessons = (r.created || []).filter((c) => c.ok && c.prefix);
+      if (!lessons.length) continue;
+      const leituraTitle = `${r.courseTitle} - Leitura`;
+      const tag = { courseTitle: r.courseTitle, modulePath: r.modulePath };
+      onProgress({ kind: "materials-init", ...tag, total: lessons.length });
+      const errors = [];
+      let materialsCost = 0;
+      await runPool(lessons.map((l, i) => ({ l, i })), MAT_CONCURRENCY, async ({ l, i }) => {
+        if (cancelRef?.current) return;
+        onProgress({ kind: "material", ...tag, i, status: "doing" });
+        try {
+          materialsCost += await runLessonMaterials({ leituraTitle, prefix: l.prefix, kinds, model, instruction: instr });
+          onProgress({ kind: "material", ...tag, i, status: "ok" });
+        } catch (err) {
+          errors.push(`${l.prefix}: ${err.message}`);
+          onProgress({ kind: "material", ...tag, i, status: "fail" });
+        }
+      });
+      onProgress({ kind: "module-cost", ...tag, materialsCost });
+      if (errors.length) onProgress({ kind: "materials-errors", ...tag, errors });
+    }
+    onProgress({ kind: "phase", phase: "materials", status: "done" });
+  }
+
+  onProgress({ kind: "phase", phase: "done", status: "start" });
   return results;
 };

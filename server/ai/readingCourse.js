@@ -7,7 +7,9 @@
 
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import { chatCompletion, DEFAULT_MODEL } from './deepseek.js';
+import { chatCompletion, DEFAULT_MODEL, costFromUsage } from './deepseek.js';
+import { preCondense, preCondenseEnabled } from './precondense.js';
+import { startQwen, stopQwen } from './qwenServer.js';
 import { parseTranscript, parseTranscriptRaw } from './generator.js';
 import { transcribeToTxt } from './whisperx.js';
 import { query } from '../../db/index.js';
@@ -196,14 +198,15 @@ const transcribeMissingTranscripts = async (moduleDir, language = 'pt') => {
 };
 
 // Fase 1: a IA decide o agrupamento. Fallback robusto = cada aula isolada.
+// Retorna { plan, usage } — usage entra no custo do modulo.
 const planGrouping = async ({ moduleTitle, transcripts, model }) => {
   const fallback = () =>
     transcripts.map((t) => ({ title: t.title, sources: [t.id] }));
 
-  if (transcripts.length <= 1) return fallback();
+  if (transcripts.length <= 1) return { plan: fallback(), usage: null };
 
   try {
-    const { content } = await chatCompletion({
+    const { content, usage } = await chatCompletion({
       system: READING_PLAN_SYSTEM,
       user: buildReadingPlanPrompt({
         moduleTitle,
@@ -237,9 +240,9 @@ const planGrouping = async ({ moduleTitle, transcripts, model }) => {
     for (const t of transcripts) {
       if (!seen.has(t.id)) plan.push({ title: t.title, sources: [t.id] });
     }
-    return plan.length ? plan : fallback();
+    return { plan: plan.length ? plan : fallback(), usage };
   } catch {
-    return fallback();
+    return { plan: fallback(), usage: null };
   }
 };
 
@@ -257,11 +260,16 @@ const condenseText = async ({ lessonTitle, merged, model, instruction, language 
 };
 
 // fs: le as transcricoes do disco e condensa.
-const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt' }) => {
+// `preCache` (Map path->texto): se a aula ja foi pre-condensada numa fase anterior
+// (fluxo em lote, com o Qwen ja derrubado), usa o texto do cache em vez de chamar
+// o Qwen de novo. Sem cache, cai no preCondense(text, preCondenseOn) de sempre.
+const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, preCache }) => {
   const parts = [];
   for (const src of sources) {
     try {
-      parts.push(await parseTranscript(src.path));
+      const cached = preCache?.get(src.path);
+      const text = cached != null ? cached : await preCondense(await parseTranscript(src.path), preCondenseOn);
+      parts.push(text);
     } catch {
       /* ignora transcricao ilegivel */
     }
@@ -270,9 +278,154 @@ const condenseLesson = async ({ lessonTitle, sources, model, instruction, langua
 };
 
 // Gera o curso de leitura para UM modulo. Despacha pro modo do .env.
+// `opts.preCondense` (boolean) liga/desliga o Qwen por execucao; quando undefined,
+// cai no flag global PRECONDENSE_ENABLED do .env.
 export const generateReadingModule = async (opts) => {
+  const preCondenseOn = opts.preCondense ?? preCondenseEnabled();
+  if (preCondenseOn) {
+    console.log('[reading] pre-condensacao local ATIVA — limpando transcricoes no modelo local antes do DeepSeek');
+    opts.onProgress?.({ type: 'precondense', enabled: true });
+  }
   const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
-  return isDrive ? generateReadingModuleDrive(opts) : generateReadingModuleFs(opts);
+  return isDrive ? generateReadingModuleDrive({ ...opts, preCondenseOn }) : generateReadingModuleFs({ ...opts, preCondenseOn });
+};
+
+// === Fluxo EM LOTE com revezamento de VRAM (WhisperX vs Qwen) ===
+// Fase 1: WhisperX transcreve TODOS os modulos (Qwen derrubado). Fase 2: sobe o
+// Qwen UMA vez e pre-condensa TODAS as aulas (cache), depois derruba o Qwen.
+// Fase 3: DeepSeek roda em tudo (remoto, sem VRAM) usando o cache.
+//
+// jobs: [{ courseTitle, modulePath, moduleTitle, index }]
+export const generateReadingBatch = async ({
+  coursesPath,
+  jobs = [],
+  model = DEFAULT_MODEL,
+  instruction = '',
+  autoTranscribe = true,
+  language = 'pt',
+  preCondense: preFlag,
+  onProgress = () => {},
+}) => {
+  const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
+  const preCondenseOn = preFlag ?? preCondenseEnabled();
+  const log = (m) => console.log(m);
+  const preCache = new Map();
+  const transcriptionByJob = new Map();
+  const results = [];
+
+  // ---- FASE 1: WhisperX (so faz sentido no modo filesystem) ----
+  if (autoTranscribe && !isDrive) {
+    onProgress({ type: 'phase', phase: 'whisper', status: 'start' });
+    // Garante a GPU livre pro WhisperX: derruba o Qwen (manual ou nosso).
+    try { await stopQwen({ log }); } catch (err) { log(`[qwen] stop falhou: ${err.message}`); }
+    for (const job of jobs) {
+      const tag = { courseTitle: job.courseTitle, module: job.moduleTitle, modulePath: job.modulePath };
+      onProgress({ type: 'transcricao', ...tag, status: 'start' });
+      let summary;
+      try {
+        const moduleDir = join(coursesPath, job.courseTitle, job.modulePath);
+        summary = await transcribeMissingTranscripts(moduleDir, language);
+      } catch (err) {
+        summary = { transcribed: 0, failed: [{ file: job.moduleTitle, error: err.message }], skipped: false };
+      }
+      transcriptionByJob.set(job.modulePath, summary);
+      onProgress({ type: 'transcricao', ...tag, status: 'done', ...summary });
+    }
+    onProgress({ type: 'phase', phase: 'whisper', status: 'done' });
+  }
+
+  // ---- FASE 2: Qwen pre-condensa tudo (uma unica subida do modelo) ----
+  if (preCondenseOn) {
+    onProgress({ type: 'phase', phase: 'qwen', status: 'start' });
+    let qwenUp = false;
+    try {
+      await startQwen({ log });
+      qwenUp = true;
+    } catch (err) {
+      // Degrada gracioso: sem Qwen, a fase 3 condensa direto do texto cru (cache
+      // vazio). Nao quebra o lote — so perde a economia de tokens.
+      log(`[qwen] nao subiu (${err.message}); seguindo SEM pre-condensacao`);
+      onProgress({ type: 'precondense', status: 'unavailable', error: err.message });
+    }
+    if (qwenUp) {
+      try {
+        for (const job of jobs) {
+          const tag = { courseTitle: job.courseTitle, module: job.moduleTitle, modulePath: job.modulePath };
+          onProgress({ type: 'precondense', ...tag, status: 'start' });
+          try {
+            if (isDrive) await precondenseModuleDrive(job.modulePath, preCache);
+            else await precondenseModuleFs(join(coursesPath, job.courseTitle, job.modulePath), preCache);
+          } catch (err) {
+            // Degrada: cache parcial; a fase 3 le o texto cru das aulas que faltaram.
+            log(`[qwen] modulo "${job.moduleTitle}": ${err.message}`);
+          }
+          onProgress({ type: 'precondense', ...tag, status: 'done' });
+        }
+      } finally {
+        // Libera a VRAM antes do DeepSeek (e pra deixar a GPU livre depois do lote).
+        try { await stopQwen({ log }); } catch (err) { log(`[qwen] stop falhou: ${err.message}`); }
+      }
+    }
+    onProgress({ type: 'phase', phase: 'qwen', status: 'done' });
+  }
+
+  // ---- FASE 3: DeepSeek (plano + condensacao + escrita), usando o cache ----
+  onProgress({ type: 'phase', phase: 'deepseek', status: 'start' });
+  for (const job of jobs) {
+    const tag = { courseTitle: job.courseTitle, module: job.moduleTitle, modulePath: job.modulePath };
+    onProgress({ type: 'module-start', ...tag });
+    // So repassa plano/aula do modulo (transcricao/precondense ja foram nas fases 1-2).
+    const moduleProgress = (ev) => {
+      if (ev.type === 'plano' || ev.type === 'aula') onProgress({ ...ev, ...tag });
+    };
+    try {
+      const out = await generateReadingModule({
+        coursesPath,
+        courseTitle: job.courseTitle,
+        modulePath: job.modulePath,
+        moduleTitle: job.moduleTitle,
+        index: job.index,
+        model,
+        instruction,
+        autoTranscribe: false, // ja transcrito na fase 1
+        language,
+        preCondense: false, // ja condensado na fase 2 (vem do preCache)
+        preCache,
+        onProgress: moduleProgress,
+      });
+      if (transcriptionByJob.has(job.modulePath)) out.transcription = transcriptionByJob.get(job.modulePath);
+      results.push({ courseTitle: job.courseTitle, modulePath: job.modulePath, ...out });
+      onProgress({ type: 'module-result', ...tag, result: out });
+    } catch (err) {
+      results.push({ courseTitle: job.courseTitle, modulePath: job.modulePath, error: err.message });
+      onProgress({ type: 'module-error', ...tag, error: err.message });
+    }
+  }
+  onProgress({ type: 'phase', phase: 'deepseek', status: 'done' });
+  return results;
+};
+
+// Fase 2 (fs): pre-condensa todas as transcricoes de um modulo no cache (path->texto).
+const precondenseModuleFs = async (moduleDir, preCache) => {
+  const transcripts = await collectModuleTranscripts(moduleDir);
+  for (const t of transcripts) {
+    try {
+      preCache.set(t.path, await preCondense(await parseTranscript(t.path), true));
+    } catch { /* aula ilegivel: fica de fora do cache, fase 3 le o cru */ }
+  }
+};
+
+// Fase 2 (drive): idem, mas chaveado pelo fileId (igual ao que a fase 3 usa).
+const precondenseModuleDrive = async (moduleFolderId, preCache) => {
+  const drive = await import('../drive/index.js');
+  const files = drive.flattenFiles(await drive.listFilesRecursive(moduleFolderId));
+  const transcripts = files.filter((f) => TRANSCRIPT_RE.test(f.name) && !MATERIAL_TXT_RE.test(f.name));
+  for (const f of transcripts) {
+    try {
+      const raw = parseTranscriptRaw(await drive.getFileContent(f.id), /\.vtt$/i.test(f.name));
+      preCache.set(f.id, await preCondense(raw, true));
+    } catch { /* idem fs */ }
+  }
 };
 
 // Versao filesystem (padrao). modulePath e relativo a raiz do curso.
@@ -286,6 +439,8 @@ const generateReadingModuleFs = async ({
   instruction = '',
   autoTranscribe = true,
   language = 'pt',
+  preCondenseOn = false,
+  preCache,
   onProgress = () => {},
 }) => {
   const moduleDir = join(coursesPath, courseTitle, modulePath);
@@ -301,10 +456,10 @@ const generateReadingModuleFs = async ({
   const transcripts = await collectModuleTranscripts(moduleDir);
   if (transcripts.length === 0) {
     onProgress({ type: 'plano', total: 0 });
-    return { module: moduleTitle, skipped: 'sem transcricoes', transcription, created: [] };
+    return { module: moduleTitle, skipped: 'sem transcricoes', transcription, created: [], originalLessons: 0 };
   }
 
-  const plan = await planGrouping({ moduleTitle, transcripts, model });
+  const { plan, usage: planUsage } = await planGrouping({ moduleTitle, transcripts, model });
   onProgress({ type: 'plano', total: plan.length });
 
   const outRoot = join(coursesPath, `${courseTitle} - Leitura`);
@@ -340,7 +495,7 @@ const generateReadingModuleFs = async ({
     const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
     let res;
     try {
-      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language });
+      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, preCache });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };
       } else {
@@ -365,7 +520,11 @@ const generateReadingModuleFs = async ({
     return res;
   });
 
-  return { module: moduleTitle, outDir, transcription, created };
+  // Custo DeepSeek do modulo (USD): plano + condensacao de cada aula.
+  let cost = costFromUsage(planUsage, model);
+  for (const c of created) if (c.ok && c.usage) cost += costFromUsage(c.usage, model);
+
+  return { module: moduleTitle, outDir, transcription, created, originalLessons: transcripts.length, cost };
 };
 
 // Versao Drive. modulePath = id da pasta do modulo no Drive (vem da arvore).
@@ -375,7 +534,7 @@ const generateReadingModuleFs = async ({
 const generateReadingModuleDrive = async ({
   courseTitle, modulePath, moduleTitle, index = 1,
   model = DEFAULT_MODEL, instruction = '', language = 'pt',
-  onProgress = () => {},
+  preCondenseOn = false, preCache, onProgress = () => {},
 }) => {
   const drive = await import('../drive/index.js');
   const { getDriveFolderId } = await import('../config.js');
@@ -394,10 +553,10 @@ const generateReadingModuleDrive = async ({
     .map((t, id) => ({ id, ...t }));
   if (transcripts.length === 0) {
     onProgress({ type: 'plano', total: 0 });
-    return { module: moduleTitle, skipped: 'sem transcricoes', transcription, created: [] };
+    return { module: moduleTitle, skipped: 'sem transcricoes', transcription, created: [], originalLessons: 0 };
   }
 
-  const plan = await planGrouping({ moduleTitle, transcripts, model });
+  const { plan, usage: planUsage } = await planGrouping({ moduleTitle, transcripts, model });
   onProgress({ type: 'plano', total: plan.length });
 
   const readingCourseTitle = `${courseTitle} - Leitura`;
@@ -433,7 +592,14 @@ const generateReadingModuleDrive = async ({
       let readErrors = 0;
       for (const s of sources) {
         try {
-          parts.push(parseTranscriptRaw(await drive.getFileContent(s.fileId), /\.vtt$/i.test(s.name)));
+          const cached = preCache?.get(s.fileId);
+          if (cached != null) {
+            parts.push(cached);
+          } else {
+            const raw = parseTranscriptRaw(await drive.getFileContent(s.fileId), /\.vtt$/i.test(s.name));
+            // Pre-condensacao local opcional (no-op se desligada/indisponivel).
+            parts.push(await preCondense(raw, preCondenseOn));
+          }
         } catch { readErrors += 1; }
       }
       // Se havia fontes e NENHUMA foi lida, foi erro de leitura (Drive), nao aula
@@ -468,5 +634,9 @@ const generateReadingModuleDrive = async ({
     return res;
   });
 
-  return { module: moduleTitle, outFolderId, transcription, created };
+  // Custo DeepSeek do modulo (USD): plano + condensacao de cada aula.
+  let cost = costFromUsage(planUsage, model);
+  for (const c of created) if (c.ok && c.usage) cost += costFromUsage(c.usage, model);
+
+  return { module: moduleTitle, outFolderId, transcription, created, originalLessons: transcripts.length, cost };
 };

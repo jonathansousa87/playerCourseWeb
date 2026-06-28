@@ -1,7 +1,7 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import mermaid from "mermaid";
-import { Maximize2, X, ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
+import { Maximize2, X, ZoomIn, ZoomOut, RotateCcw, RefreshCw } from "lucide-react";
 import FlowDiagram from "./FlowDiagram";
 
 // Tema "base" + themeVariables espelhando a paleta do FlowDiagram (React Flow):
@@ -131,15 +131,25 @@ let idSeq = 0;
 // ainda nao esta entre aspas. Sem aspas, varios caracteres quebram o parser do
 // Mermaid (':' e principalmente '@', reservado pra nova sintaxe de shapes), e o
 // diagrama cai no fallback de codigo cru. So roda em flowchart/graph — em
-// classDiagram/sequence o ':' E sintaxe e nao pode ser tocado. O guard "inner ja
-// tem aspas" evita citar duas vezes e reprocessar os shapes duplos ([(...)] etc).
+// classDiagram/sequence o ':' E sintaxe e nao pode ser tocado.
+//
+// CRITICO: antes de aplicar os wraps, MASCARA o que ja esta entre aspas, pra os
+// regex NAO enxergarem os () [] {} DENTRO de um label ja citado. Sem isso, um
+// label valido como ["Repository (Spring Data JPA)"] ou ["findAll(Specification)"]
+// tinha o miolo "(...)" re-citado -> aspas aninhadas -> Mermaid quebra -> codigo
+// cru. O guard "inner ja tem aspas" continua evitando re-citar shapes duplos
+// ([(...)] etc.) que esta funcao acabou de citar na mesma passada.
+const PUA = ""; // sentinela (uso privado) — nao aparece em transcricao/diagrama
 const quoteRiskyLabels = (code) => {
   if (!/^\s*(flowchart|graph)\b/.test(code)) return code;
+  const masks = [];
+  let masked = code.replace(/"[^"]*"/g, (m) => `${PUA}${masks.push(m) - 1}${PUA}`);
+  const isMasked = (t) => new RegExp(`${PUA}\\d+${PUA}`).test(t);
   const wrap = (open, close) => (m, inner) => {
     const t = inner.trim();
-    return !t || t.includes('"') ? m : `${open}"${t}"${close}`;
+    return !t || t.includes('"') || isMasked(t) ? m : `${open}"${t}"${close}`;
   };
-  return code
+  masked = masked
     .replace(/\[\(([^\]]*?)\)\]/g, wrap("[(", ")]"))
     .replace(/\(\[([^)]*?)\]\)/g, wrap("([", "])"))
     .replace(/\(\(([^)]*?)\)\)/g, wrap("((", "))"))
@@ -147,6 +157,7 @@ const quoteRiskyLabels = (code) => {
     .replace(/\[([^\]]*?)\]/g, wrap("[", "]"))
     .replace(/\{([^}]*?)\}/g, wrap("{", "}"))
     .replace(/\(([^)]*?)\)/g, wrap("(", ")"));
+  return masked.replace(new RegExp(`${PUA}(\\d+)${PUA}`, "g"), (_, i) => masks[Number(i)]);
 };
 
 // Luminancia relativa de uma cor "rgb(r,g,b)" (0 = escuro, 1 = claro).
@@ -316,15 +327,45 @@ const mindmapToSpec = (chart) => {
 
 // Renderiza um diagrama Mermaid. Se o codigo for invalido (a IA pode escorregar
 // na sintaxe), cai num fallback mostrando o codigo cru em vez de quebrar a pagina.
-const MermaidNative = ({ chart }) => {
+const MermaidNative = ({ chart, onRegenerate }) => {
   const [svg, setSvg] = useState("");
   const [error, setError] = useState(false);
   const [full, setFull] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenError, setRegenError] = useState("");
 
   const zoomIn = () => setZoom((z) => Math.min(3, +(z + 0.2).toFixed(2)));
   const zoomOut = () => setZoom((z) => Math.max(0.3, +(z - 0.2).toFixed(2)));
   const zoomReset = () => setZoom(1);
+
+  // Regenera SO este diagrama (chama o pai, que troca o bloco e re-renderiza).
+  const handleRegen = async () => {
+    if (!onRegenerate || regenerating) return;
+    setRegenerating(true);
+    setRegenError("");
+    try {
+      await onRegenerate(chart);
+    } catch (e) {
+      setRegenError(e.message || "falha ao regenerar");
+      setRegenerating(false);
+    }
+    // Sucesso: o pai troca o conteudo -> este componente re-renderiza com o
+    // novo chart, entao nao precisa limpar o "regenerating" aqui.
+  };
+
+  const RegenBtn = ({ className = "" }) =>
+    onRegenerate ? (
+      <button
+        onClick={handleRegen}
+        disabled={regenerating}
+        title="Regenerar so este diagrama (gasta poucos tokens)"
+        className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-slate-800/80 hover:bg-slate-700 border border-slate-600/40 text-slate-200 text-xs disabled:opacity-50 ${className}`}
+      >
+        <RefreshCw className={`w-3.5 h-3.5 ${regenerating ? "animate-spin" : ""}`} />
+        {regenerating ? "Regenerando…" : "Regenerar"}
+      </button>
+    ) : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -354,9 +395,14 @@ const MermaidNative = ({ chart }) => {
 
   if (error) {
     return (
-      <pre className="my-5 p-4 bg-slate-900/80 border border-amber-500/30 rounded-xl overflow-x-auto text-[13px] font-mono text-slate-400">
-        {chart}
-      </pre>
+      <div className="my-5 rounded-xl border border-amber-500/30 bg-slate-900/80 overflow-hidden">
+        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-amber-500/20">
+          <span className="text-[12px] text-amber-300/90">Diagrama com erro de sintaxe</span>
+          <RegenBtn />
+        </div>
+        {regenError && <div className="px-3 pt-2 text-[11px] text-red-300">{regenError}</div>}
+        <pre className="p-4 overflow-x-auto text-[13px] font-mono text-slate-400">{chart}</pre>
+      </div>
     );
   }
 
@@ -367,13 +413,17 @@ const MermaidNative = ({ chart }) => {
   return (
     <>
       <div className="my-6 relative w-full rounded-xl border border-slate-700/40 overflow-hidden" style={DOT_BG}>
-        <button
-          onClick={() => setFull(true)}
-          title="Ver em tela cheia"
-          className="absolute top-2 right-2 z-10 p-1.5 rounded-md bg-slate-800/80 hover:bg-slate-700 border border-slate-600/40 text-slate-300"
-        >
-          <Maximize2 className="w-4 h-4" />
-        </button>
+        <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5">
+          <RegenBtn />
+          <button
+            onClick={() => setFull(true)}
+            title="Ver em tela cheia"
+            className="p-1.5 rounded-md bg-slate-800/80 hover:bg-slate-700 border border-slate-600/40 text-slate-300"
+          >
+            <Maximize2 className="w-4 h-4" />
+          </button>
+        </div>
+        {regenError && <div className="absolute top-12 right-2 z-10 text-[11px] text-red-300 bg-slate-900/90 px-2 py-1 rounded">{regenError}</div>}
         <ZoomControls onIn={zoomIn} onOut={zoomOut} onReset={zoomReset} />
         <PanScroll className="overflow-auto p-4" style={{ maxHeight: 440 }}>
           <SvgHost svg={svg} zoom={zoom} className={svgCls} />
@@ -406,9 +456,11 @@ const MermaidNative = ({ chart }) => {
 
 // Mindmap -> FlowDiagram (mesmo padrao visual da biblioteca principal); os demais
 // tipos (flowchart/sequence/class/state/er) seguem no Mermaid nativo estilizado.
-const MermaidDiagram = ({ chart }) => {
-  const spec = mindmapToSpec(chart);
-  return spec ? <FlowDiagram spec={spec} /> : <MermaidNative chart={chart} />;
+const MermaidDiagram = ({ chart, onRegenerate }) => {
+  // Memoiza por `chart` (string estavel): evita recriar o spec do mindmap a cada
+  // render do pai — junto com a chave estavel do FlowDiagram, mata o "piscar".
+  const spec = useMemo(() => mindmapToSpec(chart), [chart]);
+  return spec ? <FlowDiagram spec={spec} /> : <MermaidNative chart={chart} onRegenerate={onRegenerate} />;
 };
 
 export default MermaidDiagram;

@@ -1,17 +1,23 @@
-// Prompts pro pipeline de geracao. Todos os materiais sao Markdown puro —
-// a plataforma cuida do visual. Formatos: resumo .md, quiz .md, exemplos .md,
-// flashcards .txt (TSV Anki), diario .md.
+// Prompts for the generation pipeline. The INSTRUCTIONS are written in English
+// (DeepSeek follows English instructions more consistently), but every prompt
+// asks for OUTPUT in Brazilian Portuguese — the student reads the material in
+// pt-BR. The visible output headers (## Pontos Principais, > Explicacao:, etc.)
+// and the parser markers stay exactly as the front-end/parsers expect.
+//
+// All materials are plain Markdown — the platform handles the visuals. Formats:
+// resumo .md, quiz .md, exemplos .md, flashcards .txt (Anki TSV), diario .md.
 
 const SYSTEM_BASE =
-  'Voce eh um assistente educacional que gera material de estudo em portugues do Brasil ' +
-  'a partir da transcricao de uma aula em video. Siga o formato solicitado a risca, ' +
-  'sem comentarios fora do formato.';
+  'You are an educational assistant that generates study material in BRAZILIAN PORTUGUESE ' +
+  'from the transcript of a video lesson. Follow the requested format to the letter, ' +
+  'with no commentary outside the format.';
 
 const SYSTEM_PRATICA =
-  'Voce eh um instrutor que cria material de PRATICA/FIXACAO em portugues do Brasil, a partir ' +
-  'da transcricao de UMA aula, sempre 100% sobre o que ela ensinou. Se a aula for mao na massa ' +
-  '(codigo, comandos, ferramenta, passo a passo), foque em FAZER e REPRODUZIR. Se for so teorica, ' +
-  'NAO invente pratica: reforce a teoria com recuperacao ativa. Siga o formato a risca.';
+  'You are an instructor who creates PRACTICE/REINFORCEMENT material in BRAZILIAN PORTUGUESE, ' +
+  'from the transcript of ONE lesson, always 100% about what it taught. If the lesson is ' +
+  'hands-on (code, commands, tooling, step-by-step), focus on DOING and REPRODUCING. If it is ' +
+  'purely theoretical, do NOT invent practice: reinforce the theory with active recall. ' +
+  'Follow the format to the letter.';
 
 export const SYSTEM_PROMPTS = {
   resumo: SYSTEM_BASE,
@@ -24,27 +30,27 @@ export const SYSTEM_PROMPTS = {
 };
 
 const trunc = (text, max = 20000) =>
-  text.length > max ? text.slice(0, max) + '\n\n[TRANSCRICAO TRUNCADA]' : text;
+  text.length > max ? text.slice(0, max) + '\n\n[TRANSCRIPT TRUNCATED]' : text;
 
-// Bloco de instrucao do usuario (nicho/modernizacao) reutilizado por todos os
-// materiais. Tem prioridade sobre a fidelidade literal, mas nao muda a materia.
+// User instruction block (niche/modernization) reused by every material. It has
+// priority over literal fidelity, but must not change the lesson's subject.
 const instructionBlock = (instruction) =>
   instruction && instruction.trim()
     ? `
 
-INSTRUCAO ADICIONAL (PRIORIDADE — aplique ao gerar este material; modernize a FORMA:
-versoes, sintaxe, APIs, ferramentas e boas praticas conforme pedido. Vale mais que a
-fidelidade literal a transcricao, mas NAO mude a materia/conceitos da aula):
+ADDITIONAL INSTRUCTION (PRIORITY — apply it when generating this material; modernize the FORM:
+versions, syntax, APIs, tools and best practices as requested. It outweighs literal fidelity
+to the transcript, but do NOT change the lesson's subject matter/concepts):
 """
 ${instruction.trim()}
 """
 `
     : '';
 
-// Estilo padrao dos diagramas Mermaid: um bloco classDef que espelha a paleta
-// por tipo do FlowDiagram (entity=slate, process=sky, store=violeta,
-// decision=ambar, step=esmeralda). A IA cola este bloco no fluxograma e marca
-// cada no com :::tipo. O MermaidDiagram ainda normaliza o contraste do texto.
+// Default Mermaid diagram styling: a classDef block that mirrors the FlowDiagram
+// per-type palette (entity=slate, process=sky, store=violet, decision=amber,
+// step=emerald). The AI pastes this block into the flowchart and tags each node
+// with :::type. MermaidDiagram still normalizes the text contrast.
 const MERMAID_CLASSDEF =
 `  classDef entity fill:#1e293b,stroke:#94a3b8,stroke-width:2px,color:#e8eef6;
   classDef process fill:#0e2a3f,stroke:#38bdf8,stroke-width:2px,color:#e0f2fe;
@@ -52,11 +58,12 @@ const MERMAID_CLASSDEF =
   classDef decision fill:#3a2a0e,stroke:#fbbf24,stroke-width:2px,color:#fef3c7;
   classDef step fill:#0f2a22,stroke:#34d399,stroke-width:2px,color:#d1fae5;`;
 
-// Diagrama PADRAO da plataforma = Mermaid (a IA gera Mermaid com mais facilidade
-// e o estilo agora casa com o FlowDiagram via classDef/tema). O formato ```flow
-// (React Flow/JSON) continua suportado no render, mas nao e o que a IA emite.
+// The platform's DEFAULT diagram = Mermaid (the AI emits Mermaid more reliably
+// and the style now matches the FlowDiagram via classDef/theme). The ```flow
+// format (React Flow/JSON) is still supported by the renderer, but it is not
+// what the AI emits.
 const MERMAID_FLOW_RULES =
-`Inclua o diagrama num bloco \`\`\`mermaid com 'flowchart':
+`Include the diagram in a \`\`\`mermaid block using 'flowchart':
 \`\`\`mermaid
 flowchart TB
   A["Cliente"]:::entity --> B("Validar pedido"):::process
@@ -65,26 +72,26 @@ flowchart TB
   C -->|nao| E(["Notificar"]):::step
 ${MERMAID_CLASSDEF}
 \`\`\`
-Serve para FLUXO/PROCESSO/DFD/ARQUITETURA/COMPONENTES (e relacoes simples entre
-servicos/componentes).
-Regras (siga TODAS, senao quebra ou fica ilegivel):
-- COMECE com 'flowchart TB' (vertical) ou 'flowchart LR' (horizontal).
-- COLE o bloco classDef acima EXATAMENTE como esta (define as cores por tipo). NAO mude as cores.
-- SEMPRE coloque o texto do no entre ASPAS DUPLAS — aspas evitam erro de sintaxe com
-  ':', '@', '(', etc. (ex.: A["@Primary: bean unico"]). NUNCA use aspas DENTRO do texto.
-- Cada no leva a CLASSE do seu tipo (com ':::') e a FORMA correspondente:
-    entity   (ator/entidade/classe/componente): A["Texto"]:::entity
-    process  (acao/processo/servico):            B("Texto"):::process
-    store    (dados/tabela/banco):               D[("Texto")]:::store
-    decision (decisao):                          C{"Texto?"}:::decision
-    step     (etapa generica):                   E(["Texto"]):::step
-- MACRO: no MAXIMO 8 nos. Labels de no curtos (2-4 palavras).
-- Aresta com label: '-->|texto|' com NO MAXIMO 2 palavras; ou sem label ('-->'). Nunca uma frase.
-- Defina cada no UMA vez (com forma+classe); depois referencie SO pelo id (A, B, C...).
-- Texto de no: 2-4 palavras, sem ';'. Acentos podem (estao entre aspas).`;
+Use it for FLOW/PROCESS/DFD/ARCHITECTURE/COMPONENTS (and simple relations between
+services/components).
+Rules (follow them ALL, otherwise it breaks or becomes unreadable):
+- START with 'flowchart TB' (vertical) or 'flowchart LR' (horizontal).
+- PASTE the classDef block above EXACTLY as it is (it defines the per-type colors). Do NOT change the colors.
+- ALWAYS wrap the node text in DOUBLE QUOTES — quotes avoid syntax errors with
+  ':', '@', '(', etc. (e.g. A["@Primary: bean unico"]). NEVER use quotes INSIDE the text.
+- Each node carries the CLASS of its type (with ':::') and the matching SHAPE:
+    entity   (actor/entity/class/component): A["Texto"]:::entity
+    process  (action/process/service):       B("Texto"):::process
+    store    (data/table/database):          D[("Texto")]:::store
+    decision (decision):                     C{"Texto?"}:::decision
+    step     (generic step):                 E(["Texto"]):::step
+- MACRO: AT MOST 8 nodes. Short node labels (2-4 words).
+- Edge with label: '-->|texto|' with AT MOST 2 words; or no label ('-->'). Never a full sentence.
+- Define each node ONCE (with shape+class); afterwards reference it ONLY by id (A, B, C...).
+- Node text: 2-4 words, no ';'. Accents are fine (they are inside quotes).`;
 
 const MERMAID_MINDMAP_RULES =
-`Inclua o mapa mental num bloco \`\`\`mermaid com 'mindmap' (a INDENTACAO define a hierarquia):
+`Include the mind map in a \`\`\`mermaid block using 'mindmap' (INDENTATION defines the hierarchy):
 \`\`\`mermaid
 mindmap
   root((Tema central))
@@ -94,14 +101,14 @@ mindmap
     Ramo 2
       Detalhe
 \`\`\`
-Regras (formato ESTRELA — raso e largo, NUNCA arvore profunda):
-- 1 raiz 'root((Tema))'; de 4 a 7 ramos diretos; 1 a 3 folhas por ramo. NO MAXIMO 2 niveis abaixo da raiz.
-- Use 2 espacos de indentacao por nivel (raiz / ramo / folha). labels CURTOS (1-4 palavras).
-- So a RAIZ usa '((...))'; ramos e folhas sao texto puro, SEM parenteses/colchetes/chaves.`;
+Rules (STAR shape — shallow and wide, NEVER a deep tree):
+- 1 root 'root((Tema))'; 4 to 7 direct branches; 1 to 3 leaves per branch. AT MOST 2 levels below the root.
+- Use 2 spaces of indentation per level (root / branch / leaf). SHORT labels (1-4 words).
+- ONLY the ROOT uses '((...))'; branches and leaves are plain text, WITHOUT parentheses/brackets/braces.`;
 
-// Diagrama de CLASSES UML / modelo de dominio DDD.
+// UML CLASS diagram / DDD domain model.
 const MERMAID_CLASSES_RULES =
-`Inclua o diagrama num bloco \`\`\`mermaid com 'classDiagram':
+`Include the diagram in a \`\`\`mermaid block using 'classDiagram':
 \`\`\`mermaid
 classDiagram
   class Pedido {
@@ -116,24 +123,25 @@ classDiagram
   Pedido "1" *-- "*" ItemPedido : contem
   Pedido --> Restaurante : feito para
 \`\`\`
-Regras:
-- ESCOPO: o classDiagram e do MODELO DE DOMINIO — as ENTIDADES com seus ATRIBUTOS (ex.: FotoProduto,
-  Produto). As CAMADAS da aplicacao (Controller/Service/Repository) e o FLUXO de uma requisicao
-  entre elas NAO entram aqui: isso vira um FLOWCHART separado. Se a aula mostra a arquitetura E as
-  entidades, gere OS DOIS (um flowchart da arquitetura/fluxo + este classDiagram das entidades).
-- Cada 'class Nome { ... }' com 2 a 6 atributos no formato '+Tipo nome'. So o que a aula mostrou (nao invente).
-- MEMBROS CURTOS (o classDiagram NAO quebra linha — assinatura longa estoura a largura da caixa):
-  metodos so com o NOME e parametros VAZIOS/resumidos (ex.: '+salvar()'), NUNCA assinatura longa
-  como '+ResponseEntity atualizarFoto(Long restauranteId, Long produtoId, ... arquivo)'. Poucos
-  metodos (0 a 4); o detalhe de parametros fica no codigo, nao no diagrama.
-- Relacoes: heranca 'A <|-- B'; composicao 'A *-- B'; agregacao 'A o-- B'; associacao 'A --> B'.
-  Multiplicidade entre aspas e label curto apos ' : '. Ex.: 'Pedido "1" *-- "*" Item : contem'.
-- NO MAXIMO 8 classes (so o nucleo do dominio). Nomes de classe SEM espacos.`;
+Rules:
+- SCOPE: the classDiagram is the DOMAIN MODEL — the ENTITIES with their ATTRIBUTES (e.g. FotoProduto,
+  Produto). The application LAYERS (Controller/Service/Repository) and the request FLOW between
+  them do NOT belong here: that becomes a separate FLOWCHART. If the lesson shows BOTH the
+  architecture AND the entities, generate BOTH (an architecture/flow flowchart + this entity classDiagram).
+- Each 'class Nome { ... }' with 2 to 6 attributes in the form '+Tipo nome'. Only what the lesson showed (do not invent).
+- SHORT MEMBERS (the classDiagram does NOT wrap lines — a long signature overflows the box width):
+  methods with ONLY the name and EMPTY/summarized parameters (e.g. '+salvar()'), NEVER a long signature
+  like '+ResponseEntity atualizarFoto(Long restauranteId, Long produtoId, ... arquivo)'. Few
+  methods (0 to 4); parameter detail belongs in the code, not in the diagram.
+- Relations: inheritance 'A <|-- B'; composition 'A *-- B'; aggregation 'A o-- B'; association 'A --> B'.
+  Multiplicity in quotes and a short label after ' : '. E.g. 'Pedido "1" *-- "*" Item : contem'.
+- AT MOST 8 classes (only the core of the domain). Class names WITHOUT spaces.`;
 
 export const buildResumoPrompt = ({ lessonTitle, transcript, instruction }) => `
-Gere um resumo estruturado em Markdown da aula abaixo.${instructionBlock(instruction)}
+Generate a structured summary in Markdown of the lesson below. Write the summary in BRAZILIAN
+PORTUGUESE.${instructionBlock(instruction)}
 
-Formato obrigatorio (preserve os cabecalhos):
+Mandatory format (keep the headers EXACTLY as written, in Portuguese):
 
 ## Pontos Principais
 *   (4 a 6 bullets curtos com as ideias-chave)
@@ -148,68 +156,72 @@ Formato obrigatorio (preserve os cabecalhos):
 ## Conclusao
 (1 paragrafo de 2-4 frases sintetizando o que o aluno deve levar dessa aula)
 
-Use **negrito** pra destacar termos tecnicos. NAO cite timestamps. NAO invente fatos que nao estao na transcricao.
+Use **bold** to highlight technical terms. Do NOT cite timestamps. Do NOT invent facts that are
+not in the transcript.
 
-Titulo da aula: ${lessonTitle}
+Lesson title: ${lessonTitle}
 
-Transcricao:
+Transcript:
 ---
 ${trunc(transcript)}
 ---`.trim();
 
 export const buildFlashcardsPrompt = ({ lessonTitle, transcript, instruction }) => {
-  // Exemplo com separador TAB real (caractere ASCII 9)
+  // Example with a real TAB separator (ASCII char 9)
   const TAB = '\t';
   return `
-Gere flashcards no formato Anki importavel (tab-separated) a partir da aula abaixo.${instructionBlock(instruction)}
+Generate flashcards in importable Anki format (tab-separated) from the lesson below. Write the
+card text in BRAZILIAN PORTUGUESE.${instructionBlock(instruction)}
 
-Formato obrigatorio (EXATO, sem desvios):
-- Linha 1: #separator:tab
-- Linha 2: #html:true
-- Em seguida, 10 a 18 linhas. CADA linha deve ter EXATAMENTE:
-    pergunta + TAB + resposta
-  onde TAB eh o caractere TAB (ASCII 9), NAO espacos, NAO markdown, NAO backtick.
+Mandatory format (EXACT, no deviations):
+- Line 1: #separator:tab
+- Line 2: #html:true
+- Then, 10 to 18 lines. EACH line must contain EXACTLY:
+    question + TAB + answer
+  where TAB is the TAB character (ASCII 9), NOT spaces, NOT markdown, NOT backtick.
 
-Regras CRITICAS:
-- NAO use markdown (sem **, backticks, #, -) no texto dos cards
-- NAO use fences de codigo (sem backtick duplo ou triplo)
-- NAO use espacos como separador — use SOMENTE tab
-- Resposta pode usar <b>termo</b> inline para destaque
-- SEM linhas em branco entre cards
-- SEM marcadores (*, -, 1.) no inicio das linhas
+CRITICAL rules:
+- Do NOT use markdown (no **, backticks, #, -) in the card text
+- Do NOT use code fences (no double or triple backtick)
+- Do NOT use spaces as a separator — use ONLY tab
+- The answer may use <b>termo</b> inline for emphasis
+- NO blank lines between cards
+- NO list markers (*, -, 1.) at the start of lines
 
-Regras de qualidade:
-- Cada card testa UM fato isolado (granularidade fina)
-- Pergunta clara, completa, sem pronomes ambiguos
-- Resposta curta (1 frase ou 1 termo) com a ideia-chave em <b>
-- Cobrir os conceitos mais importantes da aula, nao exemplos passageiros
-- NAO duplicar perguntas com o mesmo sentido
-- PROIBIDO perguntas rasas/obvias de definicao pura ("O que e X?"). Foque em APLICACAO,
-  mecanica, comportamento, QUANDO/POR QUE usar, diferencas entre conceitos, ou a solucao
-  de um problema concreto trazido na aula.
-- Varie os tipos: "quando usar X?", "qual a diferenca entre X e Y?", "o que acontece se...",
-  "como resolver...", "por que X em vez de Y?" — recuperacao ativa, nao reconhecimento.
+Quality rules:
+- Each card tests ONE isolated fact (fine granularity)
+- Clear, complete question, with no ambiguous pronouns
+- Short answer (1 sentence or 1 term) with the key idea in <b>
+- Cover the most important concepts of the lesson, not passing examples
+- Do NOT duplicate questions with the same meaning
+- FORBIDDEN: shallow/obvious pure-definition questions ("O que e X?"). Focus on APPLICATION,
+  mechanics, behavior, WHEN/WHY to use, differences between concepts, or the solution to a
+  concrete problem raised in the lesson.
+- Vary the types: "quando usar X?", "qual a diferenca entre X e Y?", "o que acontece se...",
+  "como resolver...", "por que X em vez de Y?" — active recall, not recognition.
 
-Exemplo do formato esperado (separador entre pergunta e resposta DEVE ser TAB real):
+Example of the expected format (the separator between question and answer MUST be a real TAB):
 #separator:tab
 #html:true
 O que e HTTP?${TAB}Protocolo de <b>transmissao</b> de dados na web
 Para que serve o DNS?${TAB}<b>Resolucao</b> de nomes em enderecos IP
 
-Titulo da aula: ${lessonTitle}
+Lesson title: ${lessonTitle}
 
-Transcricao:
+Transcript:
 ---
 ${trunc(transcript)}
 ---
 
-Retorne APENAS o conteudo do arquivo .txt, sem fences de codigo, sem explicacao, sem conversas.`.trim();
+Return ONLY the content of the .txt file, with no code fences, no explanation, no chatter.`.trim();
 };
 
 export const buildQuizPrompt = ({ lessonTitle, transcript, instruction }) => `
-Gere um quiz em Markdown sobre a aula abaixo, com 8 a 12 questoes de multipla escolha (4 alternativas cada, 1 correta).${instructionBlock(instruction)}
+Generate a quiz in Markdown about the lesson below, with 8 to 12 multiple-choice questions
+(4 options each, 1 correct). Write the questions, options and explanations in BRAZILIAN
+PORTUGUESE.${instructionBlock(instruction)}
 
-Formato obrigatorio EXATO por questao (o parser depende desse formato):
+EXACT mandatory format per question (the parser depends on this format):
 
 ## N. Texto da pergunta?
 
@@ -220,133 +232,136 @@ Formato obrigatorio EXATO por questao (o parser depende desse formato):
 
 > Explicacao: por que a alternativa correta esta certa.
 
-Onde N e o numero sequencial (1, 2, 3...) e [x] marca a unica alternativa correta.
+Where N is the sequential number (1, 2, 3...) and [x] marks the single correct option.
 
-Regras CRITICAS:
-- Exatamente 1 alternativa com [x] por questao (nao use [X], apenas [x] minusculo)
-- Sempre 4 alternativas por questao (3 x [ ] e 1 x [x])
-- Alternativas incorretas plausiveis (distratores reais, nao absurdos)
-- Ordem das alternativas aleatoria por questao
-- NAO adicione texto fora do formato acima (sem introducao, sem conclusao)
+CRITICAL rules:
+- Exactly 1 option with [x] per question (do not use [X], only lowercase [x])
+- Always 4 options per question (3 x [ ] and 1 x [x])
+- Plausible wrong options (real distractors, not absurd ones)
+- Random option order per question
+- Do NOT add text outside the format above (no intro, no conclusion)
 
-Qualidade cognitiva (importante):
-- NAO faca so perguntas de definicao/memorizacao. PELO MENOS METADE deve exigir raciocinio:
-  aplicacao ("dado este cenario, o que acontece?"), analise ("qual o problema deste codigo?"),
-  comparacao ("qual a diferenca entre X e Y?") ou causa/efeito ("por que isso falha?").
-- Tudo baseado SO no que a aula ensinou (cenarios podem variar o contexto, sem recursos novos).
+Cognitive quality (important):
+- Do NOT make only definition/memorization questions. AT LEAST HALF must require reasoning:
+  application ("dado este cenario, o que acontece?"), analysis ("qual o problema deste codigo?"),
+  comparison ("qual a diferenca entre X e Y?") or cause/effect ("por que isso falha?").
+- Everything based ONLY on what the lesson taught (scenarios may vary the context, without new resources).
 
-Qualidade dos distratores (psicometria):
-- As 4 alternativas devem ter tamanho e estrutura SEMELHANTES — a correta NAO pode ser
-  sistematicamente a mais longa/detalhada (entrega a resposta).
-- Distratores devem refletir ERROS/equivocos comuns reais, nao opcoes absurdas.
-- PROIBIDO "todas as anteriores", "nenhuma das anteriores" e "todas estao corretas".
+Distractor quality (psychometrics):
+- The 4 options must have SIMILAR length and structure — the correct one must NOT be
+  systematically the longest/most detailed (that gives away the answer).
+- Distractors must reflect real common ERRORS/misconceptions, not absurd options.
+- FORBIDDEN: "todas as anteriores", "nenhuma das anteriores" and "todas estao corretas".
 
-Explicacao (feedback formativo):
-- 1-2 frases: por que a correta esta certa E, quando ajudar, qual o equivoco por tras do
-  distrator mais tentador. Sem inventar conteudo fora da aula.
+Explanation (formative feedback):
+- 1-2 sentences: why the correct one is right AND, when helpful, the misconception behind the
+  most tempting distractor. Do not invent content outside the lesson.
 
-Titulo da aula: ${lessonTitle}
+Lesson title: ${lessonTitle}
 
-Transcricao:
+Transcript:
 ---
 ${trunc(transcript)}
 ---
 
-Retorne APENAS o Markdown, sem fences de codigo.`.trim();
+Return ONLY the Markdown, with no code fences.`.trim();
 
 export const buildExemplosPrompt = ({ lessonTitle, transcript, instruction }) => `
-Gere um material de PRATICA em Markdown pra aula abaixo. Ele deve ser 100% SOBRE ESTA AULA:
-praticar e reproduzir o que ELA ensinou — nada de assunto/recurso que a aula nao mostrou.${instructionBlock(instruction)}
+Generate PRACTICE material in Markdown for the lesson below. It must be 100% ABOUT THIS LESSON:
+practice and reproduce what IT taught — nothing about a subject/resource the lesson did not show.
+Write the material in BRAZILIAN PORTUGUESE.${instructionBlock(instruction)}
 
-PRIMEIRO, decida o tipo da aula e escolha UM dos dois modos:
-- MODO A (mao na massa): a aula MOSTROU algo reproduzivel. Dois casos (escolha o que se aplica):
-  - (A1) CODIGO/FERRAMENTA: codigo, comandos, consultas, configuracao, uso de ferramenta, passo
-    a passo. Praticar = REPRODUZIR e ESCREVER codigo.
-  - (A2) MODELAGEM/DIAGRAMA: a aula ensinou OU demonstrou uma NOTACAO/tecnica de diagrama (BPMN,
-    UML incluindo CASOS DE USO, fluxograma, DFD, ER, C4) — MESMO que seja "exemplo real" ou
-    pareca so explicacao da notacao. Praticar = MODELAR cenarios com essa notacao (desenhar o
-    diagrama), nao escrever codigo. Aula sobre um tipo de diagrama eh SEMPRE A2, nunca MODO B.
-- MODO B (teorica/conceitual): a aula so EXPLICOU conceitos, panorama, historia, "o que e /
-  por que", sem nada concreto pra reproduzir NEM modelar. Aqui NAO invente exercicios praticos —
-  reforce a teoria com recuperacao ativa.
+FIRST, decide the lesson type and pick ONE of the two modes:
+- MODE A (hands-on): the lesson SHOWED something reproducible. Two cases (pick the one that applies):
+  - (A1) CODE/TOOL: code, commands, queries, configuration, tool usage, step-by-step. Practicing =
+    REPRODUCING and WRITING code.
+  - (A2) MODELING/DIAGRAM: the lesson taught OR demonstrated a diagram NOTATION/technique (BPMN,
+    UML including USE CASES, flowchart, DFD, ER, C4) — EVEN if it is a "real example" or seems
+    like just an explanation of the notation. Practicing = MODELING scenarios with that notation
+    (drawing the diagram), not writing code. A lesson about a kind of diagram is ALWAYS A2, never MODE B.
+- MODE B (theoretical/conceptual): the lesson only EXPLAINED concepts, overview, history,
+  "what is / why", with nothing concrete to reproduce NOR model. Here do NOT invent practical
+  exercises — reinforce the theory with active recall.
 
-NAO escreva NADA antes do primeiro \`##\`. Use SOMENTE as secoes do modo escolhido.
+Do NOT write ANYTHING before the first \`##\`. Use ONLY the sections of the chosen mode.
+Keep the section headers EXACTLY as written below (in Portuguese).
 
-=== MODO A — aula mao na massa (A1 codigo OU A2 modelagem) ===
+=== MODE A — hands-on lesson (A1 code OR A2 modeling) ===
 ## Como praticar
-Ambiente/ferramenta minima pra praticar e o setup pra comecar. A1: console, editor, playground,
-arquivo de teste. A2: a ferramenta de modelagem da aula (ou Draw.io/papel) e como representar.
-Concreto, sem inventar ferramentas que nao existam.
+Minimal environment/tool to practice and the setup to start. A1: console, editor, playground,
+test file. A2: the modeling tool from the lesson (or Draw.io/paper) and how to represent it.
+Concrete, without inventing tools that do not exist.
 
 ## Passo a passo
-Reproduza PASSO A PASSO o que a aula demonstrou. Em cada etapa, explique o PORQUE dela (nao so o
-"como") e mostre o resultado esperado. A1: blocos \`\`\` com a linguagem correta. A2: e
-OBRIGATORIO MOSTRAR o diagrama (nao apenas descrever em texto nem so dar instrucoes de
-ferramenta). So o que a aula mostrou.
+Reproduce STEP BY STEP what the lesson demonstrated. In each step, explain WHY it is done (not just
+the "how") and show the expected result. A1: \`\`\` blocks with the correct language. A2: it is
+MANDATORY to SHOW the diagram (not just describe it in text nor only give tool instructions).
+Only what the lesson showed.
 ${MERMAID_FLOW_RULES}
 
 ## Exercicios
-3 a 5 exercicios progressivos (do mais simples ao mais completo) pro aluno fazer SOZINHO. Cada
-um com: enunciado claro, uma **dica** curta e o **resultado esperado**. A1 = escrever codigo.
-A2 = MODELAR o cenario; FORNECA a solucao esperada como um bloco \`\`\`mermaid. Mantenha cada
-diagrama SIMPLES (poucos nos) — varios diagramas pequenos e claros, um por exercicio.
+3 to 5 progressive exercises (from simplest to most complete) for the student to do ALONE. Each
+one with: a clear statement, one short **dica** and the **resultado esperado**. A1 = write code.
+A2 = MODEL the scenario; PROVIDE the expected solution as a \`\`\`mermaid block. Keep each
+diagram SIMPLE (few nodes) — several small, clear diagrams, one per exercise.
 
 ## Desafio
-1 desafio que integra os pontos principais da aula (codigo OU modelo, conforme A1/A2), com
-enunciado + resultado esperado. Em A2, inclua UM bloco \`\`\`mermaid com a solucao modelada.
+1 challenge that integrates the lesson's main points (code OR model, per A1/A2), with a
+statement + expected result. In A2, include ONE \`\`\`mermaid block with the modeled solution.
 
 ## Checklist
-4 a 6 itens "Voce consegue...?" pro aluno se autoavaliar antes de seguir.
+4 to 6 "Voce consegue...?" items for the student to self-assess before moving on.
 
-=== MODO B — aula teorica ===
+=== MODE B — theoretical lesson ===
 ## Como fixar
-Como consolidar essa teoria (a aula nao trouxe pratica de codigo): o que reler, relacionar e
-prestar atencao pra fixar de verdade.
+How to consolidate this theory (the lesson brought no coding practice): what to re-read, relate
+and pay attention to in order to really retain it.
 
 ## Explique com suas palavras
-3 a 5 perguntas que pedem o aluno EXPLICAR ou RESUMIR os conceitos centrais da aula (forca
-recuperacao ativa). So sobre o que a aula discutiu.
+3 to 5 questions that ask the student to EXPLAIN or SUMMARIZE the lesson's core concepts (forces
+active recall). Only about what the lesson discussed.
 
 ## Aplicacao e analise
-2 a 4 cenarios/situacoes reais onde esses conceitos aparecem, pro aluno raciocinar "quando e por
-que" usar — baseado so no que a aula apresentou. Sem inventar passos ou ferramentas que a aula
-nao deu.
+2 to 4 real scenarios/situations where these concepts appear, for the student to reason about
+"when and why" to use them — based only on what the lesson presented. Do not invent steps or tools
+the lesson did not provide.
 
 ## Checklist de entendimento
-4 a 6 itens "Voce sabe explicar...?" sobre os conceitos da aula.
+4 to 6 "Voce sabe explicar...?" items about the lesson's concepts.
 
-Regras gerais:
-- Use **negrito** pra termos tecnicos; blocos de codigo com a linguagem certa quando houver.
-- Concreto e acionavel, nada vago.
-- FIDELIDADE TOTAL: so o que a aula ensinou. Na duvida entre A e B, decida pelo que a aula
-  realmente trouxe (se nao ha nada reproduzivel, e MODO B).
-- NAO cite timestamps nem o nome do instrutor.
+General rules:
+- Use **bold** for technical terms; code blocks with the correct language when there is code.
+- Concrete and actionable, nothing vague.
+- FULL FIDELITY: only what the lesson taught. When unsure between A and B, decide by what the
+  lesson actually brought (if there is nothing reproducible, it is MODE B).
+- Do NOT cite timestamps nor the instructor's name.
 
-Titulo da aula: ${lessonTitle}
+Lesson title: ${lessonTitle}
 
-Transcricao:
+Transcript:
 ---
 ${trunc(transcript)}
 ---
 
-Retorne APENAS o Markdown (de UM dos modos), sem fences externas de codigo.`.trim();
+Return ONLY the Markdown (of ONE mode), with no outer code fences.`.trim();
 
-// Pre-questoes (Carpenter & Toftness 2017): perguntas geradas ANTES do
-// video, pra forcar tentativa de recuperacao. O retorno DEVE ser JSON
-// puro pra o backend parsear sem regex maluco.
+// Pre-questions (Carpenter & Toftness 2017): questions generated BEFORE the
+// video, to force a retrieval attempt. The return MUST be pure JSON so the
+// backend can parse it without crazy regex.
 export const buildPrequestionsPrompt = ({ lessonTitle, transcript, instruction }) => `
-Gere perguntas de PRE-AULA sobre o conteudo abaixo. O aluno respondera ANTES de assistir,
-pra ativar tentativa de recuperacao (efeito de pre-questao). Errar eh OK — o ato de tentar
-adivinhar prepara a codificacao.${instructionBlock(instruction)}
+Generate PRE-LESSON questions about the content below. The student will answer BEFORE watching,
+to trigger a retrieval attempt (pre-question effect). Getting them wrong is OK — the act of trying
+to guess primes the encoding. Write the questions, options and explanations in BRAZILIAN
+PORTUGUESE.${instructionBlock(instruction)}
 
-Regras:
-- Gere EXATAMENTE 3 perguntas de multipla escolha (4 alternativas cada, 1 correta).
-- Foque nos conceitos MAIS centrais da aula (nao em exemplos passageiros).
-- Distratores plausiveis (nao absurdos), pra exigir pensamento real.
-- Pergunta clara, sem pronomes ambiguos, autocontida.
-- Explicacao curta (1-2 frases) por que a correta esta certa.
+Rules:
+- Generate EXACTLY 3 multiple-choice questions (4 options each, 1 correct).
+- Focus on the MOST central concepts of the lesson (not passing examples).
+- Plausible distractors (not absurd), to require real thinking.
+- Clear question, no ambiguous pronouns, self-contained.
+- Short explanation (1-2 sentences) of why the correct one is right.
 
-Formato obrigatorio: JSON puro, SEM fences, SEM texto antes/depois. Schema EXATO:
+Mandatory format: pure JSON, NO fences, NO text before/after. EXACT schema:
 {
   "questions": [
     {
@@ -359,28 +374,30 @@ Formato obrigatorio: JSON puro, SEM fences, SEM texto antes/depois. Schema EXATO
   ]
 }
 
-Onde correct_idx eh 0,1,2 ou 3 (indice em options).
+Where correct_idx is 0, 1, 2 or 3 (index into options).
 
-Titulo da aula: ${lessonTitle}
+Lesson title: ${lessonTitle}
 
-Transcricao:
+Transcript:
 ---
 ${trunc(transcript)}
 ---
 
-Retorne APENAS o JSON.`.trim();
+Return ONLY the JSON.`.trim();
 
 export const buildPiadaPrompt = ({ lessonTitle, transcript, instruction }) => `
-Gere 2 piadas curtas e inteligentes sobre o conteudo da aula abaixo.${instructionBlock(instruction)}
+Generate 2 short, clever jokes about the content of the lesson below. Write the jokes in BRAZILIAN
+PORTUGUESE.${instructionBlock(instruction)}
 
-Regras CRITICAS:
-- Cada piada DEVE referenciar conceitos especificos da aula (nomes de funcoes, algoritmos, ferramentas, termos tecnicos ensinados) — nada generico
-- Use humor de trocadilho, analogia absurda ou situacao exagerada relacionada ao tema
-- Portugues casual, como se contasse pra um colega de estudo
-- Curtas: 2 a 5 linhas por piada
-- Sem conteudo ofensivo
+CRITICAL rules:
+- Each joke MUST reference specific concepts from the lesson (function names, algorithms, tools,
+  technical terms taught) — nothing generic
+- Use pun humor, an absurd analogy or an exaggerated situation related to the topic
+- Casual Brazilian Portuguese, as if telling it to a study buddy
+- Short: 2 to 5 lines per joke
+- No offensive content
 
-Formato obrigatorio EXATO:
+EXACT mandatory format (headers in Portuguese):
 
 ## Piada 1
 (texto da primeira piada)
@@ -390,59 +407,57 @@ Formato obrigatorio EXATO:
 
 > Pronto, agora vai arrasar no quiz! 💪
 
-Retorne APENAS o Markdown, sem fences de codigo.
+Return ONLY the Markdown, with no code fences.
 
-Titulo da aula: ${lessonTitle}
+Lesson title: ${lessonTitle}
 
-Transcricao:
+Transcript:
 ---
 ${trunc(transcript, 8000)}
 ---`.trim();
 
-// === Podcast (dialogo dev senior x dev iniciante, sintetizado via Chatterbox) ===
-// O retorno DEVE ser JSON puro: turnos alternados com falante e texto. Cada
-// turno vira um clip de TTS, entao o texto precisa ser falavel (sem markdown,
-// sem codigo, sem simbolos que nao se leem em voz alta).
+// === Podcast (senior dev x junior dev dialogue, synthesized via Chatterbox) ===
+// The return MUST be pure JSON: alternating turns with speaker and text. Each
+// turn becomes a TTS clip, so the text must be speakable (no markdown, no code,
+// no symbols that aren't read aloud).
 export const PODCAST_SYSTEM =
-  'Voce escreve roteiros de PODCAST educacional em portugues do Brasil, no formato de ' +
-  'conversa natural entre dois desenvolvedores. Responda SEMPRE com JSON puro, sem texto ' +
-  'antes ou depois.';
+  'You write educational PODCAST scripts in BRAZILIAN PORTUGUESE, in the format of a natural ' +
+  'conversation between two developers. ALWAYS reply with pure JSON, no text before or after.';
 
 export const buildPodcastScriptPrompt = ({ lessonTitle, transcript, seniorName = 'Luiz', juniorName = 'Daniela' }) => `
-Escreva o roteiro de um PODCAST de aproximadamente 5 MINUTOS sobre a aula abaixo, no
-formato de uma conversa entre dois personagens com NOME:
-- "senior" = ${seniorName}: dev experiente, que explica com clareza, dá contexto e exemplos do dia a dia.
-- "junior" = ${juniorName}: a ENTREVISTADORA do podcast — curiosa e simpatica, conduz a conversa e
-  faz as perguntas que um aluno faria, reagindo ao que ouve.
+Write the script of a PODCAST of roughly 5 MINUTES about the lesson below, in the format of a
+conversation between two NAMED characters. Write all spoken text in BRAZILIAN PORTUGUESE.
+- "senior" = ${seniorName}: experienced dev, who explains clearly, gives context and everyday examples.
+- "junior" = ${juniorName}: the podcast HOST — curious and friendly, leads the conversation and
+  asks the questions a student would ask, reacting to what she hears.
 
-A conversa deve ENSINAR o conteudo da aula de forma leve: ${juniorName} pergunta, ${seniorName}
-explica; as duvidas progridem do basico ao mais avancado, cobrindo os pontos principais da aula.
+The conversation should TEACH the lesson's content in a light way: ${juniorName} asks, ${seniorName}
+explains; the questions progress from basic to more advanced, covering the lesson's main points.
 
-Abertura (CRITICA): no comeco, os dois se APRESENTAM PELO NOME de forma natural.
-- ${juniorName} abre o episodio e se apresenta (ex.: "Oi pessoal, eu sou a ${juniorName} e hoje...").
-  Ela NAO deve dizer que e "iniciante" nem "junior" — ela e a entrevistadora/apresentadora.
-- ${seniorName} se apresenta como o convidado experiente (ex.: "E eu sou o ${seniorName}...").
+Opening (CRITICAL): at the start, both INTRODUCE THEMSELVES BY NAME naturally.
+- ${juniorName} opens the episode and introduces herself (e.g. "Oi pessoal, eu sou a ${juniorName} e hoje...").
+  She must NOT say she is a "beginner" or "junior" — she is the interviewer/host.
+- ${seniorName} introduces himself as the experienced guest (e.g. "E eu sou o ${seniorName}...").
 
-Regras de conteudo:
-- Baseie-se SO no que a transcricao ensina. NAO invente recursos, comandos ou fatos que nao
-  aparecem na aula.
-- Termine com um fechamento (resumo do que foi conversado / proximo passo), com ${juniorName}
-  encerrando o episodio.
-- Tom de conversa real: natural, com reacoes ("ah, entendi", "faz sentido"), sem ser robotico.
-- Use os nomes de vez em quando ao se dirigir um ao outro ("Boa pergunta, ${juniorName}").
-- Inclua 1 ou 2 momentos leves/bem-humorados (uma analogia divertida ou um comentario
-  descontraido sobre o tema), sem forcar e sem virar piada — so pra deixar a conversa humana.
+Content rules:
+- Base it ONLY on what the transcript teaches. Do NOT invent resources, commands or facts that do
+  not appear in the lesson.
+- End with a wrap-up (summary of what was discussed / next step), with ${juniorName} closing the episode.
+- Real-conversation tone: natural, with reactions ("ah, entendi", "faz sentido"), not robotic.
+- Use the names now and then when addressing each other ("Boa pergunta, ${juniorName}").
+- Include 1 or 2 light/humorous moments (a fun analogy or a relaxed comment about the topic),
+  without forcing it and without turning into a joke — just to keep the conversation human.
 
-Regras de formato (CRITICAS — cada turno vira audio de voz):
-- Texto FALAVEL: portugues por extenso. NADA de markdown, listas, codigo, fences, emojis,
-  URLs ou simbolos. Numeros e termos devem estar escritos como se fala.
-- SIGLAS: escreva como se falam. Se a sigla e lida letra a letra, soletre foneticamente
-  (ex.: "JWT" -> "jota-dablio-te", "SQL" -> "esse-que-ele", "API" -> "a-pe-i"); se e lida
-  como palavra, mantenha (ex.: "REST", "JSON", "JPA"). Na duvida, prefira soletrar.
-- Cada turno tem 1 a 4 frases. Alterne os falantes (nao dois turnos seguidos do mesmo).
-- Entre 18 e 30 turnos no total (pra dar ~5 minutos de audio).
+Format rules (CRITICAL — each turn becomes voice audio):
+- SPEAKABLE text: Portuguese spelled out in full. NO markdown, lists, code, fences, emojis,
+  URLs or symbols. Numbers and terms must be written as they are spoken.
+- ACRONYMS: write them as they are spoken. If the acronym is read letter by letter, spell it
+  phonetically (e.g. "JWT" -> "jota-dablio-te", "SQL" -> "esse-que-ele", "API" -> "a-pe-i"); if it
+  is read as a word, keep it (e.g. "REST", "JSON", "JPA"). When unsure, prefer spelling it out.
+- Each turn has 1 to 4 sentences. Alternate speakers (never two turns in a row from the same one).
+- Between 18 and 30 turns total (to give ~5 minutes of audio).
 
-Formato obrigatorio: JSON puro, SEM fences, SEM texto fora do JSON. Schema EXATO:
+Mandatory format: pure JSON, NO fences, NO text outside the JSON. EXACT schema:
 {
   "title": "titulo curto do episodio",
   "turns": [
@@ -450,19 +465,22 @@ Formato obrigatorio: JSON puro, SEM fences, SEM texto fora do JSON. Schema EXATO
     { "speaker": "senior", "text": "..." }
   ]
 }
-onde "speaker" e' exatamente "senior" (${seniorName}) ou "junior" (${juniorName}).
+where "speaker" is exactly "senior" (${seniorName}) or "junior" (${juniorName}).
 
-Titulo da aula: ${lessonTitle}
+Lesson title: ${lessonTitle}
 
-Transcricao:
+Transcript:
 ---
 ${trunc(transcript)}
 ---
 
-Retorne APENAS o JSON.`.trim();
+Return ONLY the JSON.`.trim();
 
 export const buildDiarioPrompt = ({ lessonTitle, transcript, weekLabel, instruction }) => `
-Gere um template de diario tecnico em Markdown pra aula abaixo. Use EXATAMENTE este formato, preenchendo APENAS a parte do "O que aprendi" com 3 a 5 bullets de sintese; os outros campos deixe em branco (o aluno preenche depois).${instructionBlock(instruction)}
+Generate a technical-journal template in Markdown for the lesson below. Use EXACTLY this format
+(it is in Portuguese — keep it), filling in ONLY the "O que aprendi" part with 3 to 5 synthesis
+bullets; leave the other fields blank (the student fills them later). Write the bullets in
+BRAZILIAN PORTUGUESE.${instructionBlock(instruction)}
 
 # Diario Tecnico - ${weekLabel || 'Semana atual'}
 > Video: ${lessonTitle}
@@ -487,29 +505,29 @@ Gere um template de diario tecnico em Markdown pra aula abaixo. Use EXATAMENTE e
 ## Notas livres
 
 
-Transcricao:
+Transcript:
 ---
 ${trunc(transcript)}
 ---
 
-Retorne APENAS o markdown, sem fences.`.trim();
+Return ONLY the markdown, with no fences.`.trim();
 
-// === Curso de leitura (gerado a partir de transcricoes de um curso em video) ===
-// Fase 1: a IA olha os titulos das aulas de um modulo e decide o agrupamento
-// (quais viram uma aula de leitura unica, quais ficam isoladas).
+// === Reading course (generated from a video course's transcripts) ===
+// Phase 1: the AI looks at the lesson titles of a module and decides the grouping
+// (which become a single reading lesson, which stay isolated).
 
 export const READING_PLAN_SYSTEM =
-  'Voce eh um designer instrucional. Recebe as aulas (transcricoes) de um modulo e as reorganiza ' +
-  'num curso de LEITURA coeso: combina aulas curtas relacionadas (tende a ~metade do total), mas ' +
-  'cada aula resultante cobre INTEGRALMENTE suas fontes (sem ficar rasa). Responda SEMPRE com ' +
-  'JSON puro, sem texto antes ou depois.';
+  'You are an instructional designer. You receive the lessons (transcripts) of a module and ' +
+  'reorganize them into a cohesive READING course: combine related short lessons (tend toward ' +
+  '~half the total), but each resulting lesson covers ITS SOURCES IN FULL (never shallow). ' +
+  'ALWAYS reply with pure JSON, no text before or after. Titles must be in Brazilian Portuguese.';
 
 // lessons: [{ id: number, title: string, bytes?: number }]
-// bytes = tamanho da transcricao (proxy de densidade/duracao da aula).
+// bytes = transcript size (proxy for the lesson's density/duration).
 export const buildReadingPlanPrompt = ({ moduleTitle, lessons }) => {
   const hasSize = lessons.some((l) => (l.bytes || 0) > 0);
-  // Classifica o tamanho relativo de cada aula em curto/medio/longo (terços),
-  // pra IA equilibrar a MASSA dos grupos, nao so a contagem de aulas.
+  // Classify each lesson's relative size as short/medium/long (thirds), so the
+  // AI balances the MASS of the groups, not just the lesson count.
   let sizeTag = () => '';
   if (hasSize) {
     const sorted = [...lessons].map((l) => l.bytes || 0).sort((a, b) => a - b);
@@ -517,265 +535,296 @@ export const buildReadingPlanPrompt = ({ moduleTitle, lessons }) => {
     const q2 = sorted[Math.floor((2 * sorted.length) / 3)] || 0;
     sizeTag = (b) => {
       const n = b || 0;
-      if (n <= q1) return ' (curta)';
-      if (n <= q2) return ' (media)';
-      return ' (LONGA)';
+      if (n <= q1) return ' (short)';
+      if (n <= q2) return ' (medium)';
+      return ' (LONG)';
     };
   }
   return `
-Modulo: ${moduleTitle}
+Module: ${moduleTitle}
 
-Abaixo a lista de aulas em video deste modulo (na ordem original). Planeje um curso de LEITURA
-COESO: combine aulas curtas RELACIONADAS (mesmo tema) em aulas de leitura maiores, sem perder
-conteudo. Busque o EQUILIBRIO — nem 1 aula gigante e rasa, nem 1-pra-1.
+Below is the list of video lessons in this module (in their original order). Plan a COHESIVE
+READING course: combine RELATED short lessons (same topic) into larger reading lessons, without
+losing content. Aim for BALANCE — neither 1 giant shallow lesson, nor 1-to-1.
 
-Meta: um modulo com varias aulas curtas costuma virar ~METADE (ex.: 5 aulas -> 2 ou 3 aulas de
-leitura). Cada aula de leitura normalmente reune 2 a 3 aulas originais relacionadas.
+Goal: a module with several short lessons usually becomes ~HALF (e.g. 5 lessons -> 2 or 3 reading
+lessons). Each reading lesson typically gathers 2 to 4 related original lessons.
 ${hasSize ? `
-DENSIDADE (importante): cada aula vem marcada como (curta), (media) ou (LONGA) pelo tamanho da
-transcricao. Equilibre a MASSA dos grupos, nao so a contagem: uma aula (LONGA) sozinha ja pode
-virar uma aula de leitura; varias (curtas) relacionadas se juntam numa so. Evite um grupo
-massivo (varias LONGAS juntas) ou um grupo raquitico.
+DENSITY (important): each lesson is tagged (short), (medium) or (LONG) by transcript size.
+Balance the MASS of the groups, not just the count: one (LONG) lesson alone can already become a
+reading lesson; several related (short) ones merge into one. Avoid a massive group (several LONGs
+together) or a stunted one.
 ` : ''}
-REGRA DE OURO (cobertura): a aula de leitura resultante precisa COBRIR INTEGRALMENTE tudo o que
-as aulas-fonte ensinam — nada raso, nada cortado. Se juntar muita coisa deixaria o texto
-superficial, agrupe MENOS (divida em mais aulas).
+GOLDEN RULE (coverage): the resulting reading lesson must COVER IN FULL everything its source
+lessons teach — nothing shallow, nothing cut. If merging too much would make the text
+superficial, group LESS (split into more lessons).
 
-Agrupe por afinidade de tema:
-- "Parte 1/2/N" e explicacao+resolucao+desafio do MESMO exercicio: sempre juntos.
-- Aulas vizinhas do mesmo assunto (ex.: contexto/introducao do tema + primeiros passos + detalhes).
-- Uma aula curta de "visao geral/por que" com a primeira aula pratica do mesmo tema.
+Group by topic affinity:
+- "Parte 1/2/N" and explanation+solution+challenge of the SAME exercise: always together.
+- Neighboring lessons on the same subject (e.g. context/intro of the topic + first steps + details).
+- A short "overview/why" lesson with the first practical lesson of the same topic.
 
-Mantenha separado quando forem temas claramente distintos e densos o bastante pra aula propria.
-Nao force juntar assuntos sem relacao so pra reduzir o numero.
+Keep them separate when they are clearly distinct topics and dense enough for their own lesson.
+Do not force unrelated subjects together just to reduce the count.
 
-Regras:
-- Cobrir TODAS as aulas. Cada id deve aparecer em EXATAMENTE um grupo.
-- Evite grupos com mais de ~4 aulas (a nao ser "Parte 1..N" do mesmo tema).
-- Preservar a ordem logica de aprendizado.
-- Titulos claros e diretos, SEM numero no inicio (nada de "1." ou "01").
+Rules:
+- Cover ALL lessons. Each id must appear in EXACTLY one group.
+- Avoid groups with more than ~5 lessons (unless they are "Parte 1..N" of the same topic).
+- Preserve the logical learning order.
+- Clear, direct titles in Brazilian Portuguese, WITHOUT a number at the start (no "1." or "01").
 
-Aulas:
+Lessons:
 ${lessons.map((l) => `- [${l.id}] ${l.title}${sizeTag(l.bytes)}`).join('\n')}
 
-Responda APENAS com JSON puro neste schema EXATO:
+Reply ONLY with pure JSON in this EXACT schema:
 {
   "lessons": [
     { "title": "Titulo da aula de leitura", "sources": [0, 1] }
   ]
 }
-onde "sources" sao os ids (os numeros entre colchetes) das aulas originais que compoem
-aquela aula de leitura.`.trim();
+where "sources" are the ids (the numbers in brackets) of the original lessons that make up
+that reading lesson.`.trim();
 };
 
-// Fase 2: condensa a(s) transcricao(oes) de uma aula planejada num texto de leitura
-// limpo e completo. Esse texto vira o .txt do curso de leitura, que depois alimenta
-// o pipeline normal (resumo/exemplos/quiz/flashcards).
+// Phase 2: condense a planned lesson's transcript(s) into a clean, complete reading
+// text. That text becomes the reading course's .txt, which later feeds the normal
+// pipeline (resumo/exemplos/quiz/flashcards).
 export const READING_CONDENSE_SYSTEM =
-  'Voce eh um professor que escreve AULAS DE LEITURA completas e didaticas em portugues do ' +
-  'Brasil, a partir de transcricoes de aulas em video (verbosas e repetitivas). O aluno vai ' +
-  'APRENDER o assunto lendo o seu texto — melhor e mais direto do que assistindo. Escreva em ' +
-  'Markdown, com contexto, exemplos e armadilhas. Sem saudacoes, sem "manda nos comentarios".';
+  'You are a teacher who writes complete, didactic READING LESSONS in BRAZILIAN PORTUGUESE, ' +
+  'from (verbose and repetitive) video lesson transcripts. The student will LEARN the subject ' +
+  'by reading your text — better and more directly than by watching. Write in Markdown, with ' +
+  'context, examples and pitfalls. No greetings, no "leave it in the comments".';
 
-// `instruction` (opcional): pedido extra do usuario (ex.: "modernize pra Spring
-// Boot 4.x e Java 25"). Tem prioridade sobre a regra de fidelidade — pode
-// transformar/atualizar o conteudo quando pedido.
+// `instruction` (optional): extra user request (e.g. "modernize to Spring Boot
+// 4.x and Java 25"). It has priority over the fidelity rule — it may
+// transform/update the content when asked.
 export const buildReadingCondensePrompt = ({ lessonTitle, transcript, instruction, sourceLanguage = 'pt' }) => `
-Escreva uma AULA DE LEITURA completa e didatica, em Markdown, sobre: "${lessonTitle}".${
+Write a complete, didactic READING LESSON, in Markdown, about: "${lessonTitle}". The lesson text
+must be in BRAZILIAN PORTUGUESE.${
   sourceLanguage === 'en'
     ? `
 
-ATENCAO — A TRANSCRICAO ABAIXO ESTA EM INGLES. Escreva a aula INTEIRA em PORTUGUES DO BRASIL
-(traduza o conteudo), mas PRESERVE os termos tecnicos em ingles quando forem o jargao usual
-da area (ex.: "dependency injection", "endpoint", "thread", "deploy", nomes de classes,
-metodos, anotacoes e bibliotecas). Nao traduza nomes de codigo. O codigo e os identificadores
-permanecem como estao; so o texto explicativo vai pra portugues.`
+ATTENTION — THE TRANSCRIPT BELOW IS IN ENGLISH. Write the ENTIRE lesson in BRAZILIAN PORTUGUESE
+(translate the content), but PRESERVE technical terms in English when they are the usual jargon
+of the field (e.g. "dependency injection", "endpoint", "thread", "deploy", class names, methods,
+annotations and library names). Do not translate code names. The code and identifiers stay as they
+are; only the explanatory text goes to Portuguese.`
     : ''
 }${
   instruction
     ? `
 
-INSTRUCAO ADICIONAL DO USUARIO (PRIORIDADE MAXIMA — quando conflitar, vale mais que a regra
-de fidelidade abaixo):
+ADDITIONAL USER INSTRUCTION (TOP PRIORITY — when it conflicts, it outweighs the fidelity rule below):
 """
 ${instruction}
 """
-Aplique isso ao gerar a aula. Se a instrucao pedir para atualizar/modernizar o conteudo
-(ex.: versoes mais novas de uma lib/linguagem, outros padroes/sintaxe), VOCE PODE e DEVE
-adaptar — inclusive reescrever os exemplos de codigo no padrao pedido — mesmo que a
-transcricao use uma versao antiga. Mantenha a materia/conceitos da aula; so atualize a forma.`
+Apply this when generating the lesson. If the instruction asks to update/modernize the content
+(e.g. newer versions of a lib/language, other patterns/syntax), YOU CAN and SHOULD adapt — including
+rewriting the code examples to the requested standard — even if the transcript uses an old version.
+Keep the lesson's subject matter/concepts; only update the form.`
     : ''
 }
-A base eh a(s) transcricao(oes) de video abaixo (verbosa e repetitiva). Transforme-a num
-texto que ENSINA por escrito — nao um resumo de topicos seco, e sim uma aula bem explicada.
+The base is the video transcript(s) below (verbose and repetitive). Turn it into a text that
+TEACHES in writing — not a dry topic summary, but a well-explained lesson.
 
-Estrutura recomendada (adapte ao conteudo, nao force secoes que nao fazem sentido):
-- Um titulo \`#\` e, logo abaixo, 1 paragrafo curto de CONTEXTO ("por que isso importa" /
-  pra que serve na pratica).
-- Logo apos o contexto, QUANDO o tema tiver estrutura visual, inclua UMA OU MAIS secoes com
-  diagrama \`\`\`mermaid. ESCOLHA o(s) tipo(s) certo(s) conforme o conteudo (nao force sempre mapa mental):
-  - CLASSES / MODELO DE DOMINIO (DDD): a aula mostra classes/entidades com atributos e relacoes
-    (ex.: entidades JPA, agregados DDD, diagrama de classes UML) -> titulo "## Diagrama de
-    classes", formato classDiagram (classes com atributos e tipo de relacao).
-  - ARQUITETURA / COMPONENTES / FLUXO: camadas (Controller/Service/Repository), componentes,
-    microsservicos, ou fluxo/processo/sequencia -> titulo "## Arquitetura" ou "## Fluxo",
-    formato flowchart.
-  - HIERARQUIA de conceitos/categorias/partes de um todo -> titulo "## Mapa mental", formato mindmap.
-  Se a aula tiver TANTO um modelo de dominio (classes com atributos) QUANTO um fluxo/processo,
-  inclua OS DOIS (um classDiagram E um flowchart) — voce decide o que cabe. NUNCA troque um
-  diagrama de classes por um fluxograma: o classDiagram mostra os ATRIBUTOS, o flowchart nao.
-  Use mapa mental quando o conteudo for um panorama de conceitos. Se o assunto for puramente
-  textual e um diagrama nao agregar, OMITA.
-- Secoes \`##\` desenvolvendo o conteudo na ordem logica de aprendizado, explicando o
-  CONCEITO e o PORQUE, nao so a sintaxe.
-- Exemplos de codigo em blocos \`\`\` com a linguagem correta, comentados quando ajudar.
-- Se houver um FLUXO/PROCESSO/sequencia ou relacoes a mostrar, use um bloco \`\`\`mermaid (diagrama),
-  veja as regras abaixo.
-- Quando fizer sentido: uma secao de "Quando usar / cuidados" e/ou tabelas comparativas.
-- Destaque **armadilhas** e **boas praticas** que aparecerem na transcricao.
-- Termine com "## Resumo rapido" — 4 a 7 bullets com o que o aluno deve levar.
+Recommended structure (adapt to the content, do not force sections that make no sense):
+- A \`#\` title and, right below, 1 short CONTEXT paragraph ("why this matters" / what it is for
+  in practice).
+- Right after the context, WHEN the topic has visual structure, include ONE OR MORE sections with
+  a \`\`\`mermaid diagram. CHOOSE the right type(s) for the content (do not always force a mind map):
+  - CLASSES / DOMAIN MODEL (DDD): the lesson shows classes/entities with attributes and relations
+    (e.g. JPA entities, DDD aggregates, UML class diagram) -> title "## Diagrama de classes",
+    classDiagram format (classes with attributes and relation type).
+  - ARCHITECTURE / COMPONENTS / FLOW: layers (Controller/Service/Repository), components,
+    microservices, or flow/process/sequence -> title "## Arquitetura" or "## Fluxo", flowchart format.
+  - HIERARCHY of concepts/categories/parts of a whole -> title "## Mapa mental", mindmap format.
+  If the lesson has BOTH a domain model (classes with attributes) AND a flow/process, include BOTH
+  (a classDiagram AND a flowchart) — you decide what fits. NEVER swap a class diagram for a
+  flowchart: the classDiagram shows the ATTRIBUTES, the flowchart does not.
+  Use a mind map when the content is an overview of concepts. If the subject is purely textual and
+  a diagram adds nothing, OMIT it.
+- \`##\` sections developing the content in logical learning order, explaining the CONCEPT and the
+  WHY, not just the syntax.
+- Code examples in \`\`\` blocks with the correct language, commented when it helps.
+- If there is a FLOW/PROCESS/sequence or relations to show, use a \`\`\`mermaid block (diagram),
+  see the rules below.
+- When it makes sense: a "Quando usar / cuidados" section and/or comparison tables.
+- Highlight **armadilhas** and **boas praticas** that appear in the transcript.
+- End with "## Resumo rapido" — 4 to 7 bullets with what the student should take away.
 
-DIAGRAMAS — REGRA ABSOLUTA:
-- TODO diagrama (mapa mental, fluxo, processo, hierarquia, relacoes) DEVE usar um bloco
-  \`\`\`mermaid. E PROIBIDO PlantUML, arte ASCII ou "descricao aproximada de diagrama".
-- Nos fluxogramas, COLE SEMPRE o bloco classDef padrao e marque cada no com :::tipo (cores por tipo).
-- MAPA MENTAL (hierarquia de conceitos) -> use mindmap:
+DIAGRAMS — ABSOLUTE RULE:
+- EVERY diagram (mind map, flow, process, hierarchy, relations) MUST use a \`\`\`mermaid block.
+  PlantUML, ASCII art or "approximate diagram description" are FORBIDDEN.
+- In flowcharts, ALWAYS paste the default classDef block and tag each node with :::type (per-type colors).
+- MIND MAP (concept hierarchy) -> use mindmap:
 ${MERMAID_MINDMAP_RULES}
-- FLUXO / PROCESSO / DFD / ARQUITETURA / COMPONENTES -> use flowchart:
+- FLOW / PROCESS / DFD / ARCHITECTURE / COMPONENTS -> use flowchart:
 ${MERMAID_FLOW_RULES}
-- DIAGRAMA DE CLASSES / MODELO DE DOMINIO (DDD, entidades com atributos) -> use classDiagram:
+- CLASS DIAGRAM / DOMAIN MODEL (DDD, entities with attributes) -> use classDiagram:
 ${MERMAID_CLASSES_RULES}
-- Os rotulos refletem SO o que a aula mostrou (nao invente conceitos).
+- The labels reflect ONLY what the lesson showed (do not invent concepts).
 
-REGRA DE FIDELIDADE (a mais importante):
-- Seu papel eh EXPLICAR MELHOR o que esta na transcricao — NAO ampliar o conteudo.
-- NAO acrescente comandos, funcoes, recursos, sintaxes, parametros ou exemplos de codigo
-  que NAO aparecem na transcricao. Se a aula nao mencionou, NAO entra (mesmo que voce saiba
-  que existe e seja relevante).
-- Os blocos de codigo devem refletir o que foi mostrado na aula, nao versoes "melhoradas".
-- O contexto/introducao pode situar o assunto em palavras gerais, mas sem afirmar fatos
-  tecnicos novos.
-- Na duvida sobre se algo estava na aula: NAO inclua.
+FIDELITY RULE (the most important):
+- Your job is to EXPLAIN BETTER what is in the transcript — NOT to expand the content.
+- Do NOT add commands, functions, resources, syntax, parameters or code examples that do NOT
+  appear in the transcript. If the lesson did not mention it, it does NOT go in (even if you know
+  it exists and is relevant).
+- Code blocks must reflect what was shown in the lesson, not "improved" versions.
+- The context/intro may situate the subject in general words, but without asserting new technical facts.
+- When in doubt whether something was in the lesson: do NOT include it.
 
-Outras regras:
-- Mantenha TODO o conteudo tecnico que ESTA na transcricao (nada de cortar materia). Corte
-  so a verbosidade da fala (repeticoes, saudacoes, enrolacao).
-- Use **negrito** para termos tecnicos. NAO cite timestamps nem o nome do instrutor.
-- Tom didatico, direto e claro, como um bom material de curso.
+Other rules:
+- Keep ALL technical content that IS in the transcript (do not cut subject matter). Cut only the
+  speech verbosity (repetitions, greetings, padding).
+- Use **bold** for technical terms. Do NOT cite timestamps nor the instructor's name.
+- Didactic, direct, clear tone, like good course material.
 
-Transcricao(oes) original(is):
+Original transcript(s):
 ---
 ${trunc(transcript, 28000)}
 ---
 
-Retorne APENAS a aula em Markdown, sem fences externas e sem comentarios sobre a tarefa.`.trim();
+Return ONLY the lesson in Markdown, with no outer fences and no commentary about the task.`.trim();
 
-// === Atualizar leitura existente (sem recondensar) ===
-// Usado pelo "Gerar IA": pega a leitura JA escrita e so atualiza diagramas
-// (padrao ```mermaid com classDef) + aplica a instrucao do usuario. NAO recondensa
-// nem corta conteudo (isso e papel do "Gerar curso de leitura").
+// === Update an existing reading lesson (without re-condensing) ===
+// Used by "Gerar IA": takes the ALREADY-written reading lesson and only updates
+// diagrams (```mermaid with classDef) + applies the user's instruction. It does
+// NOT re-condense nor cut content (that is the job of "Gerar curso de leitura").
 export const UPDATE_READING_SYSTEM =
-  'Voce atualiza aulas de leitura JA escritas: preserva integralmente o texto e a explicacao, ' +
-  'so moderniza/converte os diagramas para o formato pedido e aplica o que o usuario pedir. ' +
-  'NUNCA recondensa, resume ou corta conteudo. Responda em Markdown.';
+  'You update ALREADY-written reading lessons: you preserve the text and explanation in full, ' +
+  'only modernize/convert the diagrams to the requested format and apply what the user asks. ' +
+  'You NEVER re-condense, summarize or cut content. Reply in Markdown (in Brazilian Portuguese).';
 
 export const buildUpdateReadingPrompt = ({ lessonTitle, transcript, instruction }) => `
-Abaixo esta uma AULA DE LEITURA ja escrita em Markdown sobre "${lessonTitle}". NAO reescreva,
-NAO condense e NAO corte conteudo — PRESERVE todo o texto e a explicacao como estao.
+Below is a READING LESSON already written in Markdown about "${lessonTitle}". Do NOT rewrite,
+do NOT condense and do NOT cut content — PRESERVE all the text and explanation as they are. Keep
+it in Brazilian Portuguese.
 
-Sua tarefa e APENAS atualizar:
-- Converta QUALQUER diagrama existente (bloco \`\`\`flow JSON antigo, arte ASCII, ou descricao
-  textual de um diagrama/fluxo/mapa) para o novo padrao \`\`\`mermaid (com o classDef de cores)
-  descrito abaixo, PRESERVANDO O TIPO do diagrama: diagrama de CLASSES / modelo de dominio
-  (classes com atributos) -> classDiagram (NUNCA vire flowchart e NUNCA perca os atributos);
-  fluxo/processo/arquitetura -> flowchart; hierarquia de conceitos -> mindmap.
-- Se a aula tiver TANTO um modelo de dominio (classes) QUANTO um fluxo/processo, pode haver OS
-  DOIS diagramas (classDiagram E flowchart) — voce decide o que cabe, mas nunca abra mao do
-  diagrama de classes quando a aula tem entidades com atributos.
-- Se o tema tiver estrutura visual (hierarquia de conceitos/categorias) e NAO houver uma secao
-  "## Mapa mental", adicione UMA logo apos o paragrafo de contexto, com um bloco \`\`\`mermaid.
-${instruction && instruction.trim() ? `- Aplique tambem esta instrucao do usuario: ${instruction.trim()}\n` : ''}Mantenha o restante IDENTICO. Retorne a aula COMPLETA em Markdown.
+Your task is ONLY to update:
+- Convert ANY existing diagram (old \`\`\`flow JSON block, ASCII art, or a textual description of a
+  diagram/flow/map) to the new \`\`\`mermaid standard (with the color classDef) described below,
+  PRESERVING THE TYPE of the diagram: CLASS diagram / domain model (classes with attributes) ->
+  classDiagram (NEVER turn it into a flowchart and NEVER lose the attributes); flow/process/
+  architecture -> flowchart; concept hierarchy -> mindmap.
+- If the lesson has BOTH a domain model (classes) AND a flow/process, there may be BOTH diagrams
+  (classDiagram AND flowchart) — you decide what fits, but never give up the class diagram when the
+  lesson has entities with attributes.
+- If the topic has visual structure (hierarchy of concepts/categories) and there is NO "## Mapa
+  mental" section, add ONE right after the context paragraph, with a \`\`\`mermaid block.
+${instruction && instruction.trim() ? `- Also apply this user instruction: ${instruction.trim()}\n` : ''}Keep the rest IDENTICAL. Return the COMPLETE lesson in Markdown.
 
-Para MAPA MENTAL (hierarquia de conceitos) use:
+For a MIND MAP (concept hierarchy) use:
 ${MERMAID_MINDMAP_RULES}
 
-Para FLUXOGRAMA/DIAGRAMA de processo use:
+For a FLOWCHART/process diagram use:
 ${MERMAID_FLOW_RULES}
 
-Para DIAGRAMA DE CLASSES / modelo de dominio (DDD, entidades com atributos) use:
+For a CLASS DIAGRAM / domain model (DDD, entities with attributes) use:
 ${MERMAID_CLASSES_RULES}
 
-Aula de leitura atual:
+Current reading lesson:
 ---
 ${trunc(transcript, 28000)}
 ---
-Retorne APENAS o Markdown da aula completa, sem fences externas e sem comentarios sobre a tarefa.`.trim();
+Return ONLY the Markdown of the complete lesson, with no outer fences and no commentary about the task.`.trim();
 
-// === Modo Entrevista de Emprego (por modulo) ===
-// Fase 1: gera 5 perguntas tecnicas progressivas a partir do conteudo do modulo.
-// JSON puro. Fase 2: avalia as respostas do aluno e da nota + feedback.
+// === Regenerar UM diagrama (botao "Regenerar" no viewer) ===
+// Conserta/melhora um unico bloco Mermaid sem mexer no resto da aula — barato
+// (poucos tokens) vs. regenerar a leitura inteira.
+export const FIX_DIAGRAM_SYSTEM =
+  'You fix broken or low-quality Mermaid diagrams. You return a SINGLE valid ```mermaid block, ' +
+  'preserving the diagram TYPE, its nodes/relations and the Brazilian Portuguese labels. ' +
+  'No commentary, no extra text.';
+
+export const buildFixDiagramPrompt = ({ lessonTitle, diagram, instruction }) => `
+The Mermaid diagram below (from the reading lesson "${lessonTitle}") is BROKEN or low quality and
+must be FIXED so it renders. Return ONE corrected \`\`\`mermaid block — SAME meaning, same nodes
+and relations (KEEP the Portuguese labels), only fix the syntax/structure to follow the rules.
+Do NOT change the diagram TYPE (flowchart stays flowchart, classDiagram stays classDiagram,
+mindmap stays mindmap).${
+  instruction && instruction.trim() ? `\nAlso apply this user request: ${instruction.trim()}` : ''
+}
+
+If it is a FLOWCHART / process / architecture diagram:
+${MERMAID_FLOW_RULES}
+
+If it is a CLASS diagram / domain model:
+${MERMAID_CLASSES_RULES}
+
+If it is a MIND MAP:
+${MERMAID_MINDMAP_RULES}
+
+Broken diagram:
+\`\`\`
+${diagram}
+\`\`\`
+
+Return ONLY the corrected \`\`\`mermaid block, nothing else.`.trim();
+
+// === Job Interview Mode (per module) ===
+// Phase 1: generate 5 progressive technical questions from the module content.
+// Pure JSON. Phase 2: evaluate the student's answers and give a score + feedback.
 
 export const INTERVIEW_QUESTIONS_SYSTEM =
-  'Voce eh um recrutador tecnico (tech lead) conduzindo uma entrevista de emprego sobre o ' +
-  'tema de um modulo de curso. Gera perguntas abertas, como numa entrevista real. Escreva ' +
-  'SEMPRE em portugues do Brasil. Responda SEMPRE com JSON puro, sem texto antes ou depois.';
+  'You are a technical recruiter (tech lead) conducting a job interview about the topic of a ' +
+  'course module. You generate open questions, like in a real interview. ALWAYS write in ' +
+  'BRAZILIAN PORTUGUESE. ALWAYS reply with pure JSON, no text before or after.';
 
 export const buildInterviewQuestionsPrompt = ({ moduleTitle, content }) => `
-Voce vai entrevistar um candidato sobre o tema do modulo abaixo. Gere EXATAMENTE 5 perguntas
-tecnicas ABERTAS (dissertativas, nao de multipla escolha), como um recrutador faria.
+You will interview a candidate about the topic of the module below. Generate EXACTLY 5 OPEN
+technical questions (essay-style, not multiple choice), as a recruiter would.
 
-Regras:
-- ESCREVA TUDO EM PORTUGUES DO BRASIL (as perguntas E os "topic"). Termos tecnicos consagrados
-  podem ficar no original (ex.: "Bean", "IoC", "Spring Boot"), mas a frase da pergunta e o
-  rotulo do topic devem estar em portugues. NUNCA escreva a pergunta inteira em ingles.
-- Progressivas: comece mais basica e vá aprofundando (a 5ª deve exigir dominio real).
-- Baseadas SO no conteudo do modulo (nao cobre coisas que o modulo nao ensinou).
-- Cada pergunta foca UM conceito-chave; clara e direta, sem ambiguidade.
-- Tom de entrevista ("Me explique...", "Qual a diferenca entre...", "Como voce faria...").
-- "topic": 2-4 palavras em portugues nomeando o conceito avaliado (ex.: "Escopos de Bean", "Injecao de dependencias").
+Rules:
+- WRITE EVERYTHING IN BRAZILIAN PORTUGUESE (the questions AND the "topic"). Well-established
+  technical terms may stay in the original (e.g. "Bean", "IoC", "Spring Boot"), but the question
+  sentence and the topic label must be in Portuguese. NEVER write the whole question in English.
+- Progressive: start more basic and go deeper (the 5th must require real mastery).
+- Based ONLY on the module content (do not cover things the module did not teach).
+- Each question focuses on ONE key concept; clear and direct, no ambiguity.
+- Interview tone ("Me explique...", "Qual a diferenca entre...", "Como voce faria...").
+- "topic": 2-4 words in Portuguese naming the assessed concept (e.g. "Escopos de Bean", "Injecao de dependencias").
 
-Formato obrigatorio: JSON puro, SEM fences, SEM texto fora do JSON. Schema EXATO:
+Mandatory format: pure JSON, NO fences, NO text outside the JSON. EXACT schema:
 {
   "questions": [
     { "question": "string", "topic": "string" }
   ]
 }
 
-Modulo: ${moduleTitle}
+Module: ${moduleTitle}
 
-Conteudo do modulo (transcricoes das aulas):
+Module content (lesson transcripts):
 ---
 ${trunc(content)}
 ---
 
-Retorne APENAS o JSON.`.trim();
+Return ONLY the JSON.`.trim();
 
 export const INTERVIEW_EVAL_SYSTEM =
-  'Voce eh um recrutador tecnico avaliando as respostas de um candidato numa entrevista. ' +
-  'Seja justo, especifico e construtivo. Escreva SEMPRE em portugues do Brasil. Responda ' +
-  'SEMPRE com JSON puro, sem texto antes ou depois.';
+  'You are a technical recruiter evaluating a candidate\'s answers in an interview. ' +
+  'Be fair, specific and constructive. ALWAYS write in BRAZILIAN PORTUGUESE. ALWAYS reply ' +
+  'with pure JSON, no text before or after.';
 
 // qa: [{ question, topic, answer }]
 export const buildInterviewEvalPrompt = ({ moduleTitle, qa }) => `
-Avalie as respostas do candidato na entrevista sobre "${moduleTitle}". Para CADA pergunta, de
-uma nota de 0 a 10 e um feedback curto e especifico: diga o que ficou bom e o que faltou ou
-poderia melhorar (cite o conceito, como no exemplo: "Sua resposta sobre Bean Scopes foi boa,
-mas voce esqueceu de mencionar o escopo de Request").
+Evaluate the candidate's answers in the interview about "${moduleTitle}". For EACH question, give
+a score from 0 to 10 and short, specific feedback: say what was good and what was missing or could
+improve (cite the concept, as in the example: "Sua resposta sobre Bean Scopes foi boa, mas voce
+esqueceu de mencionar o escopo de Request"). Write the feedback in BRAZILIAN PORTUGUESE.
 
-Regras:
-- Seja justo com o nivel: respostas vazias ou "nao sei" recebem nota baixa e feedback dizendo o
-  que era esperado.
-- Feedback de 1 a 3 frases por pergunta, direto e util pro aluno estudar.
-- "overall_comment": 2-4 frases com a avaliacao geral e o que priorizar nos estudos.
-- A nota geral ("overall_score", 0 a 10) reflete o conjunto (pode ser a media arredondada).
+Rules:
+- Be fair to the level: empty answers or "nao sei" get a low score and feedback saying what was expected.
+- Feedback of 1 to 3 sentences per question, direct and useful for the student to study.
+- "overall_comment": 2-4 sentences with the overall assessment and what to prioritize when studying.
+- The overall score ("overall_score", 0 to 10) reflects the whole (it may be the rounded average).
 
-Perguntas e respostas:
+Questions and answers:
 ${qa.map((x, i) => `
 [${i + 1}] Tema: ${x.topic || '-'}
 Pergunta: ${x.question}
 Resposta do candidato: ${x.answer && x.answer.trim() ? x.answer : '(em branco)'}`).join('\n')}
 
-Formato obrigatorio: JSON puro, SEM fences, SEM texto fora do JSON. Schema EXATO:
+Mandatory format: pure JSON, NO fences, NO text outside the JSON. EXACT schema:
 {
   "per_question": [
     { "score": 7, "comment": "string" }
@@ -783,6 +832,6 @@ Formato obrigatorio: JSON puro, SEM fences, SEM texto fora do JSON. Schema EXATO
   "overall_score": 7,
   "overall_comment": "string"
 }
-onde per_question tem UM item por pergunta, na MESMA ordem.
+where per_question has ONE item per question, in the SAME order.
 
-Retorne APENAS o JSON.`.trim();
+Return ONLY the JSON.`.trim();

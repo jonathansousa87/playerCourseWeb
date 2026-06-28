@@ -1,12 +1,13 @@
 import express from 'express';
 import { query } from '../../db/index.js';
 import { generateForLesson } from '../ai/generator.js';
-import { generateReadingModule } from '../ai/readingCourse.js';
+import { generateReadingModule, generateReadingBatch } from '../ai/readingCourse.js';
+import { regenerateLessonDiagram } from '../ai/diagram.js';
 import { generatePodcastForLesson, generatePodcastScript, synthesizePodcast } from '../ai/podcast.js';
 import { generateInterviewQuestions, evaluateInterview } from '../ai/interview.js';
 import { chatWithLesson } from '../ai/chat.js';
 import { generatePrequestionsForLesson } from '../ai/prequestions.js';
-import { DEFAULT_MODEL as DEEPSEEK_DEFAULT_MODEL } from '../ai/deepseek.js';
+import { DEFAULT_MODEL as DEEPSEEK_DEFAULT_MODEL, costFromUsage } from '../ai/deepseek.js';
 import { getCoursesPath } from '../config.js';
 
 const router = express.Router();
@@ -59,7 +60,10 @@ router.post('/api/ia/generate', async (req, res) => {
       model: model || DEEPSEEK_DEFAULT_MODEL,
       instruction: typeof instruction === 'string' ? instruction.trim() : '',
     });
-    res.json(out);
+    // Custo DeepSeek (USD) desta geracao de materiais.
+    const usedModel = model || DEEPSEEK_DEFAULT_MODEL;
+    const cost = (out.results || []).reduce((s, r) => s + (r.ok ? costFromUsage(r.usage, usedModel) : 0), 0);
+    res.json({ ...out, cost });
   } catch (err) {
     const code =
       err.code === 'NO_TRANSCRIPT' || err.code === 'NO_LESSON_DIR'
@@ -74,7 +78,7 @@ router.post('/api/ia/generate', async (req, res) => {
 // Gera o curso de leitura de UM modulo (a IA agrupa as aulas e condensa as
 // transcricoes em .txt). So funciona em modo filesystem (escreve em disco).
 router.post('/api/ia/reading-course/module', async (req, res) => {
-  const { courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, stream } = req.body || {};
+  const { courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, preCondense, stream } = req.body || {};
   if (!courseTitle || !modulePath) {
     return res.status(400).json({ error: 'courseTitle e modulePath obrigatorios' });
   }
@@ -91,6 +95,8 @@ router.post('/api/ia/reading-course/module', async (req, res) => {
     instruction: typeof instruction === 'string' ? instruction.trim() : '',
     autoTranscribe: autoTranscribe !== false,
     language: language === 'en' ? 'en' : 'pt',
+    // undefined => cai no flag global do .env; boolean => override por execucao.
+    preCondense: typeof preCondense === 'boolean' ? preCondense : undefined,
   };
 
   // Modo streaming (NDJSON): emite eventos de progresso por aula (mostra o
@@ -114,6 +120,71 @@ router.post('/api/ia/reading-course/module', async (req, res) => {
     res.json(out);
   } catch (err) {
     res.status(500).json({ error: err.message, code: err.code });
+  }
+});
+
+// Gera leitura EM LOTE com revezamento de VRAM entre WhisperX e Qwen:
+// fase 1 transcreve tudo, fase 2 condensa tudo (Qwen sobe 1x e cai), fase 3
+// DeepSeek roda em tudo. Sempre streaming (NDJSON) — o processo e longo.
+router.post('/api/ia/reading-course/batch', async (req, res) => {
+  const { jobs, model, instruction, autoTranscribe, language, preCondense } = req.body || {};
+  if (!Array.isArray(jobs) || jobs.length === 0) {
+    return res.status(400).json({ error: 'jobs (array) obrigatorio' });
+  }
+  if (!process.env.DEEPSEEK_API_KEY) {
+    return res.status(500).json({ error: 'DEEPSEEK_API_KEY nao configurada no .env' });
+  }
+  const args = {
+    coursesPath: getCoursesPath(),
+    jobs: jobs.map((j) => ({
+      courseTitle: j.courseTitle,
+      modulePath: j.modulePath,
+      moduleTitle: j.moduleTitle || j.modulePath,
+      index: Number(j.index) || 1,
+    })),
+    model: model || DEEPSEEK_DEFAULT_MODEL,
+    instruction: typeof instruction === 'string' ? instruction.trim() : '',
+    autoTranscribe: autoTranscribe !== false,
+    language: language === 'en' ? 'en' : 'pt',
+    preCondense: typeof preCondense === 'boolean' ? preCondense : undefined,
+  };
+
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  const send = (ev) => { try { res.write(JSON.stringify(ev) + '\n'); } catch { /* cliente fechou */ } };
+  try {
+    const results = await generateReadingBatch({ ...args, onProgress: send });
+    send({ type: 'fim', results });
+  } catch (err) {
+    send({ type: 'erro', error: err.message, code: err.code });
+  }
+  res.end();
+});
+
+// Regenera UM diagrama Mermaid da aula (botao no viewer) — sem recondensar a
+// aula toda, pra gastar poucos tokens.
+router.post('/api/ia/regenerate-diagram', async (req, res) => {
+  try {
+    const { courseTitle, lessonPrefix, kind, chart, model, instruction } = req.body || {};
+    if (!courseTitle || !lessonPrefix || !chart) {
+      return res.status(400).json({ error: 'courseTitle, lessonPrefix e chart obrigatorios' });
+    }
+    if (!process.env.DEEPSEEK_API_KEY) {
+      return res.status(500).json({ error: 'DEEPSEEK_API_KEY nao configurada no .env' });
+    }
+    const out = await regenerateLessonDiagram({
+      courseTitle,
+      lessonPrefix,
+      kind: kind || 'resumo',
+      chart,
+      model: model || DEEPSEEK_DEFAULT_MODEL,
+      instruction: typeof instruction === 'string' ? instruction.trim() : '',
+    });
+    res.json(out);
+  } catch (err) {
+    const code = err.code === 'NOT_FOUND' || err.code === 'DIAGRAM_NOT_FOUND' ? 404
+      : err.code === 'BAD_INPUT' || err.code === 'BAD_OUTPUT' ? 422 : 500;
+    res.status(code).json({ error: err.message, code: err.code });
   }
 });
 
@@ -161,7 +232,7 @@ router.post('/api/ia/podcast/script', async (req, res) => {
       courseTitle, lessonPrefix,
       model: model || DEEPSEEK_DEFAULT_MODEL,
     });
-    res.json(out);
+    res.json({ ...out, cost: costFromUsage(out.usage, model || DEEPSEEK_DEFAULT_MODEL) });
   } catch (err) {
     const code = err.code === 'NO_TRANSCRIPT' ? 404
       : err.code === 'EMPTY_TRANSCRIPT' || err.code === 'BAD_SCRIPT' ? 422 : 500;
@@ -455,6 +526,7 @@ router.post('/api/ia/prequestions', async (req, res) => {
       generatedAt: inserted.rows[0].generated_at,
       usage: out.usage,
       model: out.model,
+      cost: costFromUsage(out.usage, model || DEEPSEEK_DEFAULT_MODEL),
     });
   } catch (err) {
     const code =

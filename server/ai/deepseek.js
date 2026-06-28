@@ -20,6 +20,27 @@ const DEEPSEEK_URL = 'https://api.deepseek.com/v1/chat/completions';
 
 export const DEFAULT_MODEL = 'deepseek-v4-flash';
 
+// Preco por 1M de tokens (USD). v4-pro e ~75% mais caro que o flash.
+// input miss = prompt fora do cache; input hit = prompt servido do cache (50x
+// mais barato); output = tokens gerados.
+const PRICING = {
+  'deepseek-v4-flash': { miss: 0.14, hit: 0.0028, out: 0.28 },
+  'deepseek-v4-pro': { miss: 0.14 * 1.75, hit: 0.0028 * 1.75, out: 0.28 * 1.75 },
+};
+
+// Custo (USD) de UMA chamada a partir do objeto `usage` da DeepSeek. Se os
+// campos de cache nao vierem, trata todo o prompt como miss (pior caso).
+export const costFromUsage = (usage, model = DEFAULT_MODEL) => {
+  if (!usage) return 0;
+  const p = PRICING[model] || PRICING[DEFAULT_MODEL];
+  const hit = usage.prompt_cache_hit_tokens || 0;
+  const miss = usage.prompt_cache_miss_tokens != null
+    ? usage.prompt_cache_miss_tokens
+    : Math.max(0, (usage.prompt_tokens || 0) - hit);
+  const out = usage.completion_tokens || 0;
+  return (miss * p.miss + hit * p.hit + out * p.out) / 1e6;
+};
+
 export class DeepSeekError extends Error {
   constructor(message, { status, body } = {}) {
     super(message);

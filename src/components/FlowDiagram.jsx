@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { ReactFlow, Background, Controls, Handle, Position, getStraightPath, useInternalNode, BaseEdge, EdgeLabelRenderer } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -7,6 +7,7 @@ import { Maximize2, X } from "lucide-react";
 
 // Canvas reutilizado inline e em tela cheia. `interactive` so na tela cheia:
 // la o scroll DA ZOOM; no inline o scroll ROLA A PAGINA (zoom pelos botoes).
+const FIT_VIEW_OPTS = { padding: 0.2 }; // estavel (evita re-fit por nova referencia)
 const Canvas = ({ nodes, edges, interactive = false }) => (
   <ReactFlow
     nodes={nodes}
@@ -14,7 +15,7 @@ const Canvas = ({ nodes, edges, interactive = false }) => (
     nodeTypes={nodeTypes}
     edgeTypes={edgeTypes}
     fitView
-    fitViewOptions={{ padding: 0.2 }}
+    fitViewOptions={FIT_VIEW_OPTS}
     nodesDraggable={false}
     nodesConnectable={false}
     zoomOnScroll={interactive}
@@ -233,7 +234,13 @@ const radialLayout = (nodes, edges) => {
   countLeaves(root.id, new Set());
 
   const pos = { [root.id]: { x: 0, y: 0 } };
-  const RING = 280; // raio por nivel
+  // Raio ADITIVO (em vez de RING*(depth+1)): encurta as linhas puxando o 1o anel
+  // pra perto da raiz. CUIDADO: STEP e a distancia radial entre niveis e, em
+  // ramos colineares (filho na mesma direcao do pai), precisa folgar a LARGURA do
+  // card (~200px), senao as caixas se sobrepoem. Por isso STEP fica perto do
+  // incremento original (280); quem encurta de fato e o RING menor.
+  const RING = 220; // raio do 1o anel (raiz -> ramo) — menor = mais compacto
+  const STEP = 260; // incremento por nivel adicional (>= largura do card)
   // `dir` = direcao do leque; `half` = meia-abertura (raiz: PI = 360°; demais: 60°).
   const place = (id, depth, dir, half, seen) => {
     if (seen.has(id)) return;
@@ -245,7 +252,7 @@ const radialLayout = (nodes, edges) => {
     for (const c of ch) {
       const span = (2 * half) * ((leaf[c] || 1) / total);
       const a = cur + span / 2;
-      const r = RING * (depth + 1);
+      const r = RING + depth * STEP;
       pos[c] = { x: Math.cos(a) * r, y: Math.sin(a) * r };
       // netos: cone de ate 120°, mas NUNCA maior que o setor do proprio ramo
       // (span) — senao ramos vizinhos invadem um ao outro e as folhas colidem.
@@ -301,9 +308,15 @@ const FlowDiagram = ({ spec }) => {
   const [state, setState] = useState({ status: "loading" });
   const [full, setFull] = useState(false);
 
+  // Chave ESTAVEL POR VALOR do spec: re-renders de ancestrais costumam recriar o
+  // `spec` (objeto novo via mindmapToSpec, etc.) sem mudar o conteudo. Usar a
+  // string como dep evita re-rodar o layout ELK/radial a cada render — era isso
+  // que fazia o diagrama re-montar e a tela PISCAR (re-fit do ReactFlow).
+  const specKey = useMemo(() => (typeof spec === "string" ? spec : JSON.stringify(spec)), [spec]);
+
   useEffect(() => {
     let cancelled = false;
-    const parsed = parseSpec(spec);
+    const parsed = parseSpec(specKey);
     if (!parsed.ok) { setState({ status: "error" }); return; }
 
     if (parsed.type === "mindmap") {
@@ -331,7 +344,7 @@ const FlowDiagram = ({ spec }) => {
       .catch(() => { if (!cancelled) setState({ status: "error" }); });
 
     return () => { cancelled = true; };
-  }, [spec]);
+  }, [specKey]);
 
   if (state.status === "error") {
     return (

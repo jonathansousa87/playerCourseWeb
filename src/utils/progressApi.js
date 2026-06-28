@@ -325,6 +325,18 @@ export const clearCourseMaterials = (courseTitle) =>
 
 // === IA (DeepSeek) ===
 // kinds: array de 'resumo' | 'quiz' | 'flashcards' | 'diario'
+// Regenera UM diagrama da aula (sem recondensar tudo). Retorna { chart, cost }.
+export const regenerateDiagram = ({ courseTitle, lessonPrefix, chart, kind, model, instruction }) =>
+  fetch(`${API_BASE}/api/ia/regenerate-diagram`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle, lessonPrefix, chart, kind, model, instruction }),
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  });
+
 export const generateIa = ({ courseTitle, lessonPrefix, kinds, model, instruction }) =>
   fetch(`${API_BASE}/api/ia/generate`, {
     method: "POST",
@@ -404,11 +416,11 @@ export const fetchLastInterview = (courseTitle, modulePath) =>
 // transcricoes em .txt). So funciona em modo local (filesystem).
 // Se `onProgress` for passado, consome o stream NDJSON (eventos por aula, em
 // tempo real, mostrando o paralelismo). Sem ele, retorna o JSON normal.
-export const generateReadingModule = async ({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, onProgress }) => {
+export const generateReadingModule = async ({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, preCondense, onProgress }) => {
   const res = await fetch(`${API_BASE}/api/ia/reading-course/module`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, stream: !!onProgress }),
+    body: JSON.stringify({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, preCondense, stream: !!onProgress }),
   });
 
   if (!onProgress) {
@@ -444,6 +456,45 @@ export const generateReadingModule = async ({ courseTitle, modulePath, moduleTit
   }
   if (!result) throw new Error("stream encerrou sem resultado");
   return result;
+};
+
+// Gera leitura EM LOTE (revezando VRAM WhisperX/Qwen no backend). Stream NDJSON:
+// repassa cada evento via onProgress(ev) e devolve o array de resultados no fim.
+// `signal` (AbortSignal) permite cancelar a requisicao.
+export const generateReadingBatch = async ({ jobs, model, instruction, autoTranscribe, language, preCondense, onProgress = () => {}, signal } = {}) => {
+  const res = await fetch(`${API_BASE}/api/ia/reading-course/batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jobs, model, instruction, autoTranscribe, language, preCondense }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let results = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let ev;
+      try { ev = JSON.parse(line); } catch { continue; }
+      if (ev.type === "fim") results = ev.results;
+      else if (ev.type === "erro") throw new Error(ev.error || "erro na geracao");
+      else onProgress(ev);
+    }
+  }
+  if (!results) throw new Error("stream encerrou sem resultado");
+  return results;
 };
 
 // === Pre-questoes (Carpenter & Toftness 2017) ===

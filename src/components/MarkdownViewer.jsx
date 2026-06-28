@@ -6,6 +6,7 @@ import { LoadingState } from "./StateViews";
 import MermaidDiagram from "./MermaidDiagram";
 import FlowDiagram from "./FlowDiagram";
 import CodeBlock from "./CodeBlock";
+import { regenerateDiagram } from "../utils/progressApi";
 
 const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   const [content, setContent] = useState("");
@@ -14,6 +15,15 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   // Tempo de leitura (passivo) — alimenta /api/stats/activity-balance.
   // Sem courseTitle/lessonPrefix, vira no-op (uso fora do contexto de aula).
   useReadTimer(courseTitle, lessonPrefix, "resumo");
+
+  // Regenera SO um diagrama (botao no MermaidDiagram), sem recondensar a aula.
+  // Disponivel apenas no contexto de uma aula (curso + prefixo conhecidos).
+  const canRegen = !!(courseTitle && lessonPrefix);
+  const regenerateBlock = async (oldChart) => {
+    const { chart: newChart } = await regenerateDiagram({ courseTitle, lessonPrefix, chart: oldChart });
+    // Troca o bloco no conteudo -> ReactMarkdown re-renderiza o diagrama corrigido.
+    setContent((c) => c.replace(oldChart, newChart));
+  };
 
   useEffect(() => {
     if (!fileUrl) return;
@@ -114,7 +124,12 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
                 // MermaidDiagram estiliza flowchart/classes/etc. e redireciona
                 // mindmap pro FlowDiagram.
                 if (!isInline && /\blanguage-mermaid\b/.test(props.className || "")) {
-                  return <MermaidDiagram chart={String(children).replace(/\n$/, "")} />;
+                  return (
+                    <MermaidDiagram
+                      chart={String(children).replace(/\n$/, "")}
+                      onRegenerate={canRegen ? regenerateBlock : undefined}
+                    />
+                  );
                 }
                 // Bloco ```flow -> React Flow (JSON). Mantido no sistema (secundario/
                 // legado); o render continua funcionando pros diagramas ja gerados.
