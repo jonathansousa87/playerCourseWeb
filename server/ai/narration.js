@@ -1,0 +1,230 @@
+// Narracao "read-along" de uma aula de leitura: pega o conteudo da LEITURA
+// (lesson_materials kind='resumo'), narra SO a prosa (titulos, paragrafos, itens
+// de lista, citacoes) com o Kokoro — PULANDO codigo, diagramas Mermaid e tabelas
+// — e concatena tudo num mp3. Grava { audio, segments, voice } em
+// lesson_materials kind='narracao'. `segments` = [{ start, end }] na MESMA ordem
+// dos elementos de texto renderizados (o front casa por ordem, sem mexer no
+// layout). Sem DeepSeek: custo zero, so TTS local.
+
+import { promises as fs } from 'fs';
+import { spawn } from 'child_process';
+import { join, dirname, relative } from 'path';
+import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
+import { ensureServer, synthesize } from './kokoro.js';
+import { loadTranscriptForLesson } from './generator.js';
+import { query } from '../../db/index.js';
+
+// Voz padrao = preset JUNIOR do podcast (configuravel por env).
+const VOICE = () => (process.env.NARRATION_VOICE || process.env.PODCAST_VOICE_JUNIOR || 'pf_dora+bf_lily+if_sara').trim();
+const MAX_TTS_CHARS = 400;
+
+const ffprobeDur = (file) =>
+  new Promise((res) => {
+    const p = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file]);
+    let out = '';
+    p.stdout.on('data', (d) => { out += d.toString(); });
+    p.on('close', () => res(parseFloat(out.trim()) || 0));
+    p.on('error', () => res(0));
+  });
+
+const runFfmpeg = (args) =>
+  new Promise((resolve, reject) => {
+    const proc = spawn('ffmpeg', args);
+    let e = '';
+    proc.stderr.on('data', (d) => { e += d.toString(); });
+    proc.on('error', reject);
+    proc.on('close', (c) => (c === 0 ? resolve() : reject(new Error(`ffmpeg falhou (${c}): ${e.slice(-300)}`))));
+  });
+
+// Markdown -> texto falavel (tira marcacao, deixa o texto).
+const stripMd = (s) =>
+  String(s)
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^\s*([-*+]|\d+\.)\s+/, '')
+    .replace(/^\s*>\s?/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+// Quebra a aula nos MESMOS blocos de texto que o ReactMarkdown renderiza, NA
+// ORDEM do documento: heading / paragrafo / item de lista / citacao. Pula blocos
+// de codigo (``` e ```mermaid/flow) e tabelas — eles aparecem na pagina, mas nao
+// sao narrados. Retorna [{ text }] (so prosa, em ordem).
+// So narra blocos com PALAVRA de verdade — um bloco sem letra (ex.: a regua "---"
+// ou so pontuacao) NAO e falavel e quebra o Kokoro ("list index out of range").
+const hasWord = (s) => /[\p{L}]/u.test(s || '');
+
+// --- Soletrar siglas (so no audio; o texto exibido/sync continua com "JPA") ---
+// O Kokoro le "JPA" como "spa"; aqui trocamos pela grafia fonetica pt-BR
+// ("jota pe a"). So vale pra narracao (o podcast ja resolve isso no prompt do LLM).
+const LETTER_PT = {
+  A: 'á', B: 'bê', C: 'cê', D: 'dê', E: 'é', F: 'éfe', G: 'gê', H: 'agá', I: 'i',
+  J: 'jota', K: 'cá', L: 'éle', M: 'ême', N: 'êne', O: 'ó', P: 'pê', Q: 'quê',
+  R: 'érre', S: 'esse', T: 'tê', U: 'u', V: 'vê', W: 'dáblio', X: 'xis', Y: 'ípsilon', Z: 'zê',
+};
+const spellOut = (a) => a.toUpperCase().split('').map((c) => LETTER_PT[c] || c).join(' ');
+
+// Abordagem GENERICA (vale p/ qualquer nicho): pela distincao linguistica
+// initialism vs acronym, TODA sigla em CAIXA ALTA (2-6 letras) e SOLETRADA por
+// padrao (initialism: JPA, SQL, HTTP, API, CEO, CNN, RM, JPQL...). A EXCECAO sao
+// as lidas como PALAVRA (acronym: REST, JSON, NASA, BERT, EBITDA...), que ficam
+// intactas. Assim nao dependemos de uma lista do que soletrar (impossivel de
+// cobrir entre nichos) — so mantemos a allowlist (curta) das que sao palavra,
+// extensivel por env NARRATION_WORD_ACRONYMS (separada por virgula).
+const WORD_ACRONYMS = new Set(
+  ['REST', 'JSON', 'SOAP', 'SAGA', 'YAML', 'TOML', 'AJAX', 'CORS', 'CRUD', 'SPA', 'JPEG', 'GIF',
+    'NASA', 'NATO', 'OTAN', 'ASCII', 'UNIX', 'LINUX', 'BIOS', 'RAID', 'WIFI', 'PIX', 'COVID',
+    'AIDS', 'LASER', 'RADAR', 'SCRUM', 'KANBAN', 'DEVOPS', 'BERT', 'EBITDA', 'OAUTH', 'OK']
+    .concat((process.env.NARRATION_WORD_ACRONYMS || '').split(',').map((s) => s.trim().toUpperCase()))
+    .filter(Boolean),
+);
+// `\b([A-Z]{2,6})(s)?\b`: pega sigla MAIUSCULA com plural opcional (APIs, DTOs);
+// o \b evita pegar prefixo de palavra CamelCase (ex.: nao casa "OA" em "OAuth").
+const ACRO_RE = /\b([A-Z]{2,6})(s)?\b/g;
+const speakable = (text) => String(text).replace(ACRO_RE, (m, acro, plural) =>
+  (WORD_ACRONYMS.has(acro) ? m : spellOut(acro) + (plural ? 's' : '')));
+
+const parseNarratableBlocks = (md) => {
+  const lines = String(md || '').split(/\r?\n/);
+  const blocks = [];
+  let para = null;
+  const flushPara = () => {
+    if (para) { const x = stripMd(para); if (x && hasWord(x)) blocks.push({ text: x }); para = null; }
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const t = raw.trim();
+    if (/^```/.test(t) || /^~~~/.test(t)) { // fenced code/mermaid/flow -> pula ate fechar
+      flushPara();
+      const fence = t.slice(0, 3);
+      i++;
+      while (i < lines.length && lines[i].trim().slice(0, 3) !== fence) i++;
+      continue;
+    }
+    if (t === '') { flushPara(); continue; }
+    if (/^([*_-])\1{2,}\s*$/.test(t)) { flushPara(); continue; } // regua horizontal (--- *** ___) -> nao narra
+    if (/^\s*\|/.test(raw)) { flushPara(); continue; } // linha de tabela -> nao narra
+    if (/^#{1,6}\s+/.test(t)) { flushPara(); const x = stripMd(t); if (x && hasWord(x)) blocks.push({ text: x }); continue; }
+    if (/^\s*([-*+]|\d+\.)\s+/.test(raw)) { flushPara(); const x = stripMd(t); if (x && hasWord(x)) blocks.push({ text: x }); continue; }
+    // Paragrafo (acumula linhas). Citacao (>) entra como paragrafo: o ReactMarkdown
+    // renderiza o conteudo da blockquote num <p>, entao casa 1-a-1 na ordem.
+    const line = t.replace(/^>\s?/, '');
+    para = para ? `${para} ${line}` : line;
+  }
+  flushPara();
+  return blocks;
+};
+
+// Quebra texto longo em pedacos <= MAX_TTS_CHARS por frase (Kokoro degrada em
+// textos longos). Cada pedaco vira um clip; concatenados na ordem.
+const splitForTTS = (text) => {
+  const t = String(text).trim();
+  if (t.length <= MAX_TTS_CHARS) return [t];
+  const sentences = t.match(/[^.!?]+[.!?]*\s*/g) || [t];
+  const chunks = [];
+  let cur = '';
+  for (const s of sentences) {
+    if ((cur + ' ' + s).trim().length > MAX_TTS_CHARS) {
+      if (cur) chunks.push(cur.trim());
+      cur = s.trim();
+    } else {
+      cur = (cur + ' ' + s).trim();
+    }
+  }
+  if (cur.trim()) chunks.push(cur.trim());
+  return chunks.filter(Boolean);
+};
+
+const mapPool = async (items, limit, fn) => {
+  let next = 0;
+  const worker = async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+};
+
+export const generateLessonNarration = async ({ coursesPath, courseTitle, lessonPrefix, voice }) => {
+  // Fonte = a propria LEITURA (resumo) salva no banco.
+  const rows = await query(
+    "SELECT content FROM lesson_materials WHERE course_title = $1 AND lesson_prefix = $2 AND kind = 'resumo'",
+    [courseTitle, lessonPrefix],
+  );
+  const content = rows.rows[0]?.content;
+  if (!content) { const e = new Error('leitura (resumo) nao encontrada para narrar'); e.code = 'NO_CONTENT'; throw e; }
+
+  const blocks = parseNarratableBlocks(content);
+  if (blocks.length === 0) { const e = new Error('nada para narrar (so codigo/diagramas?)'); e.code = 'EMPTY'; throw e; }
+
+  // Onde gravar o mp3 (pasta da aula). ref = caminho (fs) ou fileId (drive).
+  const { ref } = await loadTranscriptForLesson({ courseTitle, lessonPrefix, coursesPath });
+  const usedVoice = (voice || VOICE()).trim();
+  const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
+
+  await ensureServer();
+
+  // Lista plana de chunks (cada bloco pode virar varios), preservando o indice do bloco.
+  const segsFlat = [];
+  blocks.forEach((b, bi) => { for (const piece of splitForTTS(b.text)) segsFlat.push({ blockIdx: bi, text: piece }); });
+
+  const work = join(tmpdir(), `narr-${randomUUID()}`);
+  await fs.mkdir(work, { recursive: true });
+  try {
+    const clips = new Array(segsFlat.length); // { path, dur }
+    await mapPool(segsFlat, 4, async (seg, i) => {
+      const wav = await synthesize({ text: speakable(seg.text), voice: usedVoice, langCode: 'p' });
+      const clipPath = join(work, `c_${String(i).padStart(4, '0')}.wav`);
+      await fs.writeFile(clipPath, wav);
+      clips[i] = { path: clipPath, dur: await ffprobeDur(clipPath) };
+    });
+    if (clips.some((c) => !c)) { const e = new Error('falha sintetizando algum trecho'); e.code = 'TTS_FAILED'; throw e; }
+
+    // segments por BLOCO (na ordem), somando a duracao dos seus chunks.
+    const segments = blocks.map(() => ({ start: 0, end: 0, started: false }));
+    let t = 0;
+    segsFlat.forEach((seg, i) => {
+      const s = segments[seg.blockIdx];
+      if (!s.started) { s.start = +t.toFixed(3); s.started = true; }
+      t += clips[i].dur;
+      s.end = +t.toFixed(3);
+    });
+    // text = inicio do bloco -> o front casa o trecho com o elemento certo do DOM
+    // por CONTEUDO (robusto a listas aninhadas/itens multi-linha que desalinhariam
+    // um mapeamento por ordem).
+    const cleanSegments = segments.map(({ start, end }, i) => ({ start, end, text: blocks[i].text.slice(0, 120) }));
+
+    // Concatena na ordem -> mp3.
+    const listPath = join(work, 'list.txt');
+    await fs.writeFile(listPath, clips.map((c) => `file '${c.path}'`).join('\n'), 'utf8');
+    const outName = `${lessonPrefix}_narracao_dub_01.mp3`;
+    const tmpMp3 = join(work, outName);
+    await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c:a', 'libmp3lame', '-q:a', '4', tmpMp3]);
+
+    let audioRel;
+    if (isDrive) {
+      const { getParentFolderId, uploadFileFromPath } = await import('../drive/index.js');
+      const parentId = await getParentFolderId(ref);
+      audioRel = await uploadFileFromPath(parentId, outName, tmpMp3, 'audio/mpeg');
+    } else {
+      const outAbs = join(dirname(ref), outName);
+      await fs.copyFile(tmpMp3, outAbs);
+      audioRel = relative(join(coursesPath, courseTitle), outAbs);
+    }
+
+    const payload = JSON.stringify({ audio: audioRel, segments: cleanSegments, voice: usedVoice, duration: +t.toFixed(2) });
+    await query(
+      `INSERT INTO lesson_materials (course_title, lesson_prefix, kind, content)
+       VALUES ($1, $2, 'narracao', $3)
+       ON CONFLICT (course_title, lesson_prefix, kind)
+       DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
+      [courseTitle, lessonPrefix, payload],
+    );
+
+    return { ok: true, audio: audioRel, segments: cleanSegments, voice: usedVoice, blocks: blocks.length, duration: +t.toFixed(2), cost: 0 };
+  } finally {
+    await fs.rm(work, { recursive: true, force: true });
+  }
+};

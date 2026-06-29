@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { generateIa, generatePrequestions, generatePodcastScript, generatePodcastAudio } from "../utils/progressApi";
+import { generateIa, generatePrequestions, generatePodcastScript, generatePodcastAudio, generateNarration } from "../utils/progressApi";
 import { INSTRUCTION_PRESETS } from "../utils/instructionPresets";
 
 const KIND_OPTIONS = [
@@ -10,6 +10,7 @@ const KIND_OPTIONS = [
   { key: "quiz", label: "Quiz", icon: "❓" },
   { key: "flashcards", label: "Flashcards", icon: "🔁" },
   { key: "diario", label: "Diario", icon: "📓" },
+  { key: "narracao", label: "Narracao", icon: "🔊" },
   { key: "podcast", label: "Podcast", icon: "🎙️" },
 ];
 
@@ -190,7 +191,9 @@ const BulkAIGenerateModal = ({
     };
 
     const hasPodcast = kinds.includes("podcast");
-    const serialKinds = kinds.filter((k) => k !== "podcast");
+    const hasNarration = kinds.includes("narracao");
+    // narracao e podcast usam o Kokoro (GPU unica) -> ficam FORA do pool de texto.
+    const serialKinds = kinds.filter((k) => k !== "podcast" && k !== "narracao");
 
     // Materiais DeepSeek: TODOS os pares (aula x tipo) num pool com teto. O
     // backend limita a concorrencia real na API e re-tenta em 429/503.
@@ -206,23 +209,40 @@ const BulkAIGenerateModal = ({
       setCompletedPairs((prev) => [...prev, pair]);
     });
 
-    // Podcast: UM por vez (a GPU do Kokoro e unica), em paralelo com o pool acima.
-    const podcastRun = (async () => {
-      if (!hasPodcast) return;
+    // Midia (Kokoro): narracao e podcast usam a MESMA GPU, entao rodam UM por vez,
+    // numa fila so, em paralelo com o pool de texto acima.
+    const mediaRun = (async () => {
+      if (!hasNarration && !hasPodcast) return;
       for (const lesson of lessons) {
         if (cancelRef.current) break;
-        const base = { prefix: lesson.prefix, title: lesson.title, kind: "podcast" };
-        try {
-          const script = await generatePodcastScript({ courseTitle, lessonPrefix: lesson.prefix, model });
-          const out = await generatePodcastAudio({ courseTitle, lessonPrefix: lesson.prefix, title: script.title, turns: script.turns, model });
-          setCompletedPairs((prev) => [...prev, { ...base, ok: true, error: null, file: `${out.turns} falas — ${out.title}` }]);
-        } catch (err) {
-          setCompletedPairs((prev) => [...prev, { ...base, ok: false, error: err.message || "erro" }]);
+        if (hasNarration) {
+          setCurrentPrefix(lesson.prefix);
+          setCurrentKind("narracao");
+          const base = { prefix: lesson.prefix, title: lesson.title, kind: "narracao" };
+          try {
+            const out = await generateNarration({ courseTitle, lessonPrefix: lesson.prefix });
+            setCompletedPairs((prev) => [...prev, { ...base, ok: true, error: null, file: `${out.blocks} blocos — ${Math.round(out.duration)}s` }]);
+          } catch (err) {
+            setCompletedPairs((prev) => [...prev, { ...base, ok: false, error: err.message || "erro" }]);
+          }
+        }
+        if (cancelRef.current) break;
+        if (hasPodcast) {
+          setCurrentPrefix(lesson.prefix);
+          setCurrentKind("podcast");
+          const base = { prefix: lesson.prefix, title: lesson.title, kind: "podcast" };
+          try {
+            const script = await generatePodcastScript({ courseTitle, lessonPrefix: lesson.prefix, model });
+            const out = await generatePodcastAudio({ courseTitle, lessonPrefix: lesson.prefix, title: script.title, turns: script.turns, model });
+            setCompletedPairs((prev) => [...prev, { ...base, ok: true, error: null, file: `${out.turns} falas — ${out.title}` }]);
+          } catch (err) {
+            setCompletedPairs((prev) => [...prev, { ...base, ok: false, error: err.message || "erro" }]);
+          }
         }
       }
     })();
 
-    await Promise.all([textRun, podcastRun]);
+    await Promise.all([textRun, mediaRun]);
 
     setCurrentPrefix(null);
     setCurrentKind(null);

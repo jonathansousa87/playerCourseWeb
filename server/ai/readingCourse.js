@@ -8,10 +8,10 @@
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { chatCompletion, DEFAULT_MODEL, costFromUsage } from './deepseek.js';
-import { preCondense, preCondenseEnabled } from './precondense.js';
+import { preCondenseCached, preCondenseEnabled } from './precondense.js';
 import { startQwen, stopQwen } from './qwenServer.js';
 import { parseTranscript, parseTranscriptRaw } from './generator.js';
-import { transcribeToTxt } from './whisperx.js';
+import { transcribeToTxt, detectAudioLanguage } from './whisperx.js';
 import { query } from '../../db/index.js';
 import {
   READING_PLAN_SYSTEM,
@@ -44,6 +44,17 @@ const cleanModuleTitle = (title) => title.replace(/^\s*\d+\s*[.)-]\s*/, '').trim
 const cleanLessonTitle = (title) => title.replace(/^\s*\d+\s*[.)-]\s*/, '').trim() || title;
 
 const pad2 = (n) => String(n).padStart(2, '0');
+
+// Deteccao simples de idioma (PT vs EN) por stopwords — usada quando o usuario
+// escolhe "auto" no Gerar leitura (lote misto: umas aulas em PT, outras em EN).
+// Heuristica leve sobre os primeiros ~5k chars; empate -> PT.
+const detectLang = (text) => {
+  const s = (text || '').toLowerCase().slice(0, 5000);
+  const count = (re) => (s.match(re) || []).length;
+  const pt = count(/\b(que|n[aã]o|uma|com|para|voc[eê]|ent[aã]o|isso|porque|tamb[eé]m|est[aá]|s[aã]o|fazer|gente|agora|vamos|aqui|mas|como|ele|ela)\b/g);
+  const en = count(/\b(the|and|that|this|with|for|you|are|because|also|will|we|of|to|in|but|how|is|it|on)\b/g);
+  return en > pt ? 'en' : 'pt';
+};
 
 // Remove do banco TUDO atrelado a uma aula (prefix) orfa ao regenerar. Duas
 // categorias, ambas invalidas apos a regeneracao:
@@ -110,6 +121,38 @@ const mapPool = async (items, limit, fn) => {
   return results;
 };
 
+// O DubAI gera um arquivo EXTRA por aula com complemento: "X.Y.1" (atualizacao
+// "Atualizando para...", "Resolucao do desafio", etc.) ALEM do "X.Y" original —
+// CONTEUDO DIFERENTE, nao duplicata. Detectamos esses pares por NUMERO (em codigo,
+// deterministico) e fundimos numa unica aula LOGICA com varias `parts` (original
+// primeiro), ANTES do planGrouping. Sem isso, o modulo vira N arquivos isolados,
+// o DeepSeek nao consegue agrupar (titulos quase iguais) e nao ha condensacao.
+// "X.Y.1" e complemento de "X.Y" SOMENTE quando "X.Y" tambem existe no modulo.
+const lessonNum = (name) => { const m = name.match(/(?:^|[_ ])(\d+(?:\.\d+)+)/); return m ? m[1] : null; };
+const baseNum = (n) => n.replace(/\.\d+$/, '');
+const mergeComplements = (found) => {
+  const nums = new Set(found.map((f) => lessonNum(f.name)).filter(Boolean));
+  const byNum = new Map();
+  const logical = [];
+  for (const f of found) {
+    const num = lessonNum(f.name);
+    const part = { name: f.name, path: f.path, fileId: f.fileId, bytes: f.bytes || 0 };
+    if (num) {
+      const base = baseNum(num);
+      if (base !== num && base.includes('.') && nums.has(base) && byNum.has(base)) {
+        const L = byNum.get(base);
+        L.parts.push(part);
+        L.bytes += part.bytes;
+        continue; // complemento -> anexado a aula base (ordem: original, depois complemento)
+      }
+    }
+    const L = { title: f.title, bytes: part.bytes, parts: [part] };
+    logical.push(L);
+    if (num) byNum.set(num, L);
+  }
+  return logical;
+};
+
 // Coleta as transcricoes de um modulo (recursivo), na ordem alfanumerica.
 const collectModuleTranscripts = async (moduleDir) => {
   const found = [];
@@ -136,7 +179,8 @@ const collectModuleTranscripts = async (moduleDir) => {
   found.sort((a, b) =>
     a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' }),
   );
-  return found.map((t, id) => ({ id, ...t }));
+  // Funde complementos (X.Y.1 -> X.Y) em aulas logicas antes do plano.
+  return mergeComplements(found).map((t, id) => ({ id, ...t }));
 };
 
 // Antes de montar o curso de leitura: as aulas que tem video mas ainda NAO tem
@@ -144,13 +188,9 @@ const collectModuleTranscripts = async (moduleDir) => {
 // na propria pasta (no padrao que o collectModuleTranscripts ja entende).
 // Retorna um resumo { transcribed, failed, skipped } pra mostrar no front.
 const transcribeMissingTranscripts = async (moduleDir, language = 'pt') => {
-  // Curso em ingles: WhisperX usa o modelo English-only (distil-large-v3.5,
-  // mais rapido/preciso pra EN); a traducao pra PT-BR acontece na condensacao.
-  const whisper = language === 'en'
-    ? { model: (process.env.WHISPERX_MODEL_EN || '').trim() || 'distil-large-v3.5', language: 'en' }
-    : { model: undefined, language: 'pt' };
   const videos = [];
   const haveStem = new Set();
+  const existingTxts = [];
   const walk = async (dir) => {
     let entries;
     try {
@@ -166,6 +206,7 @@ const transcribeMissingTranscripts = async (moduleDir, language = 'pt') => {
         videos.push({ name: e.name, path: full, stem: videoStem(full) });
       } else if (TRANSCRIPT_RE.test(e.name) && !MATERIAL_TXT_RE.test(e.name)) {
         haveStem.add(full.replace(TRANSCRIPT_RE, ''));
+        existingTxts.push(full);
       }
     }
   };
@@ -180,6 +221,23 @@ const transcribeMissingTranscripts = async (moduleDir, language = 'pt') => {
     summary.skipped = true;
     return summary;
   }
+
+  // "auto": resolve o idioma p/ 'pt'/'en' (cada um usa o SEU modelo validado).
+  // Preferencia: texto de uma transcricao ja existente (free); senao, sonda os
+  // PRIMEIROS 30s do audio com o WhisperX multilingue; sem nada, cai em PT.
+  let lang = language;
+  if (lang === 'auto') {
+    let sample = '';
+    for (const p of existingTxts) { try { sample = await parseTranscript(p); if (sample) break; } catch { /* ignora */ } }
+    if (sample) lang = detectLang(sample);
+    else if (pending.length) lang = await detectAudioLanguage({ audioFile: pending[0].path });
+    else lang = 'pt';
+  }
+  // EN -> distil-large-v3.5 (English-only); PT -> large-v3-turbo (default).
+  // A traducao EN->PT acontece depois, na condensacao.
+  const whisper = lang === 'en'
+    ? { model: (process.env.WHISPERX_MODEL_EN || '').trim() || 'distil-large-v3.5', language: 'en' }
+    : { model: undefined, language: 'pt' };
 
   // Serial de proposito: WhisperX satura GPU/CPU; rodar em paralelo so atrapalha.
   for (const v of pending) {
@@ -197,34 +255,73 @@ const transcribeMissingTranscripts = async (moduleDir, language = 'pt') => {
   return summary;
 };
 
+// Detecta o idioma do CURSO inteiro (para "auto", modo filesystem): usa o texto
+// de uma transcricao ja existente (free); se nao houver nenhuma, sonda os 30s do
+// primeiro video com o WhisperX multilingue. Resultado vale pro curso todo
+// (cacheado pelo chamador); cada novo curso e validado de novo. Retorna 'pt'|'en'.
+const detectCourseLanguageFs = async (coursesPath, courseTitle, log = () => {}) => {
+  const root = join(coursesPath, courseTitle);
+  let firstTxt = null;
+  let firstVideo = null;
+  const walk = async (dir) => {
+    if (firstTxt) return;
+    let entries;
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (firstTxt) return;
+      const full = join(dir, e.name);
+      if (e.isDirectory()) await walk(full);
+      else if (TRANSCRIPT_RE.test(e.name) && !MATERIAL_TXT_RE.test(e.name)) firstTxt = full;
+      else if (!firstVideo && VIDEO_RE.test(e.name)) firstVideo = full;
+    }
+  };
+  await walk(root);
+  if (firstTxt) {
+    try { const t = await parseTranscript(firstTxt); if (t) return detectLang(t); } catch { /* ignora */ }
+  }
+  if (firstVideo) {
+    log(`[auto] "${courseTitle}": sondando idioma pelos 30s iniciais do audio...`);
+    return detectAudioLanguage({ audioFile: firstVideo });
+  }
+  return 'pt';
+};
+
 // Fase 1: a IA decide o agrupamento. Fallback robusto = cada aula isolada.
 // Retorna { plan, usage } — usage entra no custo do modulo.
+// Diagnostico opt-in: grava prompt/resposta/parse/plano em arquivo p/ investigar
+// agrupamento. Ative com PLAN_DEBUG=1 (desligado por padrao).
+const planDebug = async (moduleTitle, payload) => {
+  if (process.env.PLAN_DEBUG !== '1') return;
+  try {
+    const { appendFile } = await import('fs/promises');
+    const stamp = new Date().toISOString();
+    const safe = (moduleTitle || '').replace(/[^\w.-]+/g, '_').slice(0, 60);
+    await appendFile(
+      `plan-debug-${safe}.log`,
+      `\n===== ${stamp} | ${moduleTitle} =====\n${payload}\n`,
+      'utf8',
+    );
+  } catch { /* log e best-effort */ }
+};
+
 const planGrouping = async ({ moduleTitle, transcripts, model }) => {
   const fallback = () =>
     transcripts.map((t) => ({ title: t.title, sources: [t.id] }));
 
   if (transcripts.length <= 1) return { plan: fallback(), usage: null };
 
-  try {
-    const { content, usage } = await chatCompletion({
-      system: READING_PLAN_SYSTEM,
-      user: buildReadingPlanPrompt({
-        moduleTitle,
-        lessons: transcripts.map((t) => ({ id: t.id, title: t.title, bytes: t.bytes || 0 })),
-      }),
-      model,
-      temperature: 0.2,
-      // Orcamento generoso: o modelo "raciocina" antes do JSON e modulos
-      // grandes geram planos longos. Se faltar token, o JSON trunca e cai no
-      // fallback isolado (= "aula por aula"). Escala com o nº de aulas.
-      maxTokens: Math.min(8000, 2500 + transcripts.length * 150),
-      responseFormat: { type: 'json_object' },
-    });
+  const userPrompt = buildReadingPlanPrompt({
+    moduleTitle,
+    lessons: transcripts.map((t) => ({ id: t.id, title: t.title, bytes: t.bytes || 0 })),
+  });
+  const validIds = new Set(transcripts.map((t) => t.id));
+
+  // Monta o plano validado (ids reais, cobertura total, sem duplicar) a partir do
+  // JSON do modelo. Retorna null se o JSON for invalido/truncado.
+  const buildPlan = (content) => {
     const parsed = parseJsonLoose(content);
-    if (!parsed) throw new Error('plano: JSON invalido/truncado');
-    const lessons = Array.isArray(parsed?.lessons) ? parsed.lessons : [];
-    // Valida: ids reais, cobertura total, sem duplicar.
-    const validIds = new Set(transcripts.map((t) => t.id));
+    const lessons = Array.isArray(parsed?.lessons) ? parsed.lessons : null;
+    if (!lessons) return null;
     const seen = new Set();
     const plan = [];
     for (const l of lessons) {
@@ -237,11 +334,52 @@ const planGrouping = async ({ moduleTitle, transcripts, model }) => {
       plan.push({ title, sources });
     }
     // Garante cobertura: aulas que a IA esqueceu entram isoladas.
-    for (const t of transcripts) {
-      if (!seen.has(t.id)) plan.push({ title: t.title, sources: [t.id] });
+    for (const t of transcripts) if (!seen.has(t.id)) plan.push({ title: t.title, sources: [t.id] });
+    return plan.length ? plan : null;
+  };
+
+  // Two-step (o modelo e de "thinking"): os tokens de reasoning saem do MESMO
+  // orcamento da saida. Em modulos grandes (~39 aulas) o reasoning sozinho podia
+  // estourar o max_tokens (finish_reason='length') e o JSON nunca era emitido.
+  //
+  // ETAPA 1 (raciocinio): thinking LIGADO + orcamento generoso p/ o reasoning
+  // terminar E ainda emitir o JSON. Plano mais rico/consolidado. No caso comum
+  // resolve aqui mesmo, em 1 chamada.
+  try {
+    const max1 = Math.min(24000, 8000 + transcripts.length * 400);
+    const { content, usage } = await chatCompletion({
+      system: READING_PLAN_SYSTEM, user: userPrompt, model,
+      temperature: 0.2, maxTokens: max1, responseFormat: { type: 'json_object' },
+    });
+    await planDebug(moduleTitle,
+      `[ETAPA 1] ${transcripts.length} aulas | maxTokens=${max1}\n[USAGE] ${JSON.stringify(usage)}\n`
+      + `--- PROMPT ---\n${userPrompt}\n--- RESPOSTA (len=${content?.length}) ---\n${content}\n`);
+    const plan = buildPlan(content);
+    if (plan) {
+      await planDebug(moduleTitle, `[ETAPA 1 OK] plano=${plan.length}\n[GRUPOS] ${JSON.stringify(plan.map((p) => p.sources))}\n`);
+      return { plan, usage };
     }
-    return { plan: plan.length ? plan : fallback(), usage };
-  } catch {
+    throw new Error('etapa 1: JSON invalido/truncado');
+  } catch (err1) {
+    await planDebug(moduleTitle, `[ETAPA 1 FALHOU -> ETAPA 2] ${err1?.message || err1}`);
+    // ETAPA 2 (formatacao determinista): thinking DESLIGADO. Barato e sem
+    // reasoning, o JSON sai direto — garante um plano valido mesmo quando a
+    // etapa 1 truncou. Plano menos consolidado, mas integro e cobrindo tudo.
+    try {
+      const max2 = Math.min(8000, 2500 + transcripts.length * 150);
+      const { content, usage } = await chatCompletion({
+        system: READING_PLAN_SYSTEM, user: userPrompt, model,
+        temperature: 0.2, maxTokens: max2, responseFormat: { type: 'json_object' },
+        thinking: { type: 'disabled' },
+      });
+      const plan = buildPlan(content);
+      if (plan) {
+        await planDebug(moduleTitle, `[ETAPA 2 OK] plano=${plan.length}\n[GRUPOS] ${JSON.stringify(plan.map((p) => p.sources))}\n`);
+        return { plan, usage };
+      }
+    } catch (err2) {
+      await planDebug(moduleTitle, `[ETAPA 2 FALHOU -> fallback isolado] ${err2?.message || err2}`);
+    }
     return { plan: fallback(), usage: null };
   }
 };
@@ -249,29 +387,32 @@ const planGrouping = async ({ moduleTitle, transcripts, model }) => {
 // Fase 2 (parte IA): condensa um texto ja montado numa aula de leitura.
 const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt' }) => {
   if (!merged || merged.length < 40) return null;
+  // "auto" -> detecta o idioma desta aula a partir do texto (lote misto PT/EN).
+  const sourceLanguage = language === 'auto' ? detectLang(merged) : language;
   const { content, usage, model: usedModel } = await chatCompletion({
     system: READING_CONDENSE_SYSTEM,
-    user: buildReadingCondensePrompt({ lessonTitle, transcript: merged, instruction, sourceLanguage: language }),
+    user: buildReadingCondensePrompt({ lessonTitle, transcript: merged, instruction, sourceLanguage }),
     model,
     temperature: 0.3,
-    maxTokens: 8000,
+    // Generoso: grupos grandes (ate ~60k de input) precisam de saida longa pra
+    // COBRIR tudo sem truncar a aula no meio.
+    maxTokens: 14000,
   });
   return { text: content.trim(), usage, model: usedModel };
 };
 
-// fs: le as transcricoes do disco e condensa.
-// `preCache` (Map path->texto): se a aula ja foi pre-condensada numa fase anterior
-// (fluxo em lote, com o Qwen ja derrubado), usa o texto do cache em vez de chamar
-// o Qwen de novo. Sem cache, cai no preCondense(text, preCondenseOn) de sempre.
-const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, preCache }) => {
+// fs: le as transcricoes do disco e pre-condensa (Qwen, inline) antes do DeepSeek.
+// Usa cache persistente por conteudo: reprocessar nao re-condensa no Qwen.
+const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen }) => {
   const parts = [];
   for (const src of sources) {
-    try {
-      const cached = preCache?.get(src.path);
-      const text = cached != null ? cached : await preCondense(await parseTranscript(src.path), preCondenseOn);
-      parts.push(text);
-    } catch {
-      /* ignora transcricao ilegivel */
+    // Cada aula logica pode ter varias `parts` (original + complemento .1).
+    for (const part of src.parts || [src]) {
+      try {
+        parts.push(await preCondenseCached(await parseTranscript(part.path), preCondenseOn, coursesPath, ensureQwen));
+      } catch {
+        /* ignora transcricao ilegivel */
+      }
     }
   }
   return condenseText({ lessonTitle, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language });
@@ -309,9 +450,21 @@ export const generateReadingBatch = async ({
   const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
   const preCondenseOn = preFlag ?? preCondenseEnabled();
   const log = (m) => console.log(m);
-  const preCache = new Map();
   const transcriptionByJob = new Map();
   const results = [];
+
+  // "auto": resolve o idioma UMA VEZ por curso (cacheado) e usa no curso inteiro;
+  // cada curso novo e validado de novo. Fora de "auto", usa o idioma escolhido.
+  const courseLang = new Map();
+  const resolveLang = async (courseTitle) => {
+    if (language !== 'auto') return language;
+    if (!courseLang.has(courseTitle)) {
+      const l = await detectCourseLanguageFs(coursesPath, courseTitle, log);
+      courseLang.set(courseTitle, l);
+      log(`[auto] curso "${courseTitle}" -> idioma ${l} (vale pro curso inteiro)`);
+    }
+    return courseLang.get(courseTitle);
+  };
 
   // ---- FASE 1: WhisperX (so faz sentido no modo filesystem) ----
   if (autoTranscribe && !isDrive) {
@@ -324,7 +477,7 @@ export const generateReadingBatch = async ({
       let summary;
       try {
         const moduleDir = join(coursesPath, job.courseTitle, job.modulePath);
-        summary = await transcribeMissingTranscripts(moduleDir, language);
+        summary = await transcribeMissingTranscripts(moduleDir, await resolveLang(job.courseTitle));
       } catch (err) {
         summary = { transcribed: 0, failed: [{ file: job.moduleTitle, error: err.message }], skipped: false };
       }
@@ -334,98 +487,72 @@ export const generateReadingBatch = async ({
     onProgress({ type: 'phase', phase: 'whisper', status: 'done' });
   }
 
-  // ---- FASE 2: Qwen pre-condensa tudo (uma unica subida do modelo) ----
-  if (preCondenseOn) {
-    onProgress({ type: 'phase', phase: 'qwen', status: 'start' });
-    let qwenUp = false;
+  // ---- FASE 2: leitura MODULO A MODULO ----
+  // Processa modulo a modulo (pre-condensa as aulas e ja vai pro DeepSeek + escreve
+  // ANTES do proximo) — nao segura tudo na RAM. O Qwen sobe SOB DEMANDA e SO se
+  // for realmente preciso condensar algo novo (cache miss): `ensureQwen` e
+  // memoizado e chamado la dentro, no 1o miss. Se tudo estiver em cache (ex.:
+  // reprocesso), o Qwen NEM SOBE. Uma vez no ar, fica ate o fim do lote (o
+  // DeepSeek e remoto, sem VRAM) e e derrubado no finally.
+  let qwenStarted = false;
+  let qwenTried = false;
+  const ensureQwen = async () => {
+    if (qwenStarted) return true;
+    if (qwenTried) return false; // ja tentou e falhou: nao re-tenta a cada aula
+    qwenTried = true;
     try {
       await startQwen({ log });
-      qwenUp = true;
+      qwenStarted = true;
+      return true;
     } catch (err) {
-      // Degrada gracioso: sem Qwen, a fase 3 condensa direto do texto cru (cache
-      // vazio). Nao quebra o lote — so perde a economia de tokens.
       log(`[qwen] nao subiu (${err.message}); seguindo SEM pre-condensacao`);
       onProgress({ type: 'precondense', status: 'unavailable', error: err.message });
+      return false;
     }
-    if (qwenUp) {
+  };
+
+  onProgress({ type: 'phase', phase: 'deepseek', status: 'start' });
+  try {
+    for (const job of jobs) {
+      const tag = { courseTitle: job.courseTitle, module: job.moduleTitle, modulePath: job.modulePath };
+      onProgress({ type: 'module-start', ...tag });
+      // Repassa precondense/plano/aula do modulo (transcricao ja foi na fase 1).
+      const moduleProgress = (ev) => {
+        if (ev.type === 'precondense') onProgress({ type: 'precondense', ...tag, status: 'start' });
+        else if (ev.type === 'plano' || ev.type === 'aula') onProgress({ ...ev, ...tag });
+      };
       try {
-        for (const job of jobs) {
-          const tag = { courseTitle: job.courseTitle, module: job.moduleTitle, modulePath: job.modulePath };
-          onProgress({ type: 'precondense', ...tag, status: 'start' });
-          try {
-            if (isDrive) await precondenseModuleDrive(job.modulePath, preCache);
-            else await precondenseModuleFs(join(coursesPath, job.courseTitle, job.modulePath), preCache);
-          } catch (err) {
-            // Degrada: cache parcial; a fase 3 le o texto cru das aulas que faltaram.
-            log(`[qwen] modulo "${job.moduleTitle}": ${err.message}`);
-          }
-          onProgress({ type: 'precondense', ...tag, status: 'done' });
-        }
-      } finally {
-        // Libera a VRAM antes do DeepSeek (e pra deixar a GPU livre depois do lote).
-        try { await stopQwen({ log }); } catch (err) { log(`[qwen] stop falhou: ${err.message}`); }
+        // Idioma da condensacao: se "auto" ja foi resolvido pro curso (fase 1, fs),
+        // usa o resolvido; senao (ex.: Drive) mantem "auto" e detecta por aula.
+        const condLang = courseLang.get(job.courseTitle) ?? language;
+        const out = await generateReadingModule({
+          coursesPath,
+          courseTitle: job.courseTitle,
+          modulePath: job.modulePath,
+          moduleTitle: job.moduleTitle,
+          index: job.index,
+          model,
+          instruction,
+          autoTranscribe: false, // ja transcrito na fase 1
+          language: condLang,
+          preCondense: preCondenseOn, // usa o cache; sobe o Qwen so no 1o miss real
+          ensureQwen,
+          onProgress: moduleProgress,
+        });
+        if (transcriptionByJob.has(job.modulePath)) out.transcription = transcriptionByJob.get(job.modulePath);
+        results.push({ courseTitle: job.courseTitle, modulePath: job.modulePath, ...out });
+        onProgress({ type: 'module-result', ...tag, result: out });
+      } catch (err) {
+        results.push({ courseTitle: job.courseTitle, modulePath: job.modulePath, error: err.message });
+        onProgress({ type: 'module-error', ...tag, error: err.message });
       }
     }
-    onProgress({ type: 'phase', phase: 'qwen', status: 'done' });
-  }
-
-  // ---- FASE 3: DeepSeek (plano + condensacao + escrita), usando o cache ----
-  onProgress({ type: 'phase', phase: 'deepseek', status: 'start' });
-  for (const job of jobs) {
-    const tag = { courseTitle: job.courseTitle, module: job.moduleTitle, modulePath: job.modulePath };
-    onProgress({ type: 'module-start', ...tag });
-    // So repassa plano/aula do modulo (transcricao/precondense ja foram nas fases 1-2).
-    const moduleProgress = (ev) => {
-      if (ev.type === 'plano' || ev.type === 'aula') onProgress({ ...ev, ...tag });
-    };
-    try {
-      const out = await generateReadingModule({
-        coursesPath,
-        courseTitle: job.courseTitle,
-        modulePath: job.modulePath,
-        moduleTitle: job.moduleTitle,
-        index: job.index,
-        model,
-        instruction,
-        autoTranscribe: false, // ja transcrito na fase 1
-        language,
-        preCondense: false, // ja condensado na fase 2 (vem do preCache)
-        preCache,
-        onProgress: moduleProgress,
-      });
-      if (transcriptionByJob.has(job.modulePath)) out.transcription = transcriptionByJob.get(job.modulePath);
-      results.push({ courseTitle: job.courseTitle, modulePath: job.modulePath, ...out });
-      onProgress({ type: 'module-result', ...tag, result: out });
-    } catch (err) {
-      results.push({ courseTitle: job.courseTitle, modulePath: job.modulePath, error: err.message });
-      onProgress({ type: 'module-error', ...tag, error: err.message });
-    }
+  } finally {
+    // Derruba o Qwen SO se ele chegou a subir (libera a GPU p/ o Kokoro depois).
+    if (qwenStarted) { try { await stopQwen({ log }); } catch (err) { log(`[qwen] stop falhou: ${err.message}`); } }
   }
   onProgress({ type: 'phase', phase: 'deepseek', status: 'done' });
   return results;
-};
-
-// Fase 2 (fs): pre-condensa todas as transcricoes de um modulo no cache (path->texto).
-const precondenseModuleFs = async (moduleDir, preCache) => {
-  const transcripts = await collectModuleTranscripts(moduleDir);
-  for (const t of transcripts) {
-    try {
-      preCache.set(t.path, await preCondense(await parseTranscript(t.path), true));
-    } catch { /* aula ilegivel: fica de fora do cache, fase 3 le o cru */ }
-  }
-};
-
-// Fase 2 (drive): idem, mas chaveado pelo fileId (igual ao que a fase 3 usa).
-const precondenseModuleDrive = async (moduleFolderId, preCache) => {
-  const drive = await import('../drive/index.js');
-  const files = drive.flattenFiles(await drive.listFilesRecursive(moduleFolderId));
-  const transcripts = files.filter((f) => TRANSCRIPT_RE.test(f.name) && !MATERIAL_TXT_RE.test(f.name));
-  for (const f of transcripts) {
-    try {
-      const raw = parseTranscriptRaw(await drive.getFileContent(f.id), /\.vtt$/i.test(f.name));
-      preCache.set(f.id, await preCondense(raw, true));
-    } catch { /* idem fs */ }
-  }
 };
 
 // Versao filesystem (padrao). modulePath e relativo a raiz do curso.
@@ -440,7 +567,7 @@ const generateReadingModuleFs = async ({
   autoTranscribe = true,
   language = 'pt',
   preCondenseOn = false,
-  preCache,
+  ensureQwen,
   onProgress = () => {},
 }) => {
   const moduleDir = join(coursesPath, courseTitle, modulePath);
@@ -495,20 +622,25 @@ const generateReadingModuleFs = async ({
     const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
     let res;
     try {
-      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, preCache });
+      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };
       } else {
         const fileTitle = `${pad2(idx + 1)} ${safeName(title)}`;
         const fileName = `${fileTitle}_dub.txt`;
         await fs.writeFile(join(outDir, fileName), out.text, 'utf8');
+        // REGRA: ao (re)gerar uma aula de leitura, zera TODO material desse prefixo
+        // antes — independente de como foi criado (Gerar IA, modo Drive, etc.).
+        // Sem isso, material da era-Drive/de "Gerar IA" ficava de resquicio (ex.:
+        // podcast) quando o scan de pasta do modo atual nao achava os arquivos.
+        await purgeLessonDb(readingCourseTitle, fileTitle);
         try {
           await query(
             `INSERT INTO lesson_materials (course_title, lesson_prefix, kind, content)
              VALUES ($1, $2, 'resumo', $3)
              ON CONFLICT (course_title, lesson_prefix, kind)
              DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
-            [`${courseTitle} - Leitura`, fileTitle, out.text],
+            [readingCourseTitle, fileTitle, out.text],
           );
         } catch { /* DB falhou: o .txt ainda permite gerar o resumo via "Gerar IA". */ }
         res = { title, file: fileName, prefix: fileTitle, sources: sources.map((s) => s.title), ok: true, usage: out.usage };
@@ -532,9 +664,9 @@ const generateReadingModuleFs = async ({
 // pasta "<curso> - Leitura". WhisperX nao roda aqui (exigiria baixar os videos):
 // aulas sem .txt sao puladas.
 const generateReadingModuleDrive = async ({
-  courseTitle, modulePath, moduleTitle, index = 1,
+  coursesPath, courseTitle, modulePath, moduleTitle, index = 1,
   model = DEFAULT_MODEL, instruction = '', language = 'pt',
-  preCondenseOn = false, preCache, onProgress = () => {},
+  preCondenseOn = false, ensureQwen, onProgress = () => {},
 }) => {
   const drive = await import('../drive/index.js');
   const { getDriveFolderId } = await import('../config.js');
@@ -546,11 +678,12 @@ const generateReadingModuleDrive = async ({
   onProgress({ type: 'transcricao', status: 'done', ...transcription });
 
   const files = drive.flattenFiles(await drive.listFilesRecursive(moduleFolderId));
-  const transcripts = files
+  const driveFiles = files
     .filter((f) => TRANSCRIPT_RE.test(f.name) && !MATERIAL_TXT_RE.test(f.name))
     .map((f) => ({ name: f.name, fileId: f.id, title: lessonTitleFromFile(f.name), bytes: Number(f.size) || 0 }))
-    .sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' }))
-    .map((t, id) => ({ id, ...t }));
+    .sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' }));
+  // Funde complementos (X.Y.1 -> X.Y) em aulas logicas antes do plano.
+  const transcripts = mergeComplements(driveFiles).map((t, id) => ({ id, ...t }));
   if (transcripts.length === 0) {
     onProgress({ type: 'plano', total: 0 });
     return { module: moduleTitle, skipped: 'sem transcricoes', transcription, created: [], originalLessons: 0 };
@@ -590,22 +723,22 @@ const generateReadingModuleDrive = async ({
     try {
       const parts = [];
       let readErrors = 0;
+      let totalParts = 0;
       for (const s of sources) {
-        try {
-          const cached = preCache?.get(s.fileId);
-          if (cached != null) {
-            parts.push(cached);
-          } else {
-            const raw = parseTranscriptRaw(await drive.getFileContent(s.fileId), /\.vtt$/i.test(s.name));
-            // Pre-condensacao local opcional (no-op se desligada/indisponivel).
-            parts.push(await preCondense(raw, preCondenseOn));
-          }
-        } catch { readErrors += 1; }
+        // Cada aula logica pode ter varias `parts` (original + complemento .1).
+        for (const part of s.parts || [s]) {
+          totalParts += 1;
+          try {
+            const raw = parseTranscriptRaw(await drive.getFileContent(part.fileId), /\.vtt$/i.test(part.name));
+            // Pre-condensacao com cache persistente (no-op se desligada/indisponivel).
+            parts.push(await preCondenseCached(raw, preCondenseOn, coursesPath, ensureQwen));
+          } catch { readErrors += 1; }
+        }
       }
       // Se havia fontes e NENHUMA foi lida, foi erro de leitura (Drive), nao aula
       // vazia: falha visivel (com mensagem) em vez de sumir silenciosamente.
-      if (parts.length === 0 && sources.length > 0) {
-        throw new Error(`falha ao ler ${readErrors}/${sources.length} transcricao(oes) no Drive`);
+      if (parts.length === 0 && totalParts > 0) {
+        throw new Error(`falha ao ler ${readErrors}/${totalParts} transcricao(oes) no Drive`);
       }
       const out = await condenseText({
         lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language,
@@ -616,6 +749,9 @@ const generateReadingModuleDrive = async ({
         const fileTitle = `${pad2(idx + 1)} ${safeName(title)}`;
         const fileName = `${fileTitle}_dub.txt`;
         await drive.uploadText(outFolderId, fileName, out.text);
+        // REGRA: zera TODO material desse prefixo antes (ver fs). Garante que (re)gerar
+        // a leitura nao deixa resquicio (podcast etc.) de Gerar IA / modo anterior.
+        await purgeLessonDb(readingCourseTitle, fileTitle);
         try {
           await query(
             `INSERT INTO lesson_materials (course_title, lesson_prefix, kind, content)

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useReadTimer } from "../hooks/useReadTimer";
@@ -6,7 +6,9 @@ import { LoadingState } from "./StateViews";
 import MermaidDiagram from "./MermaidDiagram";
 import FlowDiagram from "./FlowDiagram";
 import CodeBlock from "./CodeBlock";
-import { regenerateDiagram } from "../utils/progressApi";
+import NarrationBar from "./NarrationBar";
+import { regenerateDiagram, fetchNarration } from "../utils/progressApi";
+import { getMediaUrl } from "../utils/fileUtils";
 
 const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   const [content, setContent] = useState("");
@@ -24,6 +26,30 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
     // Troca o bloco no conteudo -> ReactMarkdown re-renderiza o diagrama corrigido.
     setContent((c) => c.replace(oldChart, newChart));
   };
+
+  // ===== Narracao read-along (controle de audio ADITIVO; nao muda o layout) =====
+  // A barra de audio fica num componente SEPARADO (NarrationBar): assim o tempo do
+  // audio (atualiza ~4x/s) nao re-renderiza a leitura — era isso que fazia os
+  // diagramas/mapas piscarem. A sincronia (realce + scroll) e feita no DOM via ref.
+  const scrollRef = useRef(null);
+  const articleRef = useRef(null);
+  const [narration, setNarration] = useState(null);
+
+  const audioSrc = useMemo(
+    () => (narration?.audio ? getMediaUrl(courseTitle, narration.audio) : null),
+    [narration, courseTitle],
+  );
+
+  // Busca a narracao da aula (se existir). Reseta ao trocar de aula.
+  useEffect(() => {
+    setNarration(null);
+    if (!courseTitle || !lessonPrefix) return;
+    let cancel = false;
+    fetchNarration(courseTitle, lessonPrefix).then((n) => {
+      if (!cancel && n?.audio && Array.isArray(n.segments) && n.segments.length) setNarration(n);
+    });
+    return () => { cancel = true; };
+  }, [courseTitle, lessonPrefix]);
 
   useEffect(() => {
     if (!fileUrl) return;
@@ -47,9 +73,10 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   }
 
   return (
-    <div className="h-full overflow-y-auto bg-slate-950">
-      <div className="w-full px-4 lg:px-8 py-8">
-        <article className="space-y-6">
+    <div className="h-full flex flex-col bg-slate-950">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
+        <div className="w-full px-4 lg:px-8 py-8">
+        <article ref={articleRef} className="space-y-6">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
@@ -109,7 +136,7 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
                 </li>
               ),
               strong: ({ children }) => (
-                <strong className="text-slate-100 font-semibold bg-gradient-to-r from-amber-400/10 to-amber-300/10 px-0.5 py-0 rounded-sm">
+                <strong className="font-semibold text-emerald-200 bg-emerald-500/15 ring-1 ring-emerald-400/20 px-1.5 py-0.5 rounded-md decoration-clone">
                   {children}
                 </strong>
               ),
@@ -196,7 +223,13 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
             {content}
           </ReactMarkdown>
         </article>
+        </div>
       </div>
+
+      {/* Controle de audio (read-along) — isolado, so aparece se ha narracao. */}
+      {audioSrc && (
+        <NarrationBar audioSrc={audioSrc} segments={narration.segments} articleRef={articleRef} />
+      )}
     </div>
   );
 };

@@ -19,6 +19,7 @@
 import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import { dirname, basename, extname, join } from 'path';
+import { tmpdir } from 'os';
 
 // PT-BR usa large-v3-turbo (multilingue), igual ao fluxo PT-BR do DubAI.
 // distil-large-v3.5 e English-only e nao serve pra portugues.
@@ -104,6 +105,45 @@ const buildArgs = ({ audioFile, outDir, device, computeType, batchSize, model, l
 
 const fileExists = async (p) => {
   try { await fs.access(p); return true; } catch { return false; }
+};
+
+// Detecta o idioma de UM audio/video rodando o WhisperX MULTILINGUE (large-v3-turbo)
+// nos PRIMEIROS 30s (ffmpeg corta), SEM forcar --language -> ele detecta. Le
+// "Detected language: xx" da saida. Retorna 'en' ou 'pt' (qualquer outro -> 'pt').
+// Usado pelo "auto" pra escolher o modelo validado certo do curso, sem transcrever tudo.
+export const detectAudioLanguage = async ({ audioFile } = {}) => {
+  const bin = (process.env.WHISPERX_BIN || '').trim();
+  if (!bin) return 'pt';
+  const device = await resolveDevice();
+  const model = (process.env.WHISPERX_MODEL || '').trim() || WHISPERX_DEFAULT_MODEL; // multilingue
+  const { cmd, prefix } = splitBin(bin);
+  const env = buildEnv(bin);
+  const work = join(tmpdir(), `langdet-${Date.now()}`);
+  const clip = join(work, 'clip.wav');
+  try {
+    await fs.mkdir(work, { recursive: true });
+    // primeiros 30s, 16kHz mono (formato amigo do whisper)
+    await new Promise((resolve, reject) => {
+      const p = spawn('ffmpeg', ['-y', '-t', '30', '-i', audioFile, '-ar', '16000', '-ac', '1', clip]);
+      p.on('error', reject);
+      p.on('close', (c) => (c === 0 ? resolve() : reject(new Error('ffmpeg falhou ao cortar 30s'))));
+    });
+    const computeType = device === 'cpu' ? 'int8' : 'float16';
+    // SEM --language -> WhisperX detecta. Nao usa buildArgs (que sempre forca o idioma).
+    const args = [
+      ...prefix, '--model', model, '--device', device, '--compute_type', computeType,
+      '--batch_size', '8', '--output_dir', work, '--output_format', 'txt',
+      '--condition_on_previous_text', 'False', clip,
+    ];
+    const { output } = await run(cmd, args, env);
+    const m = output.match(/Detected language:\s*([a-z]{2})/i);
+    const code = (m && m[1] || '').toLowerCase();
+    return code === 'en' ? 'en' : 'pt';
+  } catch {
+    return 'pt';
+  } finally {
+    await fs.rm(work, { recursive: true, force: true });
+  }
 };
 
 // Transcreve UM arquivo de audio/video gerando <base>.txt na mesma pasta.

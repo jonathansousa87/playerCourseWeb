@@ -3,6 +3,9 @@ import { query } from '../../db/index.js';
 import { generateForLesson } from '../ai/generator.js';
 import { generateReadingModule, generateReadingBatch } from '../ai/readingCourse.js';
 import { regenerateLessonDiagram } from '../ai/diagram.js';
+import { generateLessonNarration } from '../ai/narration.js';
+import { clearPrecondenseCache } from '../ai/precondenseStore.js';
+import { uploadReadingCourseToDrive } from '../ai/uploadReading.js';
 import { generatePodcastForLesson, generatePodcastScript, synthesizePodcast } from '../ai/podcast.js';
 import { generateInterviewQuestions, evaluateInterview } from '../ai/interview.js';
 import { chatWithLesson } from '../ai/chat.js';
@@ -94,7 +97,7 @@ router.post('/api/ia/reading-course/module', async (req, res) => {
     model: model || DEEPSEEK_DEFAULT_MODEL,
     instruction: typeof instruction === 'string' ? instruction.trim() : '',
     autoTranscribe: autoTranscribe !== false,
-    language: language === 'en' ? 'en' : 'pt',
+    language: (language === 'en' || language === 'auto') ? language : 'pt',
     // undefined => cai no flag global do .env; boolean => override por execucao.
     preCondense: typeof preCondense === 'boolean' ? preCondense : undefined,
   };
@@ -145,7 +148,7 @@ router.post('/api/ia/reading-course/batch', async (req, res) => {
     model: model || DEEPSEEK_DEFAULT_MODEL,
     instruction: typeof instruction === 'string' ? instruction.trim() : '',
     autoTranscribe: autoTranscribe !== false,
-    language: language === 'en' ? 'en' : 'pt',
+    language: (language === 'en' || language === 'auto') ? language : 'pt',
     preCondense: typeof preCondense === 'boolean' ? preCondense : undefined,
   };
 
@@ -184,6 +187,53 @@ router.post('/api/ia/regenerate-diagram', async (req, res) => {
   } catch (err) {
     const code = err.code === 'NOT_FOUND' || err.code === 'DIAGRAM_NOT_FOUND' ? 404
       : err.code === 'BAD_INPUT' || err.code === 'BAD_OUTPUT' ? 422 : 500;
+    res.status(code).json({ error: err.message, code: err.code });
+  }
+});
+
+// Sobe um curso de LEITURA local para o Google Drive (recria a estrutura).
+// Streaming NDJSON (pode ter muitos arquivos). So aceita cursos "- Leitura".
+router.post('/api/ia/reading-course/upload-drive', async (req, res) => {
+  const { courseTitle } = req.body || {};
+  if (!courseTitle) return res.status(400).json({ error: 'courseTitle obrigatorio' });
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  const send = (ev) => { try { res.write(JSON.stringify(ev) + '\n'); } catch { /* cliente fechou */ } };
+  try {
+    const out = await uploadReadingCourseToDrive({ coursesPath: getCoursesPath(), courseTitle, onProgress: send });
+    send({ type: 'fim', result: out });
+  } catch (err) {
+    send({ type: 'erro', error: err.message, code: err.code });
+  }
+  res.end();
+});
+
+// Limpa o cache persistente da pre-condensacao do Qwen (recomeca do zero).
+router.post('/api/ia/precondense-cache/clear', async (_req, res) => {
+  try {
+    const ok = await clearPrecondenseCache(getCoursesPath());
+    res.json({ ok });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Gera a narracao "read-along" da aula (TTS local da propria leitura). Sem
+// DeepSeek; voz = preset junior do podcast (config. por NARRATION_VOICE).
+router.post('/api/ia/narration', async (req, res) => {
+  try {
+    const { courseTitle, lessonPrefix, voice } = req.body || {};
+    if (!courseTitle || !lessonPrefix) {
+      return res.status(400).json({ error: 'courseTitle e lessonPrefix obrigatorios' });
+    }
+    const out = await generateLessonNarration({
+      coursesPath: getCoursesPath(), courseTitle, lessonPrefix, voice,
+    });
+    res.json(out);
+  } catch (err) {
+    const code = err.code === 'NO_CONTENT' ? 404
+      : err.code === 'EMPTY' ? 422
+        : err.code === 'NO_KOKORO' ? 503 : 500;
     res.status(code).json({ error: err.message, code: err.code });
   }
 });

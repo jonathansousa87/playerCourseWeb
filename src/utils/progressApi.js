@@ -325,6 +325,62 @@ export const clearCourseMaterials = (courseTitle) =>
 
 // === IA (DeepSeek) ===
 // kinds: array de 'resumo' | 'quiz' | 'flashcards' | 'diario'
+// Gera a narracao read-along da aula (TTS local da leitura). Retorna
+// { audio, segments, voice, duration }.
+export const generateNarration = ({ courseTitle, lessonPrefix, voice }) =>
+  fetch(`${API_BASE}/api/ia/narration`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle, lessonPrefix, voice }),
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  });
+
+// Sobe um curso de leitura pro Drive (stream NDJSON). onProgress(ev) por arquivo.
+export const uploadReadingCourseToDrive = async ({ courseTitle, onProgress = () => {} } = {}) => {
+  const res = await fetch(`${API_BASE}/api/ia/reading-course/upload-drive`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle }),
+  });
+  if (!res.ok || !res.body) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = ""; let result = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let ev; try { ev = JSON.parse(line); } catch { continue; }
+      if (ev.type === "fim") result = ev.result;
+      else if (ev.type === "erro") throw new Error(ev.error || "erro no upload");
+      else onProgress(ev);
+    }
+  }
+  if (!result) throw new Error("upload encerrou sem resultado");
+  return result;
+};
+
+// Limpa o cache persistente da pre-condensacao do Qwen.
+export const clearPrecondenseCache = () =>
+  fetch(`${API_BASE}/api/ia/precondense-cache/clear`, { method: "POST" }).then(json);
+
+// Busca a narracao read-along de uma aula ({ audio, segments, voice, duration })
+// ou null se ainda nao foi gerada.
+export const fetchNarration = (courseTitle, lessonPrefix) =>
+  fetch(`${API_BASE}/api/materials/${enc(courseTitle)}/${enc(lessonPrefix)}/narracao`)
+    .then(async (res) => {
+      if (!res.ok) return null;
+      try { return JSON.parse(await res.text()); } catch { return null; }
+    })
+    .catch(() => null);
+
 // Regenera UM diagrama da aula (sem recondensar tudo). Retorna { chart, cost }.
 export const regenerateDiagram = ({ courseTitle, lessonPrefix, chart, kind, model, instruction }) =>
   fetch(`${API_BASE}/api/ia/regenerate-diagram`, {

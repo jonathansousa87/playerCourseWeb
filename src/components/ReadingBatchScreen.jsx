@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { INSTRUCTION_PRESETS } from "../utils/instructionPresets";
 import { collectModules, generateReadingCourseBatch, MATERIAL_KINDS } from "../utils/readingGeneration";
+import { clearPrecondenseCache } from "../utils/progressApi";
 
 const MODELS = [
   { key: "deepseek-v4-flash", label: "deepseek-v4-flash (rapido)" },
@@ -13,9 +14,9 @@ const MODELS = [
 
 // Fases globais do lote (revezam a VRAM no backend: WhisperX -> Qwen -> DeepSeek).
 const PHASES = {
-  whisper: { label: "Fase 1/3 — Transcrevendo (WhisperX)", Icon: Mic, color: "text-sky-300" },
-  qwen: { label: "Fase 2/3 — Condensando aulas (Qwen)", Icon: Cpu, color: "text-violet-300" },
-  deepseek: { label: "Fase 3/3 — Gerando leitura (DeepSeek)", Icon: Cloud, color: "text-emerald-300" },
+  whisper: { label: "Transcrevendo (WhisperX)", Icon: Mic, color: "text-sky-300" },
+  qwen: { label: "Condensando aulas (Qwen)", Icon: Cpu, color: "text-violet-300" },
+  deepseek: { label: "Gerando leitura (Qwen + DeepSeek), módulo a módulo", Icon: Cloud, color: "text-emerald-300" },
   materials: { label: "Gerando materiais (IA)", Icon: Sparkles, color: "text-amber-300" },
   done: { label: "Concluido", Icon: Check, color: "text-emerald-400" },
   cancelled: { label: "Cancelado", Icon: X, color: "text-slate-400" },
@@ -76,11 +77,21 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
   const [autoTranscribe, setAutoTranscribe] = useState(true);
   const [preCondense, setPreCondense] = useState(true); // Qwen por aula — ligado por padrao
   const [genMaterials, setGenMaterials] = useState(true);
-  const [materialKinds, setMaterialKinds] = useState(() => new Set(MATERIAL_KINDS.map((k) => k.key)));
+  // Podcast desmarcado por padrao (gere sob demanda quando quiser); os demais on.
+  const [materialKinds, setMaterialKinds] = useState(() => new Set(MATERIAL_KINDS.map((k) => k.key).filter((k) => k !== "podcast")));
 
   // UI: paineis do topo
   const [matMenuOpen, setMatMenuOpen] = useState(false);
   const [showInstruction, setShowInstruction] = useState(false);
+
+  const [cacheMsg, setCacheMsg] = useState("");
+  const handleClearCache = async () => {
+    if (!window.confirm("Limpar o cache da pré-condensação (Qwen)? Na próxima geração ele recondensa do zero (mais lento e gasta GPU).")) return;
+    setCacheMsg("limpando…");
+    try { await clearPrecondenseCache(); setCacheMsg("cache do Qwen limpo"); }
+    catch (e) { setCacheMsg(`falhou: ${e.message}`); }
+    setTimeout(() => setCacheMsg(""), 5000);
+  };
 
   const [running, setRunning] = useState(false);
   const [started, setStarted] = useState(false);
@@ -301,16 +312,17 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
             </button>
           )}
 
-          {/* Idioma (obrigatorio escolher) */}
+          {/* Idioma do curso original (Auto = detecta PT/EN por aula) */}
           <div className="inline-flex h-9 rounded-lg border border-slate-700 overflow-hidden">
-            {["pt", "en"].map((l) => (
+            {["pt", "en", "auto"].map((l) => (
               <button
                 key={l}
                 disabled={running}
                 onClick={() => setLanguage(l)}
                 className={`px-3 text-sm ${language === l ? "bg-emerald-500/15 text-emerald-200" : "text-slate-400 hover:bg-slate-800/60"}`}
+                title={l === "auto" ? "Detecta automaticamente PT ou EN em cada aula" : ""}
               >
-                {l === "pt" ? "Portugues" : "Ingles"}
+                {l === "pt" ? "Portugues" : l === "en" ? "Ingles" : "Auto"}
               </button>
             ))}
           </div>
@@ -373,6 +385,16 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
 
           <div className="flex-1" />
 
+          <button
+            onClick={handleClearCache}
+            disabled={running}
+            title="Limpa o cache em disco da pré-condensação do Qwen (.precondense-cache). Use se quiser recondensar do zero."
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-slate-700 text-slate-400 hover:bg-slate-800/60 text-xs disabled:opacity-40"
+          >
+            <Cpu className="w-3.5 h-3.5" /> Limpar cache Qwen
+          </button>
+          {cacheMsg && <span className="text-[11px] text-slate-400">{cacheMsg}</span>}
+
           {started && (
             <span
               className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 text-emerald-200 text-sm tabular-nums"
@@ -410,7 +432,7 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
         {/* Linha-resumo: opcoes escolhidas, na horizontal */}
         <div className="flex flex-wrap items-center gap-1.5">
           <Chip label="Nicho" value={nicheLabel || "—"} danger={!niche} />
-          <Chip label="Idioma" value={language === "pt" ? "Portugues" : "Ingles"} />
+          <Chip label="Idioma" value={language === "pt" ? "Portugues" : language === "en" ? "Ingles" : "Auto (detecta)"} />
           <Chip label="Qwen" value={preCondense ? "sim" : "nao"} />
           <Chip label="Transcrever" value={autoTranscribe ? "faltantes" : "nao"} />
           <Chip

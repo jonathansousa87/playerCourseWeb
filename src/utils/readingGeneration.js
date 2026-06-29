@@ -8,6 +8,7 @@ import {
   generatePrequestions,
   generatePodcastScript,
   generatePodcastAudio,
+  generateNarration,
 } from "./progressApi";
 
 export const MATERIAL_KINDS = [
@@ -16,6 +17,7 @@ export const MATERIAL_KINDS = [
   { key: "quiz", label: "Quiz" },
   { key: "flashcards", label: "Flashcards" },
   { key: "diario", label: "Diario" },
+  { key: "narracao", label: "Narracao" },
   { key: "podcast", label: "Podcast" },
 ];
 
@@ -63,6 +65,10 @@ const runLessonMaterials = async ({ leituraTitle, prefix, kinds, model, instruct
   if (kinds.includes("prequiz")) {
     const pq = await generatePrequestions({ courseTitle: leituraTitle, lessonPrefix: prefix, model, instruction: instr });
     cost += pq?.cost || 0;
+  }
+  if (kinds.includes("narracao")) {
+    // Narracao read-along: TTS local da propria leitura. Sem DeepSeek (custo 0).
+    await generateNarration({ courseTitle: leituraTitle, lessonPrefix: prefix });
   }
   if (kinds.includes("podcast")) {
     // Concorrencia do Kokoro e controlada no backend (fila + Semaphore).

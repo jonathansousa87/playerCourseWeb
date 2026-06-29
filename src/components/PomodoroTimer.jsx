@@ -46,7 +46,7 @@ const playNotificationSound = () => {
   }
 };
 
-const PomodoroTimer = ({ isVideoPlaying, onPauseVideo, courseTitle }) => {
+const PomodoroTimer = ({ isVideoPlaying, onPauseVideo, courseTitle, autoStart = false, bottomOffset = 12, align = "center", rightOffset = 12 }) => {
   const [focusDuration, setFocusDuration] = useState(DEFAULT_FOCUS);
   const [timeLeft, setTimeLeft] = useState(DEFAULT_FOCUS);
   const [isRunning, setIsRunning] = useState(false);
@@ -80,13 +80,14 @@ const PomodoroTimer = ({ isVideoPlaying, onPauseVideo, courseTitle }) => {
     return () => { cancelled = true; };
   }, []);
 
-  // Auto-start once when video first plays, then keep running
+  // Auto-start: quando o video toca (aulas de video) OU quando `autoStart` (aulas
+  // de leitura, que nao tem video) — assim o Pomodoro tambem roda na leitura.
   useEffect(() => {
-    if (isVideoPlaying && phase === "focus" && !startedRef.current) {
+    if ((isVideoPlaying || autoStart) && phase === "focus" && !startedRef.current) {
       startedRef.current = true;
       setIsRunning(true);
     }
-  }, [isVideoPlaying]);
+  }, [isVideoPlaying, autoStart]);
 
   // Timer tick
   useEffect(() => {
@@ -377,7 +378,10 @@ const PomodoroTimer = ({ isVideoPlaying, onPauseVideo, courseTitle }) => {
 
   // Focus bar - compact
   return (
-    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-slate-900/95 border border-slate-700/40 rounded-full px-4 py-1.5 shadow-xl backdrop-blur-sm">
+    <div
+      style={align === "right" ? { bottom: `${bottomOffset}px`, right: `${rightOffset}px` } : { bottom: `${bottomOffset}px`, left: "50%", transform: "translateX(-50%)" }}
+      className="fixed z-[60] flex items-center gap-3 bg-slate-900/95 border border-slate-700/40 rounded-full px-4 py-1.5 shadow-xl backdrop-blur-sm"
+    >
       {/* Progress bar */}
       <div className="w-28 h-1.5 bg-slate-800 rounded-full overflow-hidden">
         <div

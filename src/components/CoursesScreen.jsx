@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { LogOut, Settings, BarChart3, RefreshCw, Keyboard, ChevronRight, Bell, AlertTriangle, ShieldAlert, BookOpenText, Wallet } from "lucide-react";
+import { LogOut, Settings, BarChart3, RefreshCw, Keyboard, ChevronRight, Bell, AlertTriangle, ShieldAlert, BookOpenText, Wallet, UploadCloud, Loader2, Check } from "lucide-react";
 import CourseCard from "./CourseCard";
+import { uploadReadingCourseToDrive } from "../utils/progressApi";
 import ConfigModal from "./ConfigModal";
 import OrphanCoursesModal from "./OrphanCoursesModal";
 import AdminModal from "./AdminModal";
@@ -61,6 +62,26 @@ const CoursesScreen = ({
   const [batchCourses, setBatchCourses] = useState([]);
   // Saldo DeepSeek (consulta leve, nao gasta creditos de geracao).
   const [balance, setBalance] = useState(null);
+
+  // Upload de curso de leitura pro Drive (estado por curso).
+  const [driveUp, setDriveUp] = useState({});
+  const handleUploadDrive = async (course) => {
+    if (driveUp[course.title]?.status === "running") return;
+    if (!window.confirm(`Enviar "${course.title}" pro Google Drive? (recria a estrutura e substitui arquivos de mesmo nome)`)) return;
+    setDriveUp((s) => ({ ...s, [course.title]: { status: "running", done: 0, total: 0 } }));
+    try {
+      const r = await uploadReadingCourseToDrive({
+        courseTitle: course.title,
+        onProgress: (ev) => {
+          if (ev.type === "start") setDriveUp((s) => ({ ...s, [course.title]: { status: "running", done: 0, total: ev.total } }));
+          else if (ev.type === "file") setDriveUp((s) => ({ ...s, [course.title]: { status: "running", done: ev.done, total: ev.total } }));
+        },
+      });
+      setDriveUp((s) => ({ ...s, [course.title]: { status: r.failed ? "warn" : "done", done: r.done, total: r.total, failed: r.failed } }));
+    } catch (e) {
+      setDriveUp((s) => ({ ...s, [course.title]: { status: "error", error: e.message } }));
+    }
+  };
   useEffect(() => { fetchDeepseekBalance().then(setBalance).catch(() => {}); }, []);
   const reloadOrphans = () =>
     fetchOrphanCourses()
@@ -266,12 +287,31 @@ const CoursesScreen = ({
               videoDurations || {},
             );
             const due = dueByCourse[course.title] || 0;
+            const isReading = / - Leitura$/.test(course.title);
+            const up = driveUp[course.title];
             return (
               <div
                 key={index}
                 onClick={() => onSelectCourse(course)}
                 className="cursor-pointer relative"
               >
+                {isReading && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleUploadDrive(course); }}
+                    disabled={up?.status === "running"}
+                    title="Enviar este curso de leitura para o Google Drive"
+                    className="absolute top-2 left-2 z-10 flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-900/85 border border-slate-600/50 text-slate-200 text-[11px] font-medium shadow hover:bg-slate-800 disabled:opacity-70"
+                  >
+                    {up?.status === "running" ? <Loader2 className="w-3 h-3 animate-spin" />
+                      : up?.status === "done" ? <Check className="w-3 h-3 text-emerald-400" />
+                        : up?.status === "error" || up?.status === "warn" ? <AlertTriangle className="w-3 h-3 text-amber-400" />
+                          : <UploadCloud className="w-3 h-3" />}
+                    {up?.status === "running" ? `${up.done}/${up.total}`
+                      : up?.status === "done" ? "no Drive"
+                        : up?.status === "warn" ? `${up.failed} falha(s)`
+                          : up?.status === "error" ? "erro" : "Drive"}
+                  </button>
+                )}
                 {due > 0 && (
                   <span
                     className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/90 text-amber-950 text-[11px] font-bold shadow"

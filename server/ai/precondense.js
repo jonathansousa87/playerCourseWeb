@@ -15,6 +15,8 @@
 // no setup do spike). Como usa a GPU, rode-o so APOS o WhisperX terminar a
 // transcricao (a fase 0 do gerador ja roda antes desta etapa).
 
+import { getCachedPrecondense, setCachedPrecondense } from './precondenseStore.js';
+
 const truthy = (v) => /^(1|true|yes|on)$/i.test((v || '').trim());
 
 const ENABLED = truthy(process.env.PRECONDENSE_ENABLED);
@@ -83,4 +85,33 @@ export const preCondense = async (text, enabled = ENABLED) => {
   } finally {
     clearTimeout(timeout);
   }
+};
+
+// preCondense COM cache persistente (content-addressed). Reusa o resultado do Qwen
+// entre execucoes: reprocessar um modulo no DeepSeek NAO re-condensa (nem precisa
+// do Qwen no ar). So grava no cache quando o Qwen REALMENTE condensou (se ele
+// falhar/degradar pro original, nao cacheia, pra tentar de novo depois).
+// `ensureReady` (opcional): callback async chamado SO quando vai mesmo condensar
+// (cache miss + habilitado). Memoizado pelo chamador pra subir o Qwen UMA vez e
+// SO se necessario — se tudo estiver em cache, o Qwen nem sobe. Deve retornar
+// true se o Qwen esta pronto; false -> degrada pro texto cru.
+export const preCondenseCached = async (text, enabled = ENABLED, coursesPath, ensureReady) => {
+  const raw = (text || '').trim();
+
+  // CACHE PRIMEIRO: se ja foi condensado antes, usa — MESMO com o Qwen desligado.
+  // Assim da pra reprocessar um modulo no DeepSeek sem o Qwen no ar.
+  if (raw.length >= MIN_CHARS) {
+    const cached = await getCachedPrecondense(coursesPath, raw);
+    if (cached != null) return cached;
+  }
+
+  // Sem cache: so condensa se o Qwen estiver habilitado; senao devolve o cru.
+  if (!enabled || raw.length < MIN_CHARS) return text;
+
+  // Cache miss real -> agora sim garante o Qwen no ar (sobe sob demanda, 1x).
+  if (ensureReady && !(await ensureReady())) return text;
+
+  const out = await preCondense(text, true);
+  if (out && out !== text) await setCachedPrecondense(coursesPath, raw, out);
+  return out;
 };

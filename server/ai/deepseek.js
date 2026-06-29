@@ -102,6 +102,10 @@ export const chatCompletion = async ({
   temperature = 0.4,
   maxTokens = 4096,
   responseFormat,
+  // Controla o "thinking" do modelo. Passe { type: 'disabled' } para emitir a
+  // resposta direto, sem gastar o orcamento de output em reasoning (mais barato
+  // e evita truncar JSON em prompts grandes — ver planGrouping).
+  thinking,
 }) => {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) {
@@ -114,6 +118,7 @@ export const chatCompletion = async ({
 
   const body = { model, messages, temperature, max_tokens: maxTokens, stream: false };
   if (responseFormat) body.response_format = responseFormat;
+  if (thinking) body.thinking = thinking;
 
   await acquire();
   try {

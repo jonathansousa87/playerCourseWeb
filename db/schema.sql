@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS lesson_materials (
     id            BIGSERIAL PRIMARY KEY,
     course_title  TEXT        NOT NULL,
     lesson_prefix TEXT        NOT NULL,
-    kind          TEXT        NOT NULL CHECK (kind IN ('resumo', 'quiz', 'exemplos', 'diario', 'piada', 'podcast')),
+    kind          TEXT        NOT NULL CHECK (kind IN ('resumo', 'quiz', 'exemplos', 'diario', 'piada', 'podcast', 'narracao')),
     content       TEXT        NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),

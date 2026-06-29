@@ -50,9 +50,35 @@ const warmup = async () => {
   // Nao aquecida em ~30s: segue mesmo assim (o synthesize ainda re-tenta).
 };
 
+// Derruba o Kokoro (container docker) pra liberar a VRAM — usado pelo
+// revezamento: o Qwen (llama-server) e o Kokoro nao cabem juntos na GPU de 11GB.
+export const stopKokoro = async ({ log = () => {} } = {}) => {
+  if (!(await reachable())) return true;
+  const cmd = (process.env.KOKORO_STOP_CMD ?? 'docker stop kokoro-container').trim();
+  if (!cmd) return false;
+  log('[kokoro] derrubando pra liberar a VRAM');
+  await new Promise((res) => {
+    const p = spawn(cmd, { shell: true, stdio: 'ignore' });
+    p.on('close', res);
+    p.on('error', res);
+  });
+  for (let i = 0; i < 20; i++) {
+    await sleep(1000);
+    if (!(await reachable())) { await sleep(1000); log('[kokoro] derrubado'); return true; }
+  }
+  return true;
+};
+
 // Garante o Kokoro no ar E com o modelo pronto pra sintetizar. Se cair, tenta
 // subir o container (configuravel). Em docker o boot + carga leva ~15-30s.
 export const ensureServer = async () => {
+  // Revezamento de VRAM: antes de subir/usar o Kokoro, derruba o Qwen (se estiver
+  // no ar) pra liberar a GPU. Import dinamico p/ evitar ciclo com qwenServer.
+  try {
+    const { stopQwen } = await import('./qwenServer.js');
+    await stopQwen({ log: (m) => console.log(m) });
+  } catch (e) { console.warn('[kokoro] nao consegui derrubar o Qwen:', e.message); }
+
   let up = await reachable();
   if (!up) {
     const startCmd = (process.env.KOKORO_START_CMD ?? 'docker start kokoro-container').trim();

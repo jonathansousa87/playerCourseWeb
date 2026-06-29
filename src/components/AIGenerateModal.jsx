@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { generateIa, generatePrequestions, generatePodcastScript, generatePodcastAudio } from "../utils/progressApi";
+import { generateIa, generatePrequestions, generatePodcastScript, generatePodcastAudio, generateNarration } from "../utils/progressApi";
 import { INSTRUCTION_PRESETS } from "../utils/instructionPresets";
 
 // kinds que correspondem a uma chave de `materials` (pra detectar "ja gerado").
 // prequiz nao tem material em lesson_materials (e on-demand) — sempre "a gerar".
-const MATERIAL_KEYS = new Set(["resumo", "exemplos", "piada", "quiz", "flashcards", "diario", "podcast"]);
+const MATERIAL_KEYS = new Set(["resumo", "exemplos", "piada", "quiz", "flashcards", "diario", "narracao", "podcast"]);
 
 // "prequiz" eh especial: nao gera arquivo no disco, salva no Postgres
 // (lesson_prequestions). Roteado pra um endpoint diferente em handleGenerate.
@@ -16,6 +16,7 @@ const KIND_OPTIONS = [
   { key: "quiz", label: "Quiz", icon: "❓", color: "purple" },
   { key: "flashcards", label: "Flashcards", icon: "🔁", color: "cyan" },
   { key: "diario", label: "Diario tecnico", icon: "📓", color: "rose" },
+  { key: "narracao", label: "Narracao (read-along)", icon: "🔊", color: "emerald" },
   { key: "podcast", label: "Podcast (audio, ~5 min)", icon: "🎙️", color: "blue" },
 ];
 
@@ -140,7 +141,22 @@ const AIGenerateModal = ({
     // cadeia de materiais pra nao competir na API (foge do rate limit); depois
     // (2) o AUDIO no Chatterbox (GPU local) roda EM PARALELO com os materiais.
     const hasPodcast = kinds.includes("podcast");
-    const serialKinds = kinds.filter((k) => k !== "podcast");
+    // Narracao read-along: TTS local da leitura (sem DeepSeek). Roda em paralelo
+    // com os materiais, igual ao audio do podcast.
+    const hasNarration = kinds.includes("narracao");
+    const serialKinds = kinds.filter((k) => k !== "podcast" && k !== "narracao");
+
+    let narrationPromise = null;
+    if (hasNarration) {
+      setProgress((p) => ({ ...p, running: new Set(p.running).add("narracao") }));
+      narrationPromise = generateNarration({ courseTitle, lessonPrefix })
+        .then((out) => ({ kind: "narracao", ok: true, file: `${out.blocks} blocos — ${Math.round(out.duration)}s` }))
+        .catch((err) => ({ kind: "narracao", ok: false, error: err.message || "erro" }))
+        .then((res) => {
+          setProgress((p) => { const r = new Set(p.running); r.delete("narracao"); return { ...p, running: r }; });
+          return res;
+        });
+    }
 
     let audioPromise = null;
     if (hasPodcast) {
@@ -169,6 +185,7 @@ const AIGenerateModal = ({
       });
     });
 
+    if (narrationPromise) record(await narrationPromise);
     if (audioPromise) {
       record(await audioPromise);
       setPodcastRunning(false);

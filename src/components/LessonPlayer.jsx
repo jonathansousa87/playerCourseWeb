@@ -226,6 +226,10 @@ const LessonGroupPlayer = ({
             if (video && !video.paused) video.pause();
           }}
           courseTitle={selectedCourse.title}
+          autoStart={!videoMaterial}
+          align={videoMaterial ? "center" : "right"}
+          bottomOffset={videoMaterial ? 12 : 8}
+          rightOffset={88}
         />
 
         <ChatFAB

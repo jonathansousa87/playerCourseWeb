@@ -53,6 +53,12 @@ export const startQwen = async ({ timeoutMs = 120000, log = () => {} } = {}) => 
     log('[qwen] ja esta no ar');
     return true;
   }
+  // Revezamento de VRAM: derruba o Kokoro (se estiver no ar) antes de subir o
+  // Qwen. Import dinamico p/ evitar ciclo com kokoro.js.
+  try {
+    const { stopKokoro } = await import('./kokoro.js');
+    await stopKokoro({ log });
+  } catch (e) { log(`[qwen] nao consegui derrubar o Kokoro: ${e.message}`); }
   log(`[qwen] subindo via: ${START_CMD}`);
   // shell+detached: start.sh faz `exec llama-server`, virando lider de sessao;
   // assim da pra matar o grupo inteiro no stop.

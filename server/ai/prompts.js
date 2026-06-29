@@ -547,8 +547,12 @@ Below is the list of video lessons in this module (in their original order). Pla
 READING course: combine RELATED short lessons (same topic) into larger reading lessons, without
 losing content. Aim for BALANCE — neither 1 giant shallow lesson, nor 1-to-1.
 
-Goal: a module with several short lessons usually becomes ~HALF (e.g. 5 lessons -> 2 or 3 reading
-lessons). Each reading lesson typically gathers 2 to 4 related original lessons.
+Goal: a module usually becomes HALF OR LESS. A dense module of ~15-18 short, sequential lessons
+typically becomes ~5-6 reading lessons. Each reading lesson typically gathers 2 to 5 related
+original lessons. Prefer CONSOLIDATING the whole arc of ONE feature into a single reading lesson —
+its intro/overview + creation + refactor + challenge that build on each other — instead of
+splitting them. Do NOT leave a lone short lesson by itself when it shares the subject with an
+adjacent group — fold it in (e.g. a "JPQL queries" lesson belongs with the other query lessons).
 ${hasSize ? `
 DENSITY (important): each lesson is tagged (short), (medium) or (LONG) by transcript size.
 Balance the MASS of the groups, not just the count: one (LONG) lesson alone can already become a
@@ -560,16 +564,30 @@ lessons teach — nothing shallow, nothing cut. If merging too much would make t
 superficial, group LESS (split into more lessons).
 
 Group by topic affinity:
+- COMPLEMENTS / CONTINUATIONS are the SAME lesson split apart — ALWAYS merge them and count them
+  as ONE (a complement does NOT use up a slot in the ~5 cap). Recognize them by: the SAME title
+  repeated; an extra numbering suffix (e.g. "5.4" and "5.4.1", "5.5" and "5.5.1"); "Parte 1/2/N";
+  a "Desafio" followed by its "Resolução do desafio"; "continuação". Example:
+  [5.5 Desafio ...] + [5.5.1 Desafio ...] -> a SINGLE reading lesson.
 - "Parte 1/2/N" and explanation+solution+challenge of the SAME exercise: always together.
 - Neighboring lessons on the same subject (e.g. context/intro of the topic + first steps + details).
 - A short "overview/why" lesson with the first practical lesson of the same topic.
+- Several short lessons that teach DIFFERENT approaches or steps toward the SAME capability belong
+  in ONE reading lesson (e.g. all the basic ways to write queries — derived query methods, their
+  prefixes, custom @Query, JPQL — form a single "Consultas" lesson). Keep clearly distinct,
+  advanced techniques as their own lessons.
 
 Keep them separate when they are clearly distinct topics and dense enough for their own lesson.
 Do not force unrelated subjects together just to reduce the count.
 
 Rules:
 - Cover ALL lessons. Each id must appear in EXACTLY one group.
-- Avoid groups with more than ~5 lessons (unless they are "Parte 1..N" of the same topic).
+- Avoid groups with more than ~5 BASE lessons. Complements/continuations of the same lesson
+  (same title, ".1" suffix, "Parte 1..N", "Desafio"+"Resolução") do NOT count toward this limit.
+- MASS LIMIT (so nothing gets cut): one reading lesson must cover its sources IN FULL. Do NOT put
+  many DENSE lessons together — at most ~2 (LONG) lessons per group; if a thematic group would be
+  very heavy (several LONG/medium lessons combined), SPLIT it into 2 cohesive lessons. Coverage and
+  fitting the content win over having fewer lessons.
 - Preserve the logical learning order.
 - Clear, direct titles in Brazilian Portuguese, WITHOUT a number at the start (no "1." or "01").
 
@@ -681,7 +699,7 @@ Other rules:
 
 Original transcript(s):
 ---
-${trunc(transcript, 28000)}
+${trunc(transcript, 60000)}
 ---
 
 Return ONLY the lesson in Markdown, with no outer fences and no commentary about the task.`.trim();
@@ -724,7 +742,7 @@ ${MERMAID_CLASSES_RULES}
 
 Current reading lesson:
 ---
-${trunc(transcript, 28000)}
+${trunc(transcript, 60000)}
 ---
 Return ONLY the Markdown of the complete lesson, with no outer fences and no commentary about the task.`.trim();
 
