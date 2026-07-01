@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import MermaidDiagram from "./MermaidDiagram";
 import FlowDiagram from "./FlowDiagram";
@@ -7,6 +7,73 @@ import remarkGfm from "remark-gfm";
 import { parseExemplosHtml, parseExemplosMd } from "../utils/examplesParser";
 import { useReadTimer } from "../hooks/useReadTimer";
 import { LoadingState, ErrorState } from "./StateViews";
+
+// Estavel entre renders: passar um array novo a cada render faria o ReactMarkdown
+// reconciliar do zero — os diagramas Mermaid/Flow desmontavam e remontavam a cada
+// atualizacao de videoDurations no CoursePlatform (o "piscar" das telas de aula).
+const REMARK_PLUGINS = [remarkGfm];
+
+// Objeto `components` estavel (modulo) — mesma razao do REMARK_PLUGINS: se a
+// referencia mudar a cada render, o ReactMarkdown remonta todos os nos filhos,
+// inclusive os <MermaidDiagram> que re-executam mermaid.render() (piscar).
+// Nenhum destes componentes referencia closure/props — sao todos estaticos.
+const MD_COMPONENTS = {
+  p: ({ children }) => (
+    <p className="text-slate-300 text-sm leading-[1.8] mb-3">{children}</p>
+  ),
+  ul: ({ children }) => (
+    <ul className="space-y-1.5 my-2 pl-1 [&_li]:text-slate-300 [&_li]:text-sm">{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="space-y-1.5 my-2 pl-4 [&_li]:text-slate-300 [&_li]:text-sm">{children}</ol>
+  ),
+  li: ({ children }) => (
+    <li className="flex items-start gap-2 text-sm">
+      <span className="w-1.5 h-1.5 rounded-full bg-amber-400/60 mt-2 flex-shrink-0" />
+      <span>{children}</span>
+    </li>
+  ),
+  strong: ({ children }) => (
+    <strong className="text-slate-100 font-semibold">{children}</strong>
+  ),
+  code: ({ node, children, ...props }) => {
+    const isInline = !node?.position?.start.line || node?.position?.start.line === node?.position?.end.line;
+    // ```mermaid -> render PADRAO; ```flow -> React Flow (secundario/legado).
+    if (!isInline && /\blanguage-mermaid\b/.test(props.className || "")) {
+      return <MermaidDiagram chart={String(children).replace(/\n$/, "")} />;
+    }
+    if (!isInline && /\blanguage-flow\b/.test(props.className || "")) {
+      return <FlowDiagram spec={String(children).replace(/\n$/, "")} />;
+    }
+    return isInline ? (
+      <code className="text-[12px] font-mono bg-slate-800/70 text-cyan-300 px-1.5 py-0.5 rounded border border-slate-700/40" {...props}>
+        {children}
+      </code>
+    ) : (
+      <CodeBlock className={props.className}>{children}</CodeBlock>
+    );
+  },
+  pre: ({ children }) => <>{children}</>,
+  blockquote: ({ children }) => (
+    <blockquote className="my-3 border-l-4 border-amber-500/50 pl-4 text-slate-400 text-sm italic">
+      {children}
+    </blockquote>
+  ),
+  h3: ({ children }) => (
+    <h3 className="text-purple-300 font-medium text-sm mt-4 mb-2">{children}</h3>
+  ),
+  table: ({ children }) => (
+    <div className="my-4 overflow-x-auto">
+      <table className="w-full text-sm border-collapse">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className="text-left font-semibold text-slate-200 px-3 py-2 border border-slate-700/60 bg-slate-800/40">{children}</th>
+  ),
+  td: ({ children }) => (
+    <td className="px-3 py-2 border border-slate-700/40 text-slate-300 align-top">{children}</td>
+  ),
+};
 
 const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   const [cards, setCards] = useState([]);
@@ -64,64 +131,8 @@ const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
             {isMd ? (
               <div className="text-slate-300 text-sm leading-relaxed">
                 <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    p: ({ children }) => (
-                      <p className="text-slate-300 text-sm leading-[1.8] mb-3">{children}</p>
-                    ),
-                    ul: ({ children }) => (
-                      <ul className="space-y-1.5 my-2 pl-1 [&_li]:text-slate-300 [&_li]:text-sm">{children}</ul>
-                    ),
-                    ol: ({ children }) => (
-                      <ol className="space-y-1.5 my-2 pl-4 [&_li]:text-slate-300 [&_li]:text-sm">{children}</ol>
-                    ),
-                    li: ({ children }) => (
-                      <li className="flex items-start gap-2 text-sm">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400/60 mt-2 flex-shrink-0" />
-                        <span>{children}</span>
-                      </li>
-                    ),
-                    strong: ({ children }) => (
-                      <strong className="text-slate-100 font-semibold">{children}</strong>
-                    ),
-                    code: ({ node, children, ...props }) => {
-                      const isInline = !node?.position?.start.line || node?.position?.start.line === node?.position?.end.line;
-                      // ```mermaid -> render PADRAO; ```flow -> React Flow (secundario/legado).
-                      if (!isInline && /\blanguage-mermaid\b/.test(props.className || "")) {
-                        return <MermaidDiagram chart={String(children).replace(/\n$/, "")} />;
-                      }
-                      if (!isInline && /\blanguage-flow\b/.test(props.className || "")) {
-                        return <FlowDiagram spec={String(children).replace(/\n$/, "")} />;
-                      }
-                      return isInline ? (
-                        <code className="text-[12px] font-mono bg-slate-800/70 text-cyan-300 px-1.5 py-0.5 rounded border border-slate-700/40" {...props}>
-                          {children}
-                        </code>
-                      ) : (
-                        <CodeBlock className={props.className}>{children}</CodeBlock>
-                      );
-                    },
-                    pre: ({ children }) => <>{children}</>,
-                    blockquote: ({ children }) => (
-                      <blockquote className="my-3 border-l-4 border-amber-500/50 pl-4 text-slate-400 text-sm italic">
-                        {children}
-                      </blockquote>
-                    ),
-                    h3: ({ children }) => (
-                      <h3 className="text-purple-300 font-medium text-sm mt-4 mb-2">{children}</h3>
-                    ),
-                    table: ({ children }) => (
-                      <div className="my-4 overflow-x-auto">
-                        <table className="w-full text-sm border-collapse">{children}</table>
-                      </div>
-                    ),
-                    th: ({ children }) => (
-                      <th className="text-left font-semibold text-slate-200 px-3 py-2 border border-slate-700/60 bg-slate-800/40">{children}</th>
-                    ),
-                    td: ({ children }) => (
-                      <td className="px-3 py-2 border border-slate-700/40 text-slate-300 align-top">{children}</td>
-                    ),
-                  }}
+                  remarkPlugins={REMARK_PLUGINS}
+                  components={MD_COMPONENTS}
                 >
                   {c.content}
                 </ReactMarkdown>
@@ -139,4 +150,10 @@ const ExamplesViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   );
 };
 
-export default ExamplesViewer;
+// React.memo: as props (fileUrl, courseTitle, lessonPrefix) sao strings estaveis.
+// Quando o CoursePlatform re-renderiza por causa de setVideoDurations (carregar
+// duracao dos videos na lista), a cascade chega ao LessonStepper e daqui aos
+// filhos. Sem o memo, o ReactMarkdown re-renderiza e seus filhos (MermaidDiagram)
+// desmontam/remontam -> piscar. Com o memo + components/plugins estaveis, o React
+// pula o re-render inteiro e os diagramas ficam estaveis.
+export default memo(ExamplesViewer);

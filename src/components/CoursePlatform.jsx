@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 
 import CoursesScreen from "./CoursesScreen";
 import LessonsView from "./LessonsView";
@@ -98,17 +98,18 @@ const MainComponent = () => {
     toggleStepComplete(selectedCourse.title, stepKey);
   };
 
-  const currentCourseSteps = selectedCourse
-    ? completedSteps[selectedCourse.title] || {}
-    : {};
+  const currentCourseSteps = useMemo(
+    () => (selectedCourse ? completedSteps[selectedCourse.title] || {} : {}),
+    [selectedCourse, completedSteps],
+  );
 
-  const toggleModuleExpansion = (modulePath) => {
+  const toggleModuleExpansion = useCallback((modulePath) => {
     if (!modulePath) return;
     setExpandedModules((prev) => ({
       ...prev,
       [modulePath]: !prev[modulePath],
     }));
-  };
+  }, []);
 
   // Auto-expande o modulo que contem a aula ativa.
   useEffect(() => {
@@ -314,7 +315,7 @@ const MainComponent = () => {
     onBack: handleBack,
     });
 
-  const courseContextValue = {
+  const courseContextValue = useMemo(() => ({
     selectedCourse,
     selectedLesson,
     completedLessons,
@@ -326,7 +327,19 @@ const MainComponent = () => {
     onSelectLesson: handleLessonSelect,
     onToggleLessonComplete: handleToggleLessonComplete,
     lessonAccuracy: lessonAccuracy.map,
-  };
+  }), [
+    selectedCourse,
+    selectedLesson,
+    completedLessons,
+    currentCourseSteps,
+    expandedModules,
+    toggleModuleExpansion,
+    videoDurations,
+    loadingVideos,
+    handleLessonSelect,
+    handleToggleLessonComplete,
+    lessonAccuracy.map,
+  ]);
 
   if (loading) {
     return (

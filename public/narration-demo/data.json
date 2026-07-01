@@ -1,0 +1,84 @@
+{
+  "voice": "pf_dora+bf_lily+if_sara",
+  "blocks": [
+    {
+      "type": "h1",
+      "html": "Ciclo de vida de um Bean no Spring",
+      "narrate": "Ciclo de vida de um Bean no Spring.",
+      "start": 0,
+      "end": 2.51
+    },
+    {
+      "type": "p",
+      "html": "Todo objeto gerenciado pelo container do Spring passa por um <b>ciclo de vida</b>: é criado, recebe suas dependências, é inicializado, fica disponível para uso e, no fim, é destruído. Conhecer esse ciclo é o que permite executar código no momento certo.",
+      "narrate": "Todo objeto gerenciado pelo container do Spring passa por um ciclo de vida: é criado, recebe suas dependências, é inicializado, fica disponível para uso e, no fim, é destruído. Conhecer esse ciclo é o que permite executar código no momento certo.",
+      "start": 2.51,
+      "end": 18.41
+    },
+    {
+      "type": "h2",
+      "html": "Mapa mental",
+      "narrate": "Mapa mental.",
+      "start": 18.41,
+      "end": 19.85
+    },
+    {
+      "type": "mermaid",
+      "code": "mindmap\n  root((Ciclo de vida))\n    Inicializacao\n      PostConstruct\n      afterPropertiesSet\n    Uso\n    Destruicao\n      PreDestroy"
+    },
+    {
+      "type": "h2",
+      "html": "Fluxo de criação",
+      "narrate": "Fluxo de criação.",
+      "start": 19.85,
+      "end": 21.62
+    },
+    {
+      "type": "p",
+      "html": "O container instancia o bean, injeta as dependências e então chama a inicialização. A partir daí o bean fica pronto para uso até que o contexto seja encerrado.",
+      "narrate": "O container instancia o bean, injeta as dependências e então chama a inicialização. A partir daí o bean fica pronto para uso até que o contexto seja encerrado.",
+      "start": 21.62,
+      "end": 31.4
+    },
+    {
+      "type": "mermaid",
+      "code": "flowchart TB\n  A[\"Container Spring\"] --> B(\"Instancia o bean\")\n  B --> C(\"Injeta dependencias\")\n  C --> D(\"@PostConstruct\")\n  D --> E([\"Bean pronto / em uso\"])\n  E --> F(\"@PreDestroy\")"
+    },
+    {
+      "type": "h2",
+      "html": "Na prática",
+      "narrate": "Na prática.",
+      "start": 31.4,
+      "end": 32.67
+    },
+    {
+      "type": "p",
+      "html": "Use <b>@PostConstruct</b> para preparar o bean e <b>@PreDestroy</b> para liberar recursos. O exemplo abaixo mostra os dois pontos de engate no mesmo componente.",
+      "narrate": "Use PostConstruct para preparar o bean e PreDestroy para liberar recursos. O exemplo abaixo mostra os dois pontos de engate no mesmo componente.",
+      "start": 32.67,
+      "end": 41.45
+    },
+    {
+      "type": "code",
+      "html": "@Component\nclass Relatorio {\n  @PostConstruct\n  void aoIniciar() {\n    // prepara recursos\n  }\n  @PreDestroy\n  void aoEncerrar() {\n    // libera recursos\n  }\n}"
+    },
+    {
+      "type": "h2",
+      "html": "Resumo rápido",
+      "narrate": "Resumo rápido.",
+      "start": 41.45,
+      "end": 43.04
+    },
+    {
+      "type": "ul",
+      "items": [
+        "O bean nasce, é injetado, inicializado, usado e destruído.",
+        "PostConstruct inicializa; PreDestroy limpa.",
+        "A destruição ocorre na ordem inversa da criação."
+      ],
+      "narrate": "O bean nasce, é injetado, inicializado, usado e destruído. PostConstruct inicializa; PreDestroy limpa. A destruição ocorre na ordem inversa da criação.",
+      "start": 43.04,
+      "end": 53.04
+    }
+  ]
+}

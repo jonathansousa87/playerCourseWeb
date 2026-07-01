@@ -83,6 +83,9 @@ const NarrationBar = ({ audioSrc, segments, articleRef }) => {
     for (let i = 0; i < segments.length; i++) { if (t >= segments[i].start && t < segments[i].end) { idx = i; break; } }
     if (idx === activeRef.current) return;
     activeRef.current = idx;
+    // Self-heal: se o DOM foi recriado por um re-render externo, o cache aponta p/
+    // nos detached -> reconstroi o mapa em vez de "parar de seguir".
+    if (mapRef.current && mapRef.current.some((el) => el && !el.isConnected)) mapRef.current = null;
     const map = getMap();
     const target = idx >= 0 ? map[idx] : null;
     // Trecho sem elemento proprio (ex.: continuacao de item de lista) -> mantem o

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Read-along — demo (spike)</title>
+<style>
+  :root { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #020617; color: #e2e8f0; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 160px; }
+  .badge { display:inline-block; font-size:11px; color:#34d399; border:1px solid rgba(52,211,153,.3); background:rgba(52,211,153,.06); padding:3px 10px; border-radius:999px; margin-bottom:18px; }
+  h1.title { font-size:24px; font-weight:800; color:#f1f5f9; letter-spacing:-.02em; margin:0;
+    background: linear-gradient(90deg, rgba(37,99,235,.15), rgba(79,70,229,.15)); border:1px solid rgba(59,130,246,.2); border-radius:16px; padding:18px 22px; }
+  h2.sec { font-size:19px; font-weight:600; color:#6ee7b7; margin:30px 0 10px; padding:12px 16px;
+    background:rgba(15,23,42,.6); border-left:4px solid rgba(16,185,129,.6); border-radius:0 12px 12px 0; }
+  p.par { color:#cbd5e1; line-height:1.85; font-size:15px; margin:14px 0; }
+  p.par b, li b { color:#f1f5f9; background:linear-gradient(90deg, rgba(251,191,36,.1), rgba(252,211,77,.1)); padding:0 2px; border-radius:3px; }
+  pre.code { background:#0b1220; border:1px solid rgba(51,65,85,.5); border-radius:12px; padding:16px; overflow:auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; color:#93c5fd; line-height:1.6; margin:16px 0; }
+  ul.list { margin:14px 0; padding:0; list-style:none; }
+  ul.list li { display:flex; gap:10px; align-items:flex-start; color:#cbd5e1; line-height:1.7; font-size:15px; margin:6px 0; }
+  ul.list li::before { content:""; width:6px; height:6px; border-radius:999px; background:rgba(96,165,250,.6); margin-top:10px; flex:0 0 auto; }
+  .diagram { margin:18px 0; border:1px solid rgba(51,65,85,.4); border-radius:14px; padding:14px; overflow:auto;
+    background: rgba(15,23,42,.4); background-image: radial-gradient(circle, #1e293b 1px, transparent 1px); background-size:20px 20px; }
+  .diagram svg { display:block; margin:0 auto; }
+  .diagram .tag { font-size:10px; color:#64748b; margin-bottom:6px; }
+  .block { position:relative; border-radius:12px; transition: background .25s; scroll-margin:120px; }
+  .narr { cursor:pointer; }
+  .narr:hover { background: rgba(148,163,184,.06); }
+  .active { background: rgba(56,189,248,.10) !important; box-shadow: inset 3px 0 0 #38bdf8; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(2,6,23,.92); backdrop-filter: blur(8px); border-top:1px solid rgba(51,65,85,.5); padding:12px 16px; }
+  .bar .row { max-width:860px; margin:0 auto; display:flex; align-items:center; gap:12px; }
+  button.ctrl { background:#1e293b; color:#e2e8f0; border:1px solid rgba(71,85,105,.5); border-radius:10px; padding:8px 12px; cursor:pointer; font-size:14px; }
+  button.ctrl:hover { background:#334155; }
+  .play { background:#059669; border-color:#059669; min-width:96px; font-weight:600; }
+  .play:hover { background:#10b981; }
+  input.seek { flex:1; accent-color:#34d399; }
+  .time { font-variant-numeric: tabular-nums; font-size:12px; color:#94a3b8; min-width:84px; text-align:center; }
+  select.spd { background:#1e293b; color:#e2e8f0; border:1px solid rgba(71,85,105,.5); border-radius:8px; padding:7px; }
+  .hint { max-width:860px; margin:6px auto 0; font-size:11px; color:#64748b; text-align:center; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <span class="badge">SPIKE — read-along · voz = preset do podcast · diagramas/código pulados no áudio</span>
+    <div id="content"></div>
+  </div>
+
+  <div class="bar">
+    <div class="row">
+      <button class="ctrl play" id="play">▶ Tocar</button>
+      <button class="ctrl" id="back">⟲ 10s</button>
+      <span class="time" id="time">0:00 / 0:00</span>
+      <input class="seek" id="seek" type="range" min="0" max="1000" value="0" />
+      <select class="spd" id="spd"><option value="0.85">0.85×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option></select>
+    </div>
+    <div class="hint">Clique num parágrafo p/ pular · Só ler? ignore a barra · Só ouvir? dê play · Read-along: rola sozinho. Mapas/diagramas/código são exibidos mas não narrados.</div>
+  </div>
+
+  <audio id="audio" src="narration.mp3" preload="auto"></audio>
+
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose",
+  themeVariables: { primaryColor:"#1e293b", primaryBorderColor:"#38bdf8", primaryTextColor:"#e8eef6", lineColor:"#94a3b8", fontSize:"15px" } });
+
+const audio = document.getElementById("audio");
+const content = document.getElementById("content");
+const playBtn = document.getElementById("play");
+const seek = document.getElementById("seek");
+const timeEl = document.getElementById("time");
+let blocks = [], els = [], mid = 0;
+const fmt = (s) => { s = Math.max(0, s|0); return (s/60|0) + ":" + String(s%60).padStart(2,"0"); };
+
+async function render(data) {
+  blocks = data.blocks;
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]; let el;
+    if (b.type === "h1") { el = document.createElement("h1"); el.className = "block title"; el.innerHTML = b.html; }
+    else if (b.type === "h2") { el = document.createElement("h2"); el.className = "block sec"; el.innerHTML = b.html; }
+    else if (b.type === "p") { el = document.createElement("p"); el.className = "block par"; el.innerHTML = b.html; }
+    else if (b.type === "ul") { el = document.createElement("ul"); el.className = "block list"; el.innerHTML = b.items.map(t => "<li>"+t+"</li>").join(""); }
+    else if (b.type === "code") { el = document.createElement("pre"); el.className = "block code"; el.textContent = b.html; }
+    else if (b.type === "mermaid") {
+      el = document.createElement("div"); el.className = "block diagram";
+      const tag = b.code.trim().startsWith("mindmap") ? "mapa mental" : "diagrama";
+      try { const { svg } = await mermaid.render("m"+(mid++), b.code); el.innerHTML = '<div class="tag">'+tag+' (não narrado)</div>'+svg; }
+      catch { el.innerHTML = '<div class="tag">'+tag+'</div><pre class="code">'+b.code+'</pre>'; }
+    }
+    if (b.start != null) { el.classList.add("narr"); el.addEventListener("click", () => { audio.currentTime = b.start + 0.01; if (audio.paused) audio.play(); }); }
+    content.appendChild(el); els[i] = el;
+  }
+}
+
+let activeIdx = -1;
+function syncActive(t) {
+  let idx = -1;
+  for (let i = 0; i < blocks.length; i++) { const b = blocks[i]; if (b.start != null && t >= b.start && t < b.end) { idx = i; break; } }
+  if (idx === activeIdx) return;
+  if (activeIdx >= 0) els[activeIdx].classList.remove("active");
+  activeIdx = idx;
+  if (idx >= 0) { els[idx].classList.add("active"); if (!audio.paused) els[idx].scrollIntoView({ behavior: "smooth", block: "center" }); }
+}
+
+audio.addEventListener("timeupdate", () => {
+  syncActive(audio.currentTime);
+  const d = audio.duration || 0;
+  seek.value = d ? (audio.currentTime / d) * 1000 : 0;
+  timeEl.textContent = fmt(audio.currentTime) + " / " + fmt(d);
+});
+audio.addEventListener("play", () => playBtn.textContent = "⏸ Pausar");
+audio.addEventListener("pause", () => playBtn.textContent = "▶ Tocar");
+audio.addEventListener("ended", () => playBtn.textContent = "▶ Tocar");
+playBtn.onclick = () => audio.paused ? audio.play() : audio.pause();
+document.getElementById("back").onclick = () => audio.currentTime = Math.max(0, audio.currentTime - 10);
+seek.oninput = () => { const d = audio.duration || 0; audio.currentTime = (seek.value/1000)*d; };
+document.getElementById("spd").onchange = (e) => audio.playbackRate = parseFloat(e.target.value);
+
+fetch("data.json").then(r => r.json()).then(render);
+</script>
+</body>
+</html>
