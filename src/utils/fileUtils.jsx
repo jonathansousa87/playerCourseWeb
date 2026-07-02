@@ -35,7 +35,16 @@ export const formatTime = (seconds) => {
 
 export const getMediaUrl = (courseTitle, filePath) => {
   if (!filePath) return "";
-  const base = `/cursos/${encodeURIComponent(courseTitle)}/${encodeURIComponent(filePath)}`;
+  // filePath pode ter subpastas de modulo (ex: "01 Modulo(...)/aula.mp3").
+  // encodeURIComponent no path INTEIRO transformaria a "/" real em "%2F",
+  // gerando uma URL que parece corrompida (mesmo que o Express decodifique
+  // de volta corretamente por causa do "(*)" na rota). Encoda por segmento
+  // e junta com "/" literal, preservando a estrutura de pastas.
+  const encodedPath = String(filePath)
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/");
+  const base = `/cursos/${encodeURIComponent(courseTitle)}/${encodedPath}`;
   const token = getCurrentAccessToken();
   return token ? `${base}?t=${encodeURIComponent(token)}` : base;
 };

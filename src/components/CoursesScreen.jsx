@@ -78,6 +78,9 @@ const CoursesScreen = ({
         },
       });
       setDriveUp((s) => ({ ...s, [course.title]: { status: r.failed ? "warn" : "done", done: r.done, total: r.total, failed: r.failed } }));
+      // Sem isso, a lista de cursos em memoria continua com os paths antigos
+      // do filesystem (curso some ou toca com URL quebrada em modo drive).
+      onCoursesChanged?.();
     } catch (e) {
       setDriveUp((s) => ({ ...s, [course.title]: { status: "error", error: e.message } }));
     }
