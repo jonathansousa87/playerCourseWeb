@@ -76,6 +76,9 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
   const [language, setLanguage] = useState("pt");
   const [autoTranscribe, setAutoTranscribe] = useState(true);
   const [preCondense, setPreCondense] = useState(true); // Qwen por aula — ligado por padrao
+  const [normalize, setNormalize] = useState(true); // F1: normaliza mis-transcricao (exige Qwen) — ligado por padrao
+  const [clarity, setClarity] = useState(true); // F3: modo clareza (vs fidelidade) — ligado por padrao
+  const [contract, setContract] = useState(true); // F4: contrato de curso (exige Qwen) — ligado por padrao
   const [genMaterials, setGenMaterials] = useState(true);
   // Podcast desmarcado por padrao (gere sob demanda quando quiser); os demais on.
   const [materialKinds, setMaterialKinds] = useState(() => new Set(MATERIAL_KINDS.map((k) => k.key).filter((k) => k !== "podcast")));
@@ -240,6 +243,9 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
       await generateReadingCourseBatch({
         courses, modulesByCourse, selectedModules,
         model, instruction, autoTranscribe, language, preCondense,
+        normalize: preCondense && normalize, // F1 so faz sentido com o Qwen ligado
+        clarity, // F3: modo clareza
+        contract: preCondense && contract, // F4 usa fingerprint do Qwen -> exige pre-condensacao
         genMaterials, materialKinds: [...materialKinds],
         cancelRef, signal: controller.signal,
         onProgress: onEvent,
@@ -330,6 +336,21 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
           {/* Qwen por aula (default on) */}
           <button onClick={() => setPreCondense((v) => !v)} disabled={running} className={checkBtn(preCondense)} title="Condensa cada aula no modelo local (Qwen) antes do DeepSeek. A app revezar a VRAM com o WhisperX automaticamente.">
             <Box on={preCondense} /> <Sparkles className="w-3.5 h-3.5" /> Condensar (Qwen)
+          </button>
+
+          {/* F1: normalizacao de mis-transcricao (exige Qwen ligado) */}
+          <button onClick={() => setNormalize((v) => !v)} disabled={running || !preCondense} className={checkBtn(preCondense && normalize)} title="F1: o Qwen propoe correcoes de termos mal transcritos pelo WhisperX (ex.: /alf -> /auth), o DeepSeek veta as arriscadas e aplica o resto ao texto antes de gerar a leitura. Exige o 'Condensar (Qwen)' ligado.">
+            <Box on={preCondense && normalize} /> Normalizar (F1)
+          </button>
+
+          {/* F3: modo clareza (vs fidelidade) */}
+          <button onClick={() => setClarity((v) => !v)} disabled={running} className={checkBtn(clarity)} title="F3: gera a leitura no modo CLAREZA (nucleo -> analogia -> exemplo que prova -> subtopicos com exemplo -> 'Fixando'), como um tutor para iniciante. Desligado = modo FIDELIDADE (so reorganiza o que a transcricao trouxe).">
+            <Box on={clarity} /> Clareza (F3)
+          </button>
+
+          {/* F4: contrato de curso (exige Qwen ligado) */}
+          <button onClick={() => setContract((v) => !v)} disabled={running || !preCondense} className={checkBtn(preCondense && contract)} title="F4: o Qwen extrai um fingerprint tecnico de cada aula; o DeepSeek sintetiza um CONTRATO (uma abordagem por escolha + nomes canonicos) injetado em toda condensacao -> aulas coerentes entre si (mata contradicoes tipo Resource Server x filtro manual) e fixa nomes (ex.: /auth). Exige o 'Condensar (Qwen)' ligado.">
+            <Box on={preCondense && contract} /> Contrato (F4)
           </button>
 
           {/* Transcrever faltantes */}
@@ -434,6 +455,7 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
           <Chip label="Nicho" value={nicheLabel || "—"} danger={!niche} />
           <Chip label="Idioma" value={language === "pt" ? "Portugues" : language === "en" ? "Ingles" : "Auto (detecta)"} />
           <Chip label="Qwen" value={preCondense ? "sim" : "nao"} />
+          <Chip label="Leitura" value={clarity ? "clareza" : "fidelidade"} />
           <Chip label="Transcrever" value={autoTranscribe ? "faltantes" : "nao"} />
           <Chip
             label="Materiais"

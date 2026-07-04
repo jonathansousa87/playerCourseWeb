@@ -8,7 +8,10 @@
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { chatCompletion, DEFAULT_MODEL, costFromUsage } from './deepseek.js';
-import { preCondenseCached, preCondenseEnabled } from './precondense.js';
+import {
+  preCondenseCached, preCondenseEnabled, normalizeEnabled, applyNorm,
+  qwenExtract, normMapFromFingerprints, contractEnabled, buildContract,
+} from './precondense.js';
 import { startQwen, stopQwen } from './qwenServer.js';
 import { parseTranscript, parseTranscriptRaw } from './generator.js';
 import { transcribeToTxt, detectAudioLanguage } from './whisperx.js';
@@ -18,6 +21,7 @@ import {
   buildReadingPlanPrompt,
   READING_CONDENSE_SYSTEM,
   buildReadingCondensePrompt,
+  clarityEnabled,
 } from './prompts.js';
 
 // Mesmo padrao usado pelo findTranscript: _dub[.locale].(txt|vtt)
@@ -304,15 +308,20 @@ const planDebug = async (moduleTitle, payload) => {
   } catch { /* log e best-effort */ }
 };
 
-const planGrouping = async ({ moduleTitle, transcripts, model }) => {
+const planGrouping = async ({ moduleTitle, transcripts, model, fingerprints = [] }) => {
   const fallback = () =>
     transcripts.map((t) => ({ title: t.title, sources: [t.id] }));
 
   if (transcripts.length <= 1) return { plan: fallback(), usage: null };
 
+  // F4: enriquece o titulo com o fingerprint (por posicao) -> agrupamento por
+  // afinidade real, nao so pelo titulo. Sem fingerprints, usa o titulo cru.
   const userPrompt = buildReadingPlanPrompt({
     moduleTitle,
-    lessons: transcripts.map((t) => ({ id: t.id, title: t.title, bytes: t.bytes || 0 })),
+    lessons: transcripts.map((t, i) => {
+      const fp = fingerprints[i];
+      return { id: t.id, title: fp ? `${t.title} — [${fp.replace(/\n/g, '; ').slice(0, 240)}]` : t.title, bytes: t.bytes || 0 };
+    }),
   });
   const validIds = new Set(transcripts.map((t) => t.id));
 
@@ -385,13 +394,21 @@ const planGrouping = async ({ moduleTitle, transcripts, model }) => {
 };
 
 // Fase 2 (parte IA): condensa um texto ja montado numa aula de leitura.
-const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt' }) => {
+// `normMap` (F1, opcional): correcoes de mis-transcricao ja vetadas p/ o modulo,
+// aplicadas DETERMINISTICO ao texto antes do DeepSeek (no-op se vazio/ausente).
+const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt', normMap, clarity = false, contract = '' }) => {
   if (!merged || merged.length < 40) return null;
+  const text = normMap && normMap.length ? applyNorm(merged, normMap) : merged;
   // "auto" -> detecta o idioma desta aula a partir do texto (lote misto PT/EN).
-  const sourceLanguage = language === 'auto' ? detectLang(merged) : language;
+  const sourceLanguage = language === 'auto' ? detectLang(text) : language;
+  // F4: contrato do curso na frente do prompt (nomes canonicos + abordagem unica).
+  // Texto IDENTICO ao contractHeader do spikeReadingModuleV2.mjs.
+  const contractHeader = contract
+    ? `CONTRATO DO CURSO (PRIORIDADE MÁXIMA — TODAS as aulas seguem isto para o projeto ficar coerente; se a modernização oferecer mais de uma abordagem, o contrato decide qual usar em TODO o curso):\n"""\n${contract}\n"""\n\n`
+    : '';
   const { content, usage, model: usedModel } = await chatCompletion({
     system: READING_CONDENSE_SYSTEM,
-    user: buildReadingCondensePrompt({ lessonTitle, transcript: merged, instruction, sourceLanguage }),
+    user: contractHeader + buildReadingCondensePrompt({ lessonTitle, transcript: text, instruction, sourceLanguage, clarity }),
     model,
     temperature: 0.3,
     // Generoso: grupos grandes (ate ~60k de input) precisam de saida longa pra
@@ -403,7 +420,7 @@ const condenseText = async ({ lessonTitle, merged, model, instruction, language 
 
 // fs: le as transcricoes do disco e pre-condensa (Qwen, inline) antes do DeepSeek.
 // Usa cache persistente por conteudo: reprocessar nao re-condensa no Qwen.
-const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen }) => {
+const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, clarity = false, contract = '' }) => {
   const parts = [];
   for (const src of sources) {
     // Cada aula logica pode ter varias `parts` (original + complemento .1).
@@ -415,20 +432,70 @@ const condenseLesson = async ({ lessonTitle, sources, model, instruction, langua
       }
     }
   }
-  return condenseText({ lessonTitle, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language });
+  return condenseText({ lessonTitle, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity, contract });
+};
+
+// F1 (normalizacao) + F4 (contrato + fingerprints p/ o planejador) por MODULO.
+// Extrai o fingerprint de CADA transcript UMA vez (do texto CRU) e reusa:
+//   - normMap (F1): collectNorm + vet dos fingerprints.
+//   - contract (F4): sintetizado dos fingerprints + nicho (ou o `incomingContract`
+//     por-curso, quando o lote ja produziu um).
+//   - fingerprints: devolvidos p/ enriquecer o planejador.
+// FIX A: extrai do texto CRU (`parseTranscript`), NAO do pre-condensado — a limpeza do
+// Qwen apaga o garble. Degrada gracioso: off/Qwen fora -> tudo vazio.
+// `readParts(t)` -> lista de textos crus (parseTranscript no fs, fetch no Drive).
+const buildModulePrep = async ({ transcripts, readParts, preCondenseOn, normalizeOn, contractOn, incomingContract = '', ensureQwen, moduleTitle, instruction, model, log }) => {
+  const base = { normMap: [], fingerprints: [], contract: incomingContract, usages: [] };
+  if (!preCondenseOn) return base;
+  const needFp = normalizeOn || (contractOn && !incomingContract);
+  if (!needFp) return base;
+  // Espelha o preCondenseCached: se ha ensureQwen (lote), garante o Qwen; se nao ha
+  // (1 modulo), assume que ja esta no ar (degrada se nao).
+  if (ensureQwen && !(await ensureQwen())) { log('[reading] Qwen indisponivel; sem F1/F4 neste modulo.'); return base; }
+  const fingerprints = [];
+  for (const t of transcripts) {
+    const raws = (await readParts(t)).filter(Boolean);
+    fingerprints.push(raws.length ? await qwenExtract(raws.join('\n\n')) : '');
+  }
+  const usages = [];
+  // F4 contrato PRIMEIRO — o normMap da F1 ancora nele (o /alf so morre com o contrato).
+  let contract = incomingContract;
+  if (contractOn && !contract) {
+    const named = fingerprints.map((fp, i) => `${transcripts[i]?.title || ''}\n${fp}`);
+    const c = await buildContract(named, instruction, model);
+    contract = c.text; if (c.usage) usages.push(c.usage);
+    if (contract) log(`[contract] F4 gerado p/ "${moduleTitle}" (${contract.length} chars)`);
+  }
+  // F1 normMap (vet) + correcao ANCORADA no contrato (F4).
+  let normMap = [];
+  if (normalizeOn) {
+    const r = await normMapFromFingerprints({ fingerprints, contextTitle: moduleTitle, model, log, contract: contractOn ? contract : '' });
+    normMap = r.map; if (r.usage) usages.push(r.usage);
+  }
+  return { normMap, fingerprints, contract, usages };
 };
 
 // Gera o curso de leitura para UM modulo. Despacha pro modo do .env.
 // `opts.preCondense` (boolean) liga/desliga o Qwen por execucao; quando undefined,
-// cai no flag global PRECONDENSE_ENABLED do .env.
+// cai no flag global PRECONDENSE_ENABLED do .env. `opts.normalize` idem, com o
+// flag PRECOND_NORMALIZE_ENABLED (F1: corrige mis-transcricao; exige preCondense).
 export const generateReadingModule = async (opts) => {
   const preCondenseOn = opts.preCondense ?? preCondenseEnabled();
+  const normalizeOn = opts.normalize ?? normalizeEnabled();
+  const clarityOn = opts.clarity ?? clarityEnabled();
+  const contractOn = opts.contract ?? contractEnabled();
   if (preCondenseOn) {
     console.log('[reading] pre-condensacao local ATIVA — limpando transcricoes no modelo local antes do DeepSeek');
     opts.onProgress?.({ type: 'precondense', enabled: true });
   }
+  if (normalizeOn && preCondenseOn) console.log('[reading] normalizacao de mis-transcricao ATIVA (F1)');
+  if (clarityOn) console.log('[reading] modo CLAREZA ATIVO (F3)');
+  if (contractOn && preCondenseOn) console.log('[reading] CONTRATO de curso ATIVO (F4)');
   const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
-  return isDrive ? generateReadingModuleDrive({ ...opts, preCondenseOn }) : generateReadingModuleFs({ ...opts, preCondenseOn });
+  // `opts.contractText`: contrato JA sintetizado por-curso (vem do lote); se ausente,
+  // o modulo sintetiza o seu (per-modulo).
+  const shared = { ...opts, preCondenseOn, normalizeOn, clarityOn, contractOn, incomingContract: opts.contractText || '' };
+  return isDrive ? generateReadingModuleDrive(shared) : generateReadingModuleFs(shared);
 };
 
 // === Fluxo EM LOTE com revezamento de VRAM (WhisperX vs Qwen) ===
@@ -445,10 +512,16 @@ export const generateReadingBatch = async ({
   autoTranscribe = true,
   language = 'pt',
   preCondense: preFlag,
+  normalize: normFlag,
+  clarity: clarityFlag,
+  contract: contractFlag,
   onProgress = () => {},
 }) => {
   const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
   const preCondenseOn = preFlag ?? preCondenseEnabled();
+  const normalizeOn = normFlag ?? normalizeEnabled();
+  const clarityOn = clarityFlag ?? clarityEnabled();
+  const contractOn = contractFlag ?? contractEnabled();
   const log = (m) => console.log(m);
   const transcriptionByJob = new Map();
   const results = [];
@@ -536,6 +609,9 @@ export const generateReadingBatch = async ({
           autoTranscribe: false, // ja transcrito na fase 1
           language: condLang,
           preCondense: preCondenseOn, // usa o cache; sobe o Qwen so no 1o miss real
+          normalize: normalizeOn, // F1: normalizacao de mis-transcricao por modulo
+          clarity: clarityOn, // F3: modo clareza
+          contract: contractOn, // F4: contrato (per-modulo; per-curso = TD-14)
           ensureQwen,
           onProgress: moduleProgress,
         });
@@ -567,6 +643,10 @@ const generateReadingModuleFs = async ({
   autoTranscribe = true,
   language = 'pt',
   preCondenseOn = false,
+  normalizeOn = false,
+  clarityOn = false,
+  contractOn = false,
+  incomingContract = '',
   ensureQwen,
   onProgress = () => {},
 }) => {
@@ -586,7 +666,24 @@ const generateReadingModuleFs = async ({
     return { module: moduleTitle, skipped: 'sem transcricoes', transcription, created: [], originalLessons: 0 };
   }
 
-  const { plan, usage: planUsage } = await planGrouping({ moduleTitle, transcripts, model });
+  // F1+F4 prep: fingerprint por aula (uma vez) -> normMap (F1) + contrato (F4) +
+  // fingerprints p/ o planejador enriquecido. Off/Qwen fora -> vazios (comportamento antigo).
+  const prep = await buildModulePrep({
+    transcripts, preCondenseOn, normalizeOn, contractOn, incomingContract, ensureQwen,
+    moduleTitle, instruction, model, log: (m) => console.log(m),
+    readParts: async (t) => {
+      const out = [];
+      for (const part of t.parts || [t]) {
+        try { out.push(await parseTranscript(part.path)); } catch { /* ilegivel */ }
+      }
+      return out;
+    },
+  });
+  const { normMap, fingerprints, contract } = prep;
+  if (normMap.length) onProgress({ type: 'normalize', applied: normMap });
+  if (contract) onProgress({ type: 'contract', chars: contract.length });
+
+  const { plan, usage: planUsage } = await planGrouping({ moduleTitle, transcripts, model, fingerprints });
   onProgress({ type: 'plano', total: plan.length });
 
   const outRoot = join(coursesPath, `${courseTitle} - Leitura`);
@@ -622,7 +719,7 @@ const generateReadingModuleFs = async ({
     const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
     let res;
     try {
-      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen });
+      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, clarity: clarityOn, contract });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };
       } else {
@@ -652,8 +749,9 @@ const generateReadingModuleFs = async ({
     return res;
   });
 
-  // Custo DeepSeek do modulo (USD): plano + condensacao de cada aula.
+  // Custo DeepSeek do modulo (USD): plano + prep (vet F1 + contrato F4) + condensacao.
   let cost = costFromUsage(planUsage, model);
+  for (const u of prep.usages) cost += costFromUsage(u, model);
   for (const c of created) if (c.ok && c.usage) cost += costFromUsage(c.usage, model);
 
   return { module: moduleTitle, outDir, transcription, created, originalLessons: transcripts.length, cost };
@@ -666,7 +764,8 @@ const generateReadingModuleFs = async ({
 const generateReadingModuleDrive = async ({
   coursesPath, courseTitle, modulePath, moduleTitle, index = 1,
   model = DEFAULT_MODEL, instruction = '', language = 'pt',
-  preCondenseOn = false, ensureQwen, onProgress = () => {},
+  preCondenseOn = false, normalizeOn = false, clarityOn = false,
+  contractOn = false, incomingContract = '', ensureQwen, onProgress = () => {},
 }) => {
   const drive = await import('../drive/index.js');
   const { getDriveFolderId } = await import('../config.js');
@@ -689,7 +788,23 @@ const generateReadingModuleDrive = async ({
     return { module: moduleTitle, skipped: 'sem transcricoes', transcription, created: [], originalLessons: 0 };
   }
 
-  const { plan, usage: planUsage } = await planGrouping({ moduleTitle, transcripts, model });
+  // F1+F4 prep (le do Drive; o condense re-le, cache do precondense cobre a parte cara).
+  const prep = await buildModulePrep({
+    transcripts, preCondenseOn, normalizeOn, contractOn, incomingContract, ensureQwen,
+    moduleTitle, instruction, model, log: (m) => console.log(m),
+    readParts: async (t) => {
+      const out = [];
+      for (const part of t.parts || [t]) {
+        try { out.push(parseTranscriptRaw(await drive.getFileContent(part.fileId), /\.vtt$/i.test(part.name))); } catch { /* ilegivel */ }
+      }
+      return out;
+    },
+  });
+  const { normMap, fingerprints, contract } = prep;
+  if (normMap.length) onProgress({ type: 'normalize', applied: normMap });
+  if (contract) onProgress({ type: 'contract', chars: contract.length });
+
+  const { plan, usage: planUsage } = await planGrouping({ moduleTitle, transcripts, model, fingerprints });
   onProgress({ type: 'plano', total: plan.length });
 
   const readingCourseTitle = `${courseTitle} - Leitura`;
@@ -741,7 +856,7 @@ const generateReadingModuleDrive = async ({
         throw new Error(`falha ao ler ${readErrors}/${totalParts} transcricao(oes) no Drive`);
       }
       const out = await condenseText({
-        lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language,
+        lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity: clarityOn, contract,
       });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };
@@ -770,8 +885,9 @@ const generateReadingModuleDrive = async ({
     return res;
   });
 
-  // Custo DeepSeek do modulo (USD): plano + condensacao de cada aula.
+  // Custo DeepSeek do modulo (USD): plano + prep (vet F1 + contrato F4) + condensacao.
   let cost = costFromUsage(planUsage, model);
+  for (const u of prep.usages) cost += costFromUsage(u, model);
   for (const c of created) if (c.ok && c.usage) cost += costFromUsage(c.usage, model);
 
   return { module: moduleTitle, outFolderId, transcription, created, originalLessons: transcripts.length, cost };

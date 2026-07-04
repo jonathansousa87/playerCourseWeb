@@ -14,7 +14,16 @@ import { createHash } from 'crypto';
 const dirFor = (coursesPath) =>
   (process.env.PRECONDENSE_CACHE_DIR || '').trim() || join(coursesPath || '.', '.precondense-cache');
 
-const fileFor = (dir, rawText) => join(dir, `${createHash('sha1').update(rawText).digest('hex')}.txt`);
+// Salt de versao do cache. Vazio por DEFAULT -> chave identica ao esquema atual
+// (as entradas ja gravadas continuam validas, sem reprocesso). Bumpe
+// PRECONDENSE_CACHE_VERSION quando MUDAR o prompt de pre-condensacao: as chaves
+// mudam, o cache velho vira orfao e recondensa preguiçosamente no proximo acesso.
+const VERSION = (process.env.PRECONDENSE_CACHE_VERSION || '').trim();
+
+const fileFor = (dir, rawText) => {
+  const keyed = VERSION ? `v${VERSION}\n${rawText}` : rawText;
+  return join(dir, `${createHash('sha1').update(keyed).digest('hex')}.txt`);
+};
 
 export const getCachedPrecondense = async (coursesPath, rawText) => {
   try { return await fs.readFile(fileFor(dirFor(coursesPath), rawText), 'utf8'); } catch { return null; }

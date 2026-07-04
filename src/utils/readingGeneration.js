@@ -98,6 +98,9 @@ export const generateCourseReading = async ({
   autoTranscribe,
   language,
   preCondense,
+  normalize,
+  clarity,
+  contract,
   genMaterials,
   materialKinds,
   cancelRef,
@@ -131,6 +134,9 @@ export const generateCourseReading = async ({
         autoTranscribe,
         language,
         preCondense,
+        normalize,
+        clarity,
+        contract,
         onProgress: onModuleProgress,
       });
 
@@ -185,6 +191,9 @@ export const generateReadingCourseBatch = async ({
   autoTranscribe,
   language,
   preCondense,
+  normalize,
+  clarity,
+  contract,
   genMaterials,
   materialKinds,
   cancelRef,
@@ -212,6 +221,9 @@ export const generateReadingCourseBatch = async ({
     autoTranscribe,
     language,
     preCondense,
+    normalize,
+    clarity,
+    contract,
     signal,
     onProgress: (ev) => {
       const tag = { courseTitle: ev.courseTitle, modulePath: ev.modulePath };

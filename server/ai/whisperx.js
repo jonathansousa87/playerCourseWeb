@@ -86,6 +86,8 @@ const buildEnv = (bin) => {
 };
 
 // Flags fixas, iguais ao DubAI (so a saida vira txt).
+// (initial_prompt foi testado e REMOVIDO: em PT com termos EN ele alucina/regride —
+//  ver docs/pesquisa-whisperx-erros.md e o experimento expWhisperInitialPrompt.mjs.)
 const buildArgs = ({ audioFile, outDir, device, computeType, batchSize, model, language }) => [
   '--model', model,
   '--device', device,

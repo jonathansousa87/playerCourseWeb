@@ -472,11 +472,11 @@ export const fetchLastInterview = (courseTitle, modulePath) =>
 // transcricoes em .txt). So funciona em modo local (filesystem).
 // Se `onProgress` for passado, consome o stream NDJSON (eventos por aula, em
 // tempo real, mostrando o paralelismo). Sem ele, retorna o JSON normal.
-export const generateReadingModule = async ({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, preCondense, onProgress }) => {
+export const generateReadingModule = async ({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract, onProgress }) => {
   const res = await fetch(`${API_BASE}/api/ia/reading-course/module`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, preCondense, stream: !!onProgress }),
+    body: JSON.stringify({ courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract, stream: !!onProgress }),
   });
 
   if (!onProgress) {
@@ -517,11 +517,11 @@ export const generateReadingModule = async ({ courseTitle, modulePath, moduleTit
 // Gera leitura EM LOTE (revezando VRAM WhisperX/Qwen no backend). Stream NDJSON:
 // repassa cada evento via onProgress(ev) e devolve o array de resultados no fim.
 // `signal` (AbortSignal) permite cancelar a requisicao.
-export const generateReadingBatch = async ({ jobs, model, instruction, autoTranscribe, language, preCondense, onProgress = () => {}, signal } = {}) => {
+export const generateReadingBatch = async ({ jobs, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract, onProgress = () => {}, signal } = {}) => {
   const res = await fetch(`${API_BASE}/api/ia/reading-course/batch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jobs, model, instruction, autoTranscribe, language, preCondense }),
+    body: JSON.stringify({ jobs, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract }),
     signal,
   });
   if (!res.ok || !res.body) {
