@@ -559,6 +559,10 @@ export const generateReadingModule = async (opts) => {
   const normalizeOn = opts.normalize ?? normalizeEnabled();
   const clarityOn = opts.clarity ?? clarityEnabled();
   const contractOn = opts.contract ?? contractEnabled();
+  // OCR: override por execucao (boolean) ou cai no flag do .env.
+  // Set temporário pra ocrModule/ocrTextEnabled/ocrDiagramEnabled respeitarem.
+  if (typeof opts.ocrText === 'boolean') process.env.OCR_TEXT_ENABLED = opts.ocrText ? '1' : '0';
+  if (typeof opts.ocrDiagram === 'boolean') process.env.OCR_DIAGRAM_ENABLED = opts.ocrDiagram ? '1' : '0';
   if (preCondenseOn) {
     console.log('[reading] pre-condensacao local ATIVA — limpando transcricoes no modelo local antes do DeepSeek');
     opts.onProgress?.({ type: 'precondense', enabled: true });
@@ -779,6 +783,26 @@ const generateReadingModuleFs = async ({
   }
   onProgress({ type: 'transcricao', status: 'done', ...(transcription || {}) });
 
+  // Fase 0.5: OCR dos vídeos do módulo (se ligado e não vier do lote).
+  // No lote, o OCR já rodou na fase 1.5 e o vocabulário chega via opts.
+  // No fluxo individual, roda aqui.
+  const ocrVocab = ocrVocabulary || [];
+  const ocrDiags = ocrDiagrams || [];
+  if ((!ocrVocab.length && !ocrDiags.length) && (ocrTextEnabled() || ocrDiagramEnabled())) {
+    onProgress({ type: 'ocr', status: 'start' });
+    try {
+      const ocr = await runOcrForModule(moduleDir, coursesPath, (m) => console.log(m));
+      ocrVocab.push(...ocr.vocabulary);
+      ocrDiags.push(...ocr.diagrams);
+      onProgress({ type: 'ocr', status: 'done', vocabulary: ocrVocab.length, diagrams: ocrDiags.length });
+    } catch (err) {
+      console.log(`[ocr] erro no módulo: ${err.message}`);
+      onProgress({ type: 'ocr', status: 'error', error: err.message });
+    }
+    // Derruba o VL (se subiu) pra liberar VRAM pro Qwen texto
+    try { const { stopVl } = await import('./ocr/visionServer.mjs'); await stopVl({ log: () => {} }); } catch {}
+  }
+
   const transcripts = await collectModuleTranscripts(moduleDir);
   if (transcripts.length === 0) {
     onProgress({ type: 'plano', total: 0 });
@@ -789,8 +813,6 @@ const generateReadingModuleFs = async ({
   // fingerprints p/ o planejador enriquecido. Off/Qwen fora -> vazios (comportamento antigo).
   // OCR: o vocabulário canônico (ground-truth da tela) corrige o garble do WhisperX
   // no texto CRU antes de tudo — beneficia leitura, prática, quiz, flashcards.
-  const ocrVocab = ocrVocabulary || [];
-  const ocrDiags = ocrDiagrams || [];
   const prep = await buildModulePrep({
     transcripts, preCondenseOn, normalizeOn, contractOn, incomingContract, ensureQwen,
     moduleTitle, instruction, model, log: (m) => console.log(m),
