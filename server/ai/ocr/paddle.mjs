@@ -1,55 +1,74 @@
 // PaddleOCR (PP-OCRv6) — extrai TEXTO/CÓDIGO exato dos keyframes.
 //
-// Roda no env conda `paddleocr` (python 3.11) via child_process. CPU
-// (FLAGS_use_mkldnn=0 — bug oneDNN). Nao disputa VRAM com WhisperX/Qwen/Kokoro.
+// O3 — batch mode: o PaddleOCR 3.x suporta `predict()` com uma LISTA de imagens
+// (batch interno). Em vez de 1 chamada por frame, mandamos todas de uma vez
+// (ou em batches de BATCH_SIZE) — muito mais rápido (1 carregamento do modelo,
+// inferência em lote). O modelo só carrega UMA vez (antes do loop).
 //
-// Retorna linhas de texto bruto de cada frame. O chamador agrega num
-// vocabulário canônico (extractVocabulary.mjs).
+// Roda no env conda `paddleocr` (python 3.11) via child_process. CPU
+// (enable_mkldnn=False — bug oneDNN no PaddlePaddle 3.3). Não disputa VRAM.
 //
 // Config via .env:
-//   PADDLE_PYTHON  = caminho do python do env conda (default: tenta ~/miniconda3/envs/paddleocr/bin/python)
-//   PADDLE_LANG    = ch | en | fr | ... (default: ch — PP-OCRv6 multilatino; portugues incluido)
-//   PADDLE_USE_GPU = 0 (default; CPU. GPU disputaria VRAM)
+//   PADDLE_PYTHON   = caminho do python do env conda
+//   PADDLE_LANG     = ch | en | fr | ... (default: ch — PP-OCRv6 multilatino)
+//   PADDLE_BATCH    = tamanho do batch (default: 8)
 
 import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
-
-const truthy = (v) => /^(1|true|yes|on)$/i.test((v || '').trim());
 
 const DEFAULT_PYTHON =
   (process.env.PADDLE_PYTHON || '').trim() ||
   `${process.env.HOME}/miniconda3/envs/paddleocr/bin/python`;
 
-const LANG = (process.env.PADDLE_LANG || 'ch').trim(); // 'ch' = multilatino (inclui PT)
-const USE_GPU = truthy(process.env.PADDLE_USE_GPU);
-const TIMEOUT_PER_FRAME = 180_000; // 3 min por frame — o primeiro baixa modelos (cache depois)
+const LANG = (process.env.PADDLE_LANG || 'ch').trim();
+const BATCH_SIZE = Math.max(1, parseInt(process.env.PADDLE_BATCH || '8', 10));
+const TIMEOUT_PER_BATCH = 240_000; // 4 min por batch (o 1º baixa modelos)
 
-// Script python embarcado: carrega PaddleOCR UMA vez, processa N frames
-// passados por stdin (caminhos), imprime JSON por frame em stdout.
+// Script python: carrega PaddleOCR UMA vez, lê batches de caminhos do stdin
+// (um batch por linha, separados por `|`), processa em lote, imprime JSON por
+// frame em stdout. Suporta retries: se um batch falha, repassa frame a frame.
 const SCRIPT = `
 import sys, json, os
 os.environ['FLAGS_use_mkldnn'] = '0'
 from paddleocr import PaddleOCR
 ocr = PaddleOCR(lang='${LANG}', use_doc_orientation_classify=False, use_doc_unwarping=False, enable_mkldnn=False)
-for line in sys.stdin:
-    path = line.strip()
-    if not path: continue
+
+def ocr_one(path):
     try:
         result = ocr.predict(path)
         texts = []
-        # PaddleOCR 3.x: result[0] -> dict com 'rec_texts'
         if result and isinstance(result, list) and len(result) > 0:
             r0 = result[0]
             if isinstance(r0, dict) and 'rec_texts' in r0:
                 texts = r0['rec_texts'] or []
             elif isinstance(r0, list):
-                # formato antigo: [[box, text, conf], ...]
                 for item in r0:
                     if isinstance(item, (list, tuple)) and len(item) >= 2:
                         texts.append(str(item[1]))
-        print(json.dumps({'file': os.path.basename(path), 'texts': texts}, ensure_ascii=False))
+        return {'file': os.path.basename(path), 'texts': texts}
     except Exception as e:
-        print(json.dumps({'file': os.path.basename(path), 'error': str(e)}, ensure_ascii=False))
+        return {'file': os.path.basename(path), 'error': str(e)}
+
+for line in sys.stdin:
+    paths = [p.strip() for p in line.strip().split('|') if p.strip()]
+    if not paths: continue
+    # Tenta batch primeiro
+    try:
+        results = ocr.predict(paths)
+        for i, r in enumerate(results):
+            texts = []
+            if r and isinstance(r, dict) and 'rec_texts' in r:
+                texts = r['rec_texts'] or []
+            elif r and isinstance(r, list):
+                for item in r:
+                    if isinstance(item, (list, tuple)) and len(item) >= 2:
+                        texts.append(str(item[1]))
+            print(json.dumps({'file': os.path.basename(paths[i]), 'texts': texts}, ensure_ascii=False))
+    except Exception as e:
+        # Batch falhou: processa um a um (retry)
+        for p in paths:
+            r = ocr_one(p)
+            print(json.dumps(r, ensure_ascii=False))
 sys.stdout.flush()
 `;
 
@@ -58,11 +77,8 @@ export const runPaddleOcr = async ({ frames = [], log = () => {} } = {}) => {
   if (!frames.length) return [];
 
   let python = DEFAULT_PYTHON;
-  // Verifica se o python existe; se nao, tenta 'python3' (talvez o env esteja
-  // no PATH ativo).
   try { await fs.access(python); } catch {
     python = 'python3';
-    // Verifica se tem paddleocr instalado no python3
     const chk = await spawn('python3', ['-c', 'import paddleocr'], { stdio: 'pipe' });
     await new Promise((res) => chk.on('close', res));
     if (chk.exitCode !== 0) {
@@ -71,7 +87,7 @@ export const runPaddleOcr = async ({ frames = [], log = () => {} } = {}) => {
     }
   }
 
-  // Garante que o env do conda esta completo (PATH, LD_LIBRARY_PATH do env).
+  // Env do conda (PATH + LD_LIBRARY_PATH)
   const env = { ...process.env };
   const envDir = python.replace(/\/bin\/python$/, '');
   if (envDir !== python) {
@@ -85,15 +101,18 @@ export const runPaddleOcr = async ({ frames = [], log = () => {} } = {}) => {
   proc.stdout.on('data', (d) => { stdout += d.toString(); });
   proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
-  // Envia os caminhos dos frames
-  proc.stdin.write(frames.join('\n') + '\n');
+  // Envia os frames em batches (separados por `|`, um batch por linha)
+  for (let i = 0; i < frames.length; i += BATCH_SIZE) {
+    const batch = frames.slice(i, i + BATCH_SIZE);
+    proc.stdin.write(batch.join('|') + '\n');
+  }
   proc.stdin.end();
 
-  // Timeout
+  const totalBatches = Math.ceil(frames.length / BATCH_SIZE);
   const timer = setTimeout(() => {
     try { proc.kill('SIGTERM'); } catch {}
     setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 5000);
-  }, TIMEOUT_PER_FRAME * Math.max(1, frames.length));
+  }, TIMEOUT_PER_BATCH * Math.max(1, totalBatches));
 
   try {
     await new Promise((resolve, reject) => {

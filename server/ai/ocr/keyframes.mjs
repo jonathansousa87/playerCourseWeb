@@ -1,26 +1,29 @@
-// Extracao de keyframes de um video de aula para OCR.
+// Extração de keyframes de um vídeo de aula para OCR.
 //
-// Usa ffmpeg `select=gt(scene,X)` (deteccao de mudanca de cena) com fallback
-// para amostragem por FPS quando o scene-filter nao pega nada (video de slide
-// estatico, por ex.). Dedup de frames quase-iguais por hash de pHash barato.
+// O3 — orquestração robusta:
+// 1. PySceneDetect (preferencial, se instalado): detecta transições de cena
+//    melhor que o scene-filter do ffmpeg (graduais, fades, cortes rápidos).
+//    Fallback: ffmpeg `select=gt(scene,X)` + fps.
+// 2. Dedup perceptual (pHash real): escala cada frame pra 16×16 cinza,
+//    threshold na média → hash 256 bits. Frames com Hamming distance < N
+//    são quase-iguais e só o primeiro fica. Muito melhor que hash exato.
+// 3. Amostragem uniforme: se ainda sobram muitos frames após dedup, amostra
+//    uniformemente ao longo do tempo (cobre o vídeo todo, não só o início).
 //
-// Saida: lista de PNG (1920x1080) num dir temporario. O chamador remove depois.
-//
-// Nao depende de PySceneDetect (pip) — o ffmpeg scene-filter serve e evita
-// mais uma dep. Se o usuario instalar scenedetect, usamos como pref (mais
-// robusto em transicoes graduais); senao, ffmpeg.
+// Saida: lista de PNG (1920×1080) num dir temporario. O chamador remove depois.
 
 import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { createHash } from 'crypto';
 
-const SCENE_THRESHOLD = 0.40; // sensitividade do scene-filter (0-1; menor = mais sensivel)
-const FALLBACK_FPS = 0.5;    // 1 frame a cada 2s se o scene-filter nao pega nada
-const MAX_FRAMES = 60;       // teto: mais que isso e so ruído/dedup
-const MIN_FRAMES = 4;        // se o scene-filter pega menos que isso, usa fallback fps
+const SCENE_THRESHOLD = 0.40;   // sensitividade do scene-filter do ffmpeg
+const FALLBACK_FPS = 0.5;      // 1 frame a cada 2s se scene-filter pega pouco
+const MAX_FRAMES = 40;         // teto após dedup (40 frames é bom pra OCR)
+const MIN_FRAMES = 4;          // abaixo disso, usa fallback fps
 const RESOLUTION = '1920x1080';
+const PHASH_HAMMING_THRESHOLD = 6; // frames com distância Hamming < 6 são dedup (mais permissivo)
+const PHASH_SIZE = 16;         // 16×16 = 256 bits
 
 const run = (cmd, args, env) =>
   new Promise((resolve, reject) => {
@@ -33,27 +36,152 @@ const run = (cmd, args, env) =>
     proc.on('close', (code) => resolve({ code, out }));
   });
 
-// pHash barato: escala pra 16x16 cinza, threshold na media -> hash 256 bits.
-// So pra dedup de frames quase-iguais — nao e perceptual de qualidade.
-const phash = async (file) => {
-  // Le o PNG como bytes e faz um hash do conteudo (rapido, suficiente pra
-  // dedup exato). Pra dedup quase-exato, usariamos ffmpeg + numpy; mas o
-  // scene-filter ja separa cenas distintas, entao dedup exato basta na pratica.
-  const buf = await fs.readFile(file);
-  return createHash('sha256').update(buf).digest('hex');
+// Verifica se o PySceneDetect está disponível (pip install scenedetect).
+const hasScenedetect = async () => {
+  try {
+    const { code } = await run('scenedetect', ['--version'], process.env);
+    return code === 0;
+  } catch {
+    return false;
+  }
 };
 
-// Extrai keyframes de um video. Retorna { dir, frames: [path...] }.
-// `dir` e temporario — o chamador deve remover apos consumir.
-export const extractKeyframes = async ({ videoPath, log = () => {} } = {}) => {
-  if (!videoPath) throw new Error('videoPath obrigatorio');
+// pHash perceptual real: usa ffmpeg pra escalar o frame pra 16×16 em YUV (cinza),
+// extrai os pixels brutos, e calcula um hash binário (threshold na média).
+// Retorna um array de 256 bits (0/1) — comparar com Hamming distance.
+const phashPerceptual = async (file) => {
+  try {
+    const { code, out } = await run('ffmpeg', [
+      '-i', file,
+      '-vf', `scale=${PHASH_SIZE}:${PHASH_SIZE},format=gray`,
+      '-f', 'rawvideo', '-pix_fmt', 'gray',
+      'pipe:1',
+    ], process.env);
+    if (code !== 0) return null;
+    // Pega os bytes crus (256 pixels = 256 bytes em gray)
+    const buf = Buffer.from(out, 'binary');
+    if (buf.length < PHASH_SIZE * PHASH_SIZE) return null;
+    const pixels = buf.slice(0, PHASH_SIZE * PHASH_SIZE);
+    // Média
+    let sum = 0;
+    for (let i = 0; i < pixels.length; i++) sum += pixels[i];
+    const avg = sum / pixels.length;
+    // Hash: 1 se pixel > média, 0 senão
+    const hash = new Uint8Array(PHASH_SIZE * PHASH_SIZE);
+    for (let i = 0; i < pixels.length; i++) hash[i] = pixels[i] > avg ? 1 : 0;
+    return hash;
+  } catch {
+    return null;
+  }
+};
 
-  const dir = join(tmpdir(), `keyframes-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-  await fs.mkdir(dir, { recursive: true });
+// Distância de Hamming entre dois pHashes (quantos bits diferem).
+const hamming = (a, b) => {
+  if (!a || !b || a.length !== b.length) return 999;
+  let dist = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) dist++;
+  return dist;
+};
 
-  // Tenta 1: scene-filter (deteccao de mudanca de cena)
+// Dedup perceptual: remove frames quase-iguais (Hamming < threshold).
+// Mantém o PRIMEIRO de cada cluster (representa a cena inicial).
+// GARANTE um mínimo de MIN_FRAMES mesmo se tudo é parecido (cobre o vídeo todo).
+// Depois amostra uniformemente se ainda > MAX_FRAMES.
+const dedupAndSample = async (frames, log = () => {}) => {
+  if (frames.length <= 1) return frames;
+
+  // 1. Dedup perceptual: marca duplicatas (NÃO apaga ainda — podemos precisar
+  // delas se o vídeo for tão estático que o dedup deixa < MIN_FRAMES).
+  const kept = [];
+  const keptHashes = [];
+  const isDup = new Array(frames.length).fill(false);
+  for (let i = 0; i < frames.length; i++) {
+    const h = await phashPerceptual(frames[i]);
+    let dup = false;
+    for (const existing of keptHashes) {
+      if (hamming(h, existing) < PHASH_HAMMING_THRESHOLD) { dup = true; break; }
+    }
+    if (dup) { isDup[i] = true; continue; }
+    kept.push(frames[i]);
+    keptHashes.push(h);
+  }
+
+  // 2. Se o dedup foi agressivo demais (vídeo com tela quase estática),
+  // recupera frames dedupados espaçados uniformemente até MIN_FRAMES.
+  const dedupCount = kept.length;
+  if (kept.length < MIN_FRAMES) {
+    const dupedFrames = frames.filter((_, i) => isDup[i]);
+    const need = MIN_FRAMES - kept.length;
+    if (dupedFrames.length >= need) {
+      const step = dupedFrames.length / need;
+      const recovered = [];
+      for (let i = 0; i < need; i++) recovered.push(dupedFrames[Math.floor(i * step)]);
+      kept.push(...recovered);
+      const recoveredSet = new Set(recovered);
+      for (let i = 0; i < frames.length; i++) {
+        if (isDup[i] && recoveredSet.has(frames[i])) isDup[i] = false;
+      }
+    }
+  }
+  log(`[keyframes] dedup: ${frames.length} -> ${dedupCount}${dedupCount < MIN_FRAMES && kept.length > dedupCount ? ` -> ${kept.length} (recuperou estáticos)` : ''}`);
+
+  // 3. Se ainda > MAX_FRAMES, amostra uniformemente ao longo do tempo
+  if (kept.length > MAX_FRAMES) {
+    const step = kept.length / MAX_FRAMES;
+    const sampled = [];
+    for (let i = 0; i < MAX_FRAMES; i++) sampled.push(kept[Math.floor(i * step)]);
+    const sampledSet = new Set(sampled);
+    // Marca os não-amostrados como dup (para apagar)
+    for (let i = 0; i < frames.length; i++) {
+      if (!sampledSet.has(frames[i])) isDup[i] = true;
+      else isDup[i] = false;
+    }
+    log(`[keyframes] dedup: ${frames.length} -> amostra uniforme: ${sampled.length}`);
+    kept.length = 0;
+    kept.push(...sampled);
+  }
+
+  // 4. Apaga os marcados como dup
+  for (let i = 0; i < frames.length; i++) {
+    if (isDup[i]) await fs.unlink(frames[i]).catch(() => {});
+  }
+
+  return kept;
+};
+
+// Extração via PySceneDetect (mais robusto em transições graduais/fades).
+// `scenedetect` CLI: detecta cenas e salva o primeiro frame de cada como PNG.
+const extractViaScenedetect = async (videoPath, dir, log) => {
+  const { code, out } = await run('scenedetect', [
+    '-i', videoPath,
+    '-o', dir,
+    '-d', '0',  // detector: content (default)
+    '-t', String(SCENE_THRESHOLD),
+    'save-images',
+    '-w', String(RESOLUTION.split('x')[0]),
+    '-h', String(RESOLUTION.split('x')[1]),
+    '-f', '%04d',
+    '-n', '1',  // só 1 frame por cena (o primeiro)
+  ], process.env);
+  if (code !== 0) {
+    log(`[keyframes] scenedetect falhou (exit ${code}); caindo pro ffmpeg`);
+    return [];
+  }
+  const all = (await fs.readdir(dir))
+    .filter((f) => /^\d+\.png$/.test(f))
+    .sort((a, b) => {
+      const na = parseInt(a); const nb = parseInt(b);
+      return na - nb;
+    })
+    .map((f) => join(dir, f));
+  return all;
+};
+
+// Extração via ffmpeg scene-filter + fallback fps.
+const extractViaFfmpeg = async (videoPath, dir, log) => {
+  // Tenta 1: scene-filter (detecção de mudança de cena)
   const sceneOut = join(dir, 'scene_%04d.png');
-  const { code, out } = await run('ffmpeg', [
+  const { code } = await run('ffmpeg', [
     '-y', '-i', videoPath,
     '-vf', `select='gt(scene,${SCENE_THRESHOLD})',scale=${RESOLUTION}`,
     '-vsync', 'vfr', '-q:v', '2',
@@ -66,7 +194,7 @@ export const extractKeyframes = async ({ videoPath, log = () => {} } = {}) => {
     frames = all.map((f) => join(dir, f));
   }
 
-  // Se o scene-filter nao pegou o suficiente, usa fallback fps
+  // Se o scene-filter não pegou o suficiente, usa fallback fps
   if (frames.length < MIN_FRAMES) {
     log(`[keyframes] scene-filter pegou ${frames.length}; tentando fallback fps=${FALLBACK_FPS}`);
     const fbOut = join(dir, 'fb_%04d.png');
@@ -81,34 +209,47 @@ export const extractKeyframes = async ({ videoPath, log = () => {} } = {}) => {
         .filter((f) => /^fb_\d+\.png$/.test(f))
         .sort()
         .map((f) => join(dir, f));
+      // Limpa os scene_ que sobraram (poucos)
+      for (const f of frames) await fs.unlink(f).catch(() => {});
       if (fb.length > frames.length) frames = fb;
     }
   }
+  return frames;
+};
 
-  // Dedup por hash exato (frames identicos que o filtro deixa passar)
-  if (frames.length > MAX_FRAMES) {
-    const seen = new Set();
-    const deduped = [];
-    for (const f of frames) {
-      const h = await phash(f);
-      if (seen.has(h)) { await fs.unlink(f).catch(() => {}); continue; }
-      seen.add(h);
-      deduped.push(f);
-      if (deduped.length >= MAX_FRAMES) {
-        // Remove os excedentes restantes
-        break;
-      }
+// Extrai keyframes de um video. Retorna { dir, frames: [path...] }.
+// `dir` é temporário — o chamador deve remover após consumir.
+export const extractKeyframes = async ({ videoPath, log = () => {} } = {}) => {
+  if (!videoPath) throw new Error('videoPath obrigatorio');
+
+  const dir = join(tmpdir(), `keyframes-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  await fs.mkdir(dir, { recursive: true });
+
+  // PySceneDetect (preferencial) ou ffmpeg
+  let frames = [];
+  if (await hasScenedetect()) {
+    log('[keyframes] usando PySceneDetect');
+    frames = await extractViaScenedetect(videoPath, dir, log);
+    if (frames.length < MIN_FRAMES) {
+      log('[keyframes] scenedetect pegou pouco; tentando ffmpeg');
+      frames = await extractViaFfmpeg(videoPath, dir, log);
     }
-    // Limpa o que sobrou nao incluido
-    const included = new Set(deduped);
-    for (const f of frames) if (!included.has(f)) await fs.unlink(f).catch(() => {});
-    frames = deduped;
+  } else {
+    frames = await extractViaFfmpeg(videoPath, dir, log);
   }
 
-  log(`[keyframes] ${frames.length} frames extraidos de ${videoPath.split('/').pop()}`);
+  if (!frames.length) {
+    log(`[keyframes] sem frames extraídos de ${videoPath.split('/').pop()}`);
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    return { dir, frames: [] };
+  }
+
+  // Dedup perceptual + amostragem uniforme
+  frames = await dedupAndSample(frames, log);
+
+  log(`[keyframes] ${frames.length} frames finais de ${videoPath.split('/').pop()}`);
   if (frames.length === 0) {
-    // Remove o dir vazio
-    await fs.rmdir(dir, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
   }
   return { dir, frames };
 };
