@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, BookOpenText, ChevronDown, ChevronRight, Loader2, Check,
-  AlertTriangle, X, Sparkles, SlidersHorizontal, Mic, Cpu, Cloud,
+  AlertTriangle, X, Sparkles, SlidersHorizontal, Mic, Cpu, Cloud, ScanText,
 } from "lucide-react";
 import { INSTRUCTION_PRESETS } from "../utils/instructionPresets";
 import { collectModules, generateReadingCourseBatch, MATERIAL_KINDS } from "../utils/readingGeneration";
@@ -15,6 +15,7 @@ const MODELS = [
 // Fases globais do lote (revezam a VRAM no backend: WhisperX -> Qwen -> DeepSeek).
 const PHASES = {
   whisper: { label: "Transcrevendo (WhisperX)", Icon: Mic, color: "text-sky-300" },
+  ocr: { label: "OCR dos vídeos (PaddleOCR + Qwen3-VL)", Icon: ScanText, color: "text-cyan-300" },
   qwen: { label: "Condensando aulas (Qwen)", Icon: Cpu, color: "text-violet-300" },
   deepseek: { label: "Gerando leitura (Qwen + DeepSeek), módulo a módulo", Icon: Cloud, color: "text-emerald-300" },
   materials: { label: "Gerando materiais (IA)", Icon: Sparkles, color: "text-amber-300" },
@@ -79,6 +80,8 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
   const [normalize, setNormalize] = useState(true); // F1: normaliza mis-transcricao (exige Qwen) — ligado por padrao
   const [clarity, setClarity] = useState(true); // F3: modo clareza (vs fidelidade) — ligado por padrao
   const [contract, setContract] = useState(true); // F4: contrato de curso (exige Qwen) — ligado por padrao
+  const [ocrText, setOcrText] = useState(false); // O1: OCR de texto/código (PaddleOCR + VL) — OFF por padrao (exige setup)
+  const [ocrDiagram, setOcrDiagram] = useState(false); // O2: OCR de diagrama (Qwen3-VL) — OFF por padrao (exige GPU)
   const [genMaterials, setGenMaterials] = useState(true);
   // Podcast desmarcado por padrao (gere sob demanda quando quiser); os demais on.
   const [materialKinds, setMaterialKinds] = useState(() => new Set(MATERIAL_KINDS.map((k) => k.key).filter((k) => k !== "podcast")));
@@ -160,6 +163,11 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
       }));
     } else if (ev.kind === "module-precondense") {
       patchModule(courseTitle, modulePath, (m) => ({ ...m, note: ev.status === "start" ? "condensando (Qwen)…" : "condensado (Qwen)" }));
+    } else if (ev.kind === "module-ocr") {
+      patchModule(courseTitle, modulePath, (m) => ({
+        ...m,
+        note: ev.status === "start" ? "OCR dos vídeos…" : ev.status === "error" ? "OCR falhou" : `OCR: ${ev.vocabulary || 0} tokens, ${ev.diagrams || 0} diagramas`,
+      }));
     } else if (ev.kind === "module-start") {
       patchModule(courseTitle, modulePath, (m) => ({ ...m, status: "doing", note: "gerando leitura…" }));
     } else if (ev.kind === "reading") {
@@ -246,6 +254,8 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
         normalize: preCondense && normalize, // F1 so faz sentido com o Qwen ligado
         clarity, // F3: modo clareza
         contract: preCondense && contract, // F4 usa fingerprint do Qwen -> exige pre-condensacao
+        ocrText, // O1: OCR de texto/código (PaddleOCR + VL)
+        ocrDiagram, // O2: OCR de diagrama (Qwen3-VL)
         genMaterials, materialKinds: [...materialKinds],
         cancelRef, signal: controller.signal,
         onProgress: onEvent,
@@ -351,6 +361,16 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
           {/* F4: contrato de curso (exige Qwen ligado) */}
           <button onClick={() => setContract((v) => !v)} disabled={running || !preCondense} className={checkBtn(preCondense && contract)} title="F4: o Qwen extrai um fingerprint tecnico de cada aula; o DeepSeek sintetiza um CONTRATO (uma abordagem por escolha + nomes canonicos) injetado em toda condensacao -> aulas coerentes entre si (mata contradicoes tipo Resource Server x filtro manual) e fixa nomes (ex.: /auth). Exige o 'Condensar (Qwen)' ligado.">
             <Box on={preCondense && contract} /> Contrato (F4)
+          </button>
+
+          {/* O1: OCR de texto/código (PaddleOCR + VL) */}
+          <button onClick={() => setOcrText((v) => !v)} disabled={running} className={checkBtn(ocrText)} title="O1: PaddleOCR (CPU) + Qwen3-VL (GPU) extraem os identificadores EXATOS da tela do vídeo (rotas, classes, métodos) e corrigem o garble do WhisperX na fonte (ex.: /alf -> /auth). Ground-truth da tela — supera a heurística da F1 para código. Exige env conda 'paddleocr' + modelos VL em /mnt/nvme2/llm/models/.">
+            <Box on={ocrText} /> <ScanText className="w-3.5 h-3.5" /> OCR texto (O1)
+          </button>
+
+          {/* O2: OCR de diagrama (Qwen3-VL) */}
+          <button onClick={() => setOcrDiagram((v) => !v)} disabled={running} className={checkBtn(ocrDiagram)} title="O2: Qwen3-VL extrai a ESTRUTURA dos diagramas da tela (DFD, DER, UML) -> Mermaid fiel ao desenhado (em vez de inferir só da fala). Exige GPU (revezamento de VRAM).">
+            <Box on={ocrDiagram} /> <ScanText className="w-3.5 h-3.5" /> OCR diagrama (O2)
           </button>
 
           {/* Transcrever faltantes */}

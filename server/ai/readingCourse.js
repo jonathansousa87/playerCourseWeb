@@ -15,6 +15,8 @@ import {
 import { startQwen, stopQwen } from './qwenServer.js';
 import { parseTranscript, parseTranscriptRaw } from './generator.js';
 import { transcribeToTxt, detectAudioLanguage } from './whisperx.js';
+import { processVideoOcr, ocrTextEnabled, ocrDiagramEnabled } from './ocr/ocrModule.mjs';
+import { correctTranscriptWithOcr } from './ocr/ocrCorrect.mjs';
 import { query } from '../../db/index.js';
 import {
   READING_PLAN_SYSTEM,
@@ -259,6 +261,69 @@ const transcribeMissingTranscripts = async (moduleDir, language = 'pt') => {
   return summary;
 };
 
+// === OCR do módulo: extrai vocabulário canônico + diagramas dos vídeos. ===
+// Roda DEPOIS da transcrição (tem os .txt) e ANTES da pré-condensação.
+// O vocabulário corrige o garble do WhisperX na fonte (beneficia tudo).
+// Cache por vídeo: roda 1× por vídeo e reusa.
+// PaddleOCR no CPU (fora do revezamento de VRAM); VL na GPU (derruba Qwen texto).
+// Degrada gracioso: OCR off ou falha -> vocabulário vazio, F1 heurística segue.
+const collectModuleVideos = async (moduleDir) => {
+  const videos = [];
+  const walk = async (dir) => {
+    let entries;
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) await walk(full);
+      else if (VIDEO_RE.test(e.name)) videos.push(full);
+    }
+  };
+  await walk(moduleDir);
+  return videos;
+};
+
+// Processa OCR de todos os vídeos de um módulo e agrega o vocabulário + diagramas.
+// Retorna { vocabulary: [...], diagrams: [...], ocrCorrections: [...] }.
+const runOcrForModule = async (moduleDir, coursesPath, log = () => {}) => {
+  if (!ocrTextEnabled() && !ocrDiagramEnabled()) {
+    return { vocabulary: [], diagrams: [], ocrCorrections: [] };
+  }
+  const videos = await collectModuleVideos(moduleDir);
+  if (!videos.length) return { vocabulary: [], diagrams: [], ocrCorrections: [] };
+
+  log(`[ocr] processando ${videos.length} vídeos do módulo...`);
+  const allVocab = new Map(); // dedup case-insensitive
+  const allDiagrams = [];
+  let processed = 0;
+
+  for (const v of videos) {
+    try {
+      const r = await processVideoOcr({ videoPath: v, coursesPath, log });
+      processed++;
+      // Funde vocabulário (dedup, prefere versão com mais maiúsculas)
+      for (const tok of r.vocabulary || []) {
+        if (!tok || tok.length < 2) continue;
+        const lower = tok.toLowerCase();
+        const existing = allVocab.get(lower);
+        if (existing) {
+          const capsExisting = (existing.match(/[A-Z]/g) || []).length;
+          const capsNew = (tok.match(/[A-Z]/g) || []).length;
+          if (capsNew > capsExisting) allVocab.set(lower, tok);
+        } else {
+          allVocab.set(lower, tok);
+        }
+      }
+      for (const d of r.diagrams || []) allDiagrams.push(d);
+    } catch (err) {
+      log(`[ocr] erro em ${v.split('/').pop()}: ${err.message}`);
+    }
+  }
+
+  const vocabulary = [...allVocab.values()];
+  log(`[ocr] módulo: ${processed}/${videos.length} vídeos, ${vocabulary.length} tokens, ${allDiagrams.length} diagramas`);
+  return { vocabulary, diagrams: allDiagrams, ocrCorrections: [] };
+};
+
 // Detecta o idioma do CURSO inteiro (para "auto", modo filesystem): usa o texto
 // de uma transcricao ja existente (free); se nao houver nenhuma, sonda os 30s do
 // primeiro video com o WhisperX multilingue. Resultado vale pro curso todo
@@ -444,8 +509,8 @@ const condenseLesson = async ({ lessonTitle, sources, model, instruction, langua
 // FIX A: extrai do texto CRU (`parseTranscript`), NAO do pre-condensado — a limpeza do
 // Qwen apaga o garble. Degrada gracioso: off/Qwen fora -> tudo vazio.
 // `readParts(t)` -> lista de textos crus (parseTranscript no fs, fetch no Drive).
-const buildModulePrep = async ({ transcripts, readParts, preCondenseOn, normalizeOn, contractOn, incomingContract = '', ensureQwen, moduleTitle, instruction, model, log }) => {
-  const base = { normMap: [], fingerprints: [], contract: incomingContract, usages: [] };
+const buildModulePrep = async ({ transcripts, readParts, preCondenseOn, normalizeOn, contractOn, incomingContract = '', ensureQwen, moduleTitle, instruction, model, log, ocrVocabulary = [], ocrDiagrams = [] }) => {
+  const base = { normMap: [], fingerprints: [], contract: incomingContract, usages: [], ocrDiagrams };
   if (!preCondenseOn) return base;
   const needFp = normalizeOn || (contractOn && !incomingContract);
   if (!needFp) return base;
@@ -462,9 +527,19 @@ const buildModulePrep = async ({ transcripts, readParts, preCondenseOn, normaliz
   let contract = incomingContract;
   if (contractOn && !contract) {
     const named = fingerprints.map((fp, i) => `${transcripts[i]?.title || ''}\n${fp}`);
-    const c = await buildContract(named, instruction, model);
+    // OCR: injeta o vocabulário canônico (ground-truth da tela) e os diagramas
+    // Mermaid no contrato — os nomes canônicos passam a vir do OCR, muito mais
+    // confiáveis que o fingerprint ruidoso do Qwen.
+    let ocrBlock = '';
+    if (ocrVocabulary.length) {
+      ocrBlock += `\nVOCABULÁRIO CANÔNICO (extraído via OCR da tela do vídeo — USE EXATAMENTE estes nomes; são a verdade da tela):\n${ocrVocabulary.slice(0, 200).join(', ')}\n`;
+    }
+    if (ocrDiagrams.length) {
+      ocrBlock += `\nDIAGRAMAS (extraídos via OCR da tela do vídeo — reproduza fielmente):\n${ocrDiagrams.map((d) => d.mermaid).join('\n\n---\n\n')}\n`;
+    }
+    const c = await buildContract(named, instruction + (ocrBlock ? `\n\n${ocrBlock}` : ''), model);
     contract = c.text; if (c.usage) usages.push(c.usage);
-    if (contract) log(`[contract] F4 gerado p/ "${moduleTitle}" (${contract.length} chars)`);
+    if (contract) log(`[contract] F4 gerado p/ "${moduleTitle}" (${contract.length} chars${ocrVocabulary.length ? `, OCR: ${ocrVocabulary.length} tokens` : ''})`);
   }
   // F1 normMap (vet) + correcao ANCORADA no contrato (F4).
   let normMap = [];
@@ -472,7 +547,7 @@ const buildModulePrep = async ({ transcripts, readParts, preCondenseOn, normaliz
     const r = await normMapFromFingerprints({ fingerprints, contextTitle: moduleTitle, model, log, contract: contractOn ? contract : '' });
     normMap = r.map; if (r.usage) usages.push(r.usage);
   }
-  return { normMap, fingerprints, contract, usages };
+  return { normMap, fingerprints, contract, usages, ocrDiagrams };
 };
 
 // Gera o curso de leitura para UM modulo. Despacha pro modo do .env.
@@ -491,6 +566,7 @@ export const generateReadingModule = async (opts) => {
   if (normalizeOn && preCondenseOn) console.log('[reading] normalizacao de mis-transcricao ATIVA (F1)');
   if (clarityOn) console.log('[reading] modo CLAREZA ATIVO (F3)');
   if (contractOn && preCondenseOn) console.log('[reading] CONTRATO de curso ATIVO (F4)');
+  if (opts.ocrVocabulary?.length) console.log(`[reading] OCR ATIVO — ${opts.ocrVocabulary.length} tokens canônicos, ${opts.ocrDiagrams?.length || 0} diagramas`);
   const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
   // `opts.contractText`: contrato JA sintetizado por-curso (vem do lote); se ausente,
   // o modulo sintetiza o seu (per-modulo).
@@ -515,6 +591,8 @@ export const generateReadingBatch = async ({
   normalize: normFlag,
   clarity: clarityFlag,
   contract: contractFlag,
+  ocrText: ocrTextFlag,
+  ocrDiagram: ocrDiagramFlag,
   onProgress = () => {},
 }) => {
   const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
@@ -522,6 +600,12 @@ export const generateReadingBatch = async ({
   const normalizeOn = normFlag ?? normalizeEnabled();
   const clarityOn = clarityFlag ?? clarityEnabled();
   const contractOn = contractFlag ?? contractEnabled();
+  // OCR: override por execucao (boolean) ou cai no flag do .env.
+  const ocrTextOn = ocrTextFlag ?? ocrTextEnabled();
+  const ocrDiagramOn = ocrDiagramFlag ?? ocrDiagramEnabled();
+  // Set temporário dos flags pra ocrModule respeitar o override da UI.
+  if (typeof ocrTextFlag === 'boolean') process.env.OCR_TEXT_ENABLED = ocrTextFlag ? '1' : '0';
+  if (typeof ocrDiagramFlag === 'boolean') process.env.OCR_DIAGRAM_ENABLED = ocrDiagramFlag ? '1' : '0';
   const log = (m) => console.log(m);
   const transcriptionByJob = new Map();
   const results = [];
@@ -558,6 +642,37 @@ export const generateReadingBatch = async ({
       onProgress({ type: 'transcricao', ...tag, status: 'done', ...summary });
     }
     onProgress({ type: 'phase', phase: 'whisper', status: 'done' });
+  }
+
+  // ---- FASE 1.5: OCR (entre WhisperX e pré-condensação) ----
+  // PaddleOCR (CPU) + Qwen3-VL (GPU) extraem vocabulário canônico + diagramas
+  // dos vídeos de cada módulo. O vocabulário corrige o garble do WhisperX na
+  // fonte (antes da pré-condensação) e alimenta o contrato (F4).
+  // Cache por vídeo: roda 1× por vídeo. Degrada gracioso se off/falha.
+  const ocrByJob = new Map();
+  const ocrOn = ocrTextOn || ocrDiagramOn;
+  if (ocrOn && !isDrive) {
+    onProgress({ type: 'phase', phase: 'ocr', status: 'start' });
+    // PaddleOCR roda no CPU (não disputa VRAM); VL derruba o Qwen texto e sobe.
+    for (const job of jobs) {
+      const tag = { courseTitle: job.courseTitle, module: job.moduleTitle, modulePath: job.modulePath };
+      onProgress({ type: 'ocr', ...tag, status: 'start' });
+      try {
+        const moduleDir = join(coursesPath, job.courseTitle, job.modulePath);
+        const ocr = await runOcrForModule(moduleDir, coursesPath, log);
+        ocrByJob.set(job.modulePath, ocr);
+        onProgress({ type: 'ocr', ...tag, status: 'done', vocabulary: ocr.vocabulary.length, diagrams: ocr.diagrams.length });
+      } catch (err) {
+        log(`[ocr] erro no módulo ${job.moduleTitle}: ${err.message}`);
+        onProgress({ type: 'ocr', ...tag, status: 'error', error: err.message });
+      }
+    }
+    // Derruba o VL (se subiu) pra liberar VRAM pro Qwen texto na fase 2
+    try {
+      const { stopVl } = await import('./ocr/visionServer.mjs');
+      await stopVl({ log: () => {} });
+    } catch {}
+    onProgress({ type: 'phase', phase: 'ocr', status: 'done' });
   }
 
   // ---- FASE 2: leitura MODULO A MODULO ----
@@ -612,6 +727,8 @@ export const generateReadingBatch = async ({
           normalize: normalizeOn, // F1: normalizacao de mis-transcricao por modulo
           clarity: clarityOn, // F3: modo clareza
           contract: contractOn, // F4: contrato (per-modulo; per-curso = TD-14)
+          ocrVocabulary: ocrByJob.get(job.modulePath)?.vocabulary || [], // OCR: correção ground-truth
+          ocrDiagrams: ocrByJob.get(job.modulePath)?.diagrams || [], // OCR: Mermaid fiel
           ensureQwen,
           onProgress: moduleProgress,
         });
@@ -647,6 +764,8 @@ const generateReadingModuleFs = async ({
   clarityOn = false,
   contractOn = false,
   incomingContract = '',
+  ocrVocabulary = [],
+  ocrDiagrams = [],
   ensureQwen,
   onProgress = () => {},
 }) => {
@@ -668,13 +787,26 @@ const generateReadingModuleFs = async ({
 
   // F1+F4 prep: fingerprint por aula (uma vez) -> normMap (F1) + contrato (F4) +
   // fingerprints p/ o planejador enriquecido. Off/Qwen fora -> vazios (comportamento antigo).
+  // OCR: o vocabulário canônico (ground-truth da tela) corrige o garble do WhisperX
+  // no texto CRU antes de tudo — beneficia leitura, prática, quiz, flashcards.
+  const ocrVocab = ocrVocabulary || [];
+  const ocrDiags = ocrDiagrams || [];
   const prep = await buildModulePrep({
     transcripts, preCondenseOn, normalizeOn, contractOn, incomingContract, ensureQwen,
     moduleTitle, instruction, model, log: (m) => console.log(m),
+    ocrVocabulary: ocrVocab, ocrDiagrams: ocrDiags,
     readParts: async (t) => {
       const out = [];
       for (const part of t.parts || [t]) {
-        try { out.push(await parseTranscript(part.path)); } catch { /* ilegivel */ }
+        try {
+          let text = await parseTranscript(part.path);
+          // OCR ground-truth: corrige garble (ex.: /alf -> /auth) ancorado na tela.
+          if (ocrVocab.length && text) {
+            const { text: corrected, map } = correctTranscriptWithOcr(text, ocrVocab, { log: (m) => console.log(m) });
+            if (map.length) text = corrected;
+          }
+          out.push(text);
+        } catch { /* ilegivel */ }
       }
       return out;
     },
@@ -765,7 +897,9 @@ const generateReadingModuleDrive = async ({
   coursesPath, courseTitle, modulePath, moduleTitle, index = 1,
   model = DEFAULT_MODEL, instruction = '', language = 'pt',
   preCondenseOn = false, normalizeOn = false, clarityOn = false,
-  contractOn = false, incomingContract = '', ensureQwen, onProgress = () => {},
+  contractOn = false, incomingContract = '',
+  ocrVocabulary = [], ocrDiagrams = [],
+  ensureQwen, onProgress = () => {},
 }) => {
   const drive = await import('../drive/index.js');
   const { getDriveFolderId } = await import('../config.js');
@@ -789,13 +923,24 @@ const generateReadingModuleDrive = async ({
   }
 
   // F1+F4 prep (le do Drive; o condense re-le, cache do precondense cobre a parte cara).
+  // OCR: correção ground-truth no texto cru antes da pré-condensação (igual ao fs).
+  const ocrVocab = ocrVocabulary || [];
+  const ocrDiags = ocrDiagrams || [];
   const prep = await buildModulePrep({
     transcripts, preCondenseOn, normalizeOn, contractOn, incomingContract, ensureQwen,
     moduleTitle, instruction, model, log: (m) => console.log(m),
+    ocrVocabulary: ocrVocab, ocrDiagrams: ocrDiags,
     readParts: async (t) => {
       const out = [];
       for (const part of t.parts || [t]) {
-        try { out.push(parseTranscriptRaw(await drive.getFileContent(part.fileId), /\.vtt$/i.test(part.name))); } catch { /* ilegivel */ }
+        try {
+          let text = parseTranscriptRaw(await drive.getFileContent(part.fileId), /\.vtt$/i.test(part.name));
+          if (ocrVocab.length && text) {
+            const { text: corrected, map } = correctTranscriptWithOcr(text, ocrVocab, { log: (m) => console.log(m) });
+            if (map.length) text = corrected;
+          }
+          out.push(text);
+        } catch { /* ilegivel */ }
       }
       return out;
     },

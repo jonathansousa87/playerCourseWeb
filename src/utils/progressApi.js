@@ -517,11 +517,11 @@ export const generateReadingModule = async ({ courseTitle, modulePath, moduleTit
 // Gera leitura EM LOTE (revezando VRAM WhisperX/Qwen no backend). Stream NDJSON:
 // repassa cada evento via onProgress(ev) e devolve o array de resultados no fim.
 // `signal` (AbortSignal) permite cancelar a requisicao.
-export const generateReadingBatch = async ({ jobs, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract, onProgress = () => {}, signal } = {}) => {
+export const generateReadingBatch = async ({ jobs, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract, ocrText, ocrDiagram, onProgress = () => {}, signal } = {}) => {
   const res = await fetch(`${API_BASE}/api/ia/reading-course/batch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jobs, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract }),
+    body: JSON.stringify({ jobs, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract, ocrText, ocrDiagram }),
     signal,
   });
   if (!res.ok || !res.body) {

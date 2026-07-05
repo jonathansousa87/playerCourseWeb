@@ -194,6 +194,8 @@ export const generateReadingCourseBatch = async ({
   normalize,
   clarity,
   contract,
+  ocrText,
+  ocrDiagram,
   genMaterials,
   materialKinds,
   cancelRef,
@@ -224,6 +226,8 @@ export const generateReadingCourseBatch = async ({
     normalize,
     clarity,
     contract,
+    ocrText,
+    ocrDiagram,
     signal,
     onProgress: (ev) => {
       const tag = { courseTitle: ev.courseTitle, modulePath: ev.modulePath };
@@ -231,6 +235,7 @@ export const generateReadingCourseBatch = async ({
         case "phase": onProgress({ kind: "phase", phase: ev.phase, status: ev.status }); break;
         case "transcricao": onProgress({ kind: "module-transcribe", ...tag, status: ev.status, transcribed: ev.transcribed }); break;
         case "precondense": onProgress({ kind: "module-precondense", ...tag, status: ev.status }); break;
+        case "ocr": onProgress({ kind: "module-ocr", ...tag, status: ev.status, vocabulary: ev.vocabulary, diagrams: ev.diagrams, error: ev.error }); break;
         case "module-start": onProgress({ kind: "module-start", ...tag }); break;
         case "plano": onProgress({ kind: "reading", ...tag, total: ev.total }); break;
         case "aula": onProgress({ kind: "reading-lesson", ...tag, status: ev.status === "start" ? "doing" : ev.ok ? "ok" : "fail" }); break;

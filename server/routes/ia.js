@@ -81,7 +81,7 @@ router.post('/api/ia/generate', async (req, res) => {
 // Gera o curso de leitura de UM modulo (a IA agrupa as aulas e condensa as
 // transcricoes em .txt). So funciona em modo filesystem (escreve em disco).
 router.post('/api/ia/reading-course/module', async (req, res) => {
-  const { courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract, stream } = req.body || {};
+  const { courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract, ocrText, ocrDiagram, stream } = req.body || {};
   if (!courseTitle || !modulePath) {
     return res.status(400).json({ error: 'courseTitle e modulePath obrigatorios' });
   }
@@ -103,6 +103,8 @@ router.post('/api/ia/reading-course/module', async (req, res) => {
     normalize: typeof normalize === 'boolean' ? normalize : undefined,
     clarity: typeof clarity === 'boolean' ? clarity : undefined,
     contract: typeof contract === 'boolean' ? contract : undefined,
+    ocrText: typeof ocrText === 'boolean' ? ocrText : undefined,
+    ocrDiagram: typeof ocrDiagram === 'boolean' ? ocrDiagram : undefined,
   };
 
   // Modo streaming (NDJSON): emite eventos de progresso por aula (mostra o
@@ -133,7 +135,7 @@ router.post('/api/ia/reading-course/module', async (req, res) => {
 // fase 1 transcreve tudo, fase 2 condensa tudo (Qwen sobe 1x e cai), fase 3
 // DeepSeek roda em tudo. Sempre streaming (NDJSON) — o processo e longo.
 router.post('/api/ia/reading-course/batch', async (req, res) => {
-  const { jobs, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract } = req.body || {};
+  const { jobs, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract, ocrText, ocrDiagram } = req.body || {};
   if (!Array.isArray(jobs) || jobs.length === 0) {
     return res.status(400).json({ error: 'jobs (array) obrigatorio' });
   }
@@ -156,6 +158,8 @@ router.post('/api/ia/reading-course/batch', async (req, res) => {
     normalize: typeof normalize === 'boolean' ? normalize : undefined,
     clarity: typeof clarity === 'boolean' ? clarity : undefined,
     contract: typeof contract === 'boolean' ? contract : undefined,
+    ocrText: typeof ocrText === 'boolean' ? ocrText : undefined,
+    ocrDiagram: typeof ocrDiagram === 'boolean' ? ocrDiagram : undefined,
   };
 
   res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
