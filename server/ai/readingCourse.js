@@ -485,13 +485,20 @@ const condenseText = async ({ lessonTitle, merged, model, instruction, language 
 
 // fs: le as transcricoes do disco e pre-condensa (Qwen, inline) antes do DeepSeek.
 // Usa cache persistente por conteudo: reprocessar nao re-condensa no Qwen.
-const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, clarity = false, contract = '' }) => {
+const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, clarity = false, contract = '', ocrVocabulary = [] }) => {
   const parts = [];
   for (const src of sources) {
     // Cada aula logica pode ter varias `parts` (original + complemento .1).
     for (const part of src.parts || [src]) {
       try {
-        parts.push(await preCondenseCached(await parseTranscript(part.path), preCondenseOn, coursesPath, ensureQwen));
+        let text = await parseTranscript(part.path);
+        // OCR ground-truth: corrige garble (ex.: /alf -> /auth) ancorado na tela.
+        // Mesma correção que buildModulePrep aplica ao extrair fingerprints.
+        if (ocrVocabulary.length && text) {
+          const { text: corrected, map } = correctTranscriptWithOcr(text, ocrVocabulary);
+          if (map.length) text = corrected;
+        }
+        parts.push(await preCondenseCached(text, preCondenseOn, coursesPath, ensureQwen));
       } catch {
         /* ignora transcricao ilegivel */
       }
@@ -873,7 +880,7 @@ const generateReadingModuleFs = async ({
     const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
     let res;
     try {
-      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, clarity: clarityOn, contract });
+      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };
       } else {
@@ -1011,7 +1018,12 @@ const generateReadingModuleDrive = async ({
         for (const part of s.parts || [s]) {
           totalParts += 1;
           try {
-            const raw = parseTranscriptRaw(await drive.getFileContent(part.fileId), /\.vtt$/i.test(part.name));
+            let raw = parseTranscriptRaw(await drive.getFileContent(part.fileId), /\.vtt$/i.test(part.name));
+            // OCR ground-truth: corrige garble ancorado na tela (igual ao fs).
+            if (ocrVocab.length && raw) {
+              const { text: corrected, map } = correctTranscriptWithOcr(raw, ocrVocab);
+              if (map.length) raw = corrected;
+            }
             // Pre-condensacao com cache persistente (no-op se desligada/indisponivel).
             parts.push(await preCondenseCached(raw, preCondenseOn, coursesPath, ensureQwen));
           } catch { readErrors += 1; }
