@@ -80,8 +80,8 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
   const [normalize, setNormalize] = useState(true); // F1: normaliza mis-transcricao (exige Qwen) — ligado por padrao
   const [clarity, setClarity] = useState(true); // F3: modo clareza (vs fidelidade) — ligado por padrao
   const [contract, setContract] = useState(true); // F4: contrato de curso (exige Qwen) — ligado por padrao
-  const [ocrText, setOcrText] = useState(false); // O1: OCR de texto/código (PaddleOCR + VL) — OFF por padrao (exige setup)
-  const [ocrDiagram, setOcrDiagram] = useState(false); // O2: OCR de diagrama (Qwen3-VL) — OFF por padrao (exige GPU)
+  const [ocrText, setOcrText] = useState(true); // O1: OCR de texto/código (PaddleOCR + VL) — ON por padrao
+  const [ocrDiagram, setOcrDiagram] = useState(true); // O2: OCR de diagrama (Qwen3-VL) — ON por padrao
   const [genMaterials, setGenMaterials] = useState(true);
   // Podcast desmarcado por padrao (gere sob demanda quando quiser); os demais on.
   const [materialKinds, setMaterialKinds] = useState(() => new Set(MATERIAL_KINDS.map((k) => k.key).filter((k) => k !== "podcast")));
@@ -284,6 +284,7 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
       {on && <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />}
     </span>
   );
+  const Sep = () => <span className="w-px h-6 bg-slate-700/60 mx-0.5" />;
 
   const ph = phase ? PHASES[phase] : null;
 
@@ -301,11 +302,11 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
         <h2 className="font-semibold">Gerar curso de leitura — {courses.length} curso(s)</h2>
       </header>
 
-      {/* ===== Barra de configuracao (horizontal, menu com checkboxes) ===== */}
+      {/* ===== Barra de configuracao ===== */}
       <div className="border-b border-slate-800/60 px-6 py-3 space-y-2.5">
+        {/* Linha 1: selects + acoes da direita */}
         <div className="flex flex-wrap items-center gap-2">
-          <SlidersHorizontal className="w-4 h-4 text-slate-500" />
-
+          <SlidersHorizontal className="w-4 h-4 text-slate-500 flex-shrink-0" />
           {/* Nicho (obrigatorio) */}
           <select
             value={niche}
@@ -328,7 +329,7 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
             </button>
           )}
 
-          {/* Idioma do curso original (Auto = detecta PT/EN por aula) */}
+          {/* Idioma */}
           <div className="inline-flex h-9 rounded-lg border border-slate-700 overflow-hidden">
             {["pt", "en", "auto"].map((l) => (
               <button
@@ -338,47 +339,88 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
                 className={`px-3 text-sm ${language === l ? "bg-emerald-500/15 text-emerald-200" : "text-slate-400 hover:bg-slate-800/60"}`}
                 title={l === "auto" ? "Detecta automaticamente PT ou EN em cada aula" : ""}
               >
-                {l === "pt" ? "Portugues" : l === "en" ? "Ingles" : "Auto"}
+                {l === "pt" ? "PT" : l === "en" ? "EN" : "Auto"}
               </button>
             ))}
           </div>
 
-          {/* Qwen por aula (default on) */}
-          <button onClick={() => setPreCondense((v) => !v)} disabled={running} className={checkBtn(preCondense)} title="Condensa cada aula no modelo local (Qwen) antes do DeepSeek. A app revezar a VRAM com o WhisperX automaticamente.">
+          {/* Modelo */}
+          <select value={model} disabled={running} onChange={(e) => setModel(e.target.value)} className={ctl + " border-slate-700"}>
+            {MODELS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+          </select>
+
+          <div className="flex-1" />
+
+          {/* Acoes da direita */}
+          <button
+            onClick={handleClearCache}
+            disabled={running}
+            title="Limpa o cache em disco da pré-condensação do Qwen (.precondense-cache). Use se quiser recondensar do zero."
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-slate-700 text-slate-400 hover:bg-slate-800/60 text-xs disabled:opacity-40"
+          >
+            <Cpu className="w-3.5 h-3.5" /> Limpar cache
+          </button>
+          {cacheMsg && <span className="text-[11px] text-slate-400">{cacheMsg}</span>}
+
+          {started && (
+            <span
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 text-emerald-200 text-sm tabular-nums"
+              title="Custo estimado DeepSeek do lote: leitura (plano + condensacao) + materiais."
+            >
+              <Cloud className="w-3.5 h-3.5" /> ~{fmtUSD(totalCost)}
+            </span>
+          )}
+
+          {running && (
+            <button onClick={handleCancel} className="h-9 px-3 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm">
+              Cancelar
+            </button>
+          )}
+          <button
+            onClick={handleGenerateAll}
+            disabled={!canGenerate}
+            className="h-9 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {running ? "Gerando..." : `Gerar tudo (${totalSelected})`}
+          </button>
+        </div>
+
+        {/* Linha 2: toggles agrupados por categoria */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Grupo: Qwen (pre-condensacao + F1 + F4) */}
+          <button onClick={() => setPreCondense((v) => !v)} disabled={running} className={checkBtn(preCondense)} title="Condensa cada aula no modelo local (Qwen) antes do DeepSeek. A app reveza a VRAM com o WhisperX automaticamente.">
             <Box on={preCondense} /> <Sparkles className="w-3.5 h-3.5" /> Condensar (Qwen)
           </button>
-
-          {/* F1: normalizacao de mis-transcricao (exige Qwen ligado) */}
-          <button onClick={() => setNormalize((v) => !v)} disabled={running || !preCondense} className={checkBtn(preCondense && normalize)} title="F1: o Qwen propoe correcoes de termos mal transcritos pelo WhisperX (ex.: /alf -> /auth), o DeepSeek veta as arriscadas e aplica o resto ao texto antes de gerar a leitura. Exige o 'Condensar (Qwen)' ligado.">
+          <button onClick={() => setNormalize((v) => !v)} disabled={running || !preCondense} className={checkBtn(preCondense && normalize)} title="F1: o Qwen propoe correcoes de termos mal transcritos pelo WhisperX (ex.: /alf -> /auth), o DeepSeek veta as arriscadas e aplica o resto. Exige 'Condensar (Qwen)'.">
             <Box on={preCondense && normalize} /> Normalizar (F1)
           </button>
-
-          {/* F3: modo clareza (vs fidelidade) */}
-          <button onClick={() => setClarity((v) => !v)} disabled={running} className={checkBtn(clarity)} title="F3: gera a leitura no modo CLAREZA (nucleo -> analogia -> exemplo que prova -> subtopicos com exemplo -> 'Fixando'), como um tutor para iniciante. Desligado = modo FIDELIDADE (so reorganiza o que a transcricao trouxe).">
-            <Box on={clarity} /> Clareza (F3)
-          </button>
-
-          {/* F4: contrato de curso (exige Qwen ligado) */}
-          <button onClick={() => setContract((v) => !v)} disabled={running || !preCondense} className={checkBtn(preCondense && contract)} title="F4: o Qwen extrai um fingerprint tecnico de cada aula; o DeepSeek sintetiza um CONTRATO (uma abordagem por escolha + nomes canonicos) injetado em toda condensacao -> aulas coerentes entre si (mata contradicoes tipo Resource Server x filtro manual) e fixa nomes (ex.: /auth). Exige o 'Condensar (Qwen)' ligado.">
+          <button onClick={() => setContract((v) => !v)} disabled={running || !preCondense} className={checkBtn(preCondense && contract)} title="F4: o Qwen extrai um fingerprint de cada aula; o DeepSeek sintetiza um CONTRATO (abordagem + nomes canonicos) injetado em toda condensacao -> aulas coerentes entre si. Exige 'Condensar (Qwen)'.">
             <Box on={preCondense && contract} /> Contrato (F4)
           </button>
 
-          {/* O1: OCR de texto/código (PaddleOCR + VL) */}
-          <button onClick={() => setOcrText((v) => !v)} disabled={running} className={checkBtn(ocrText)} title="O1: PaddleOCR (CPU) + Qwen3-VL (GPU) extraem os identificadores EXATOS da tela do vídeo (rotas, classes, métodos) e corrigem o garble do WhisperX na fonte (ex.: /alf -> /auth). Ground-truth da tela — supera a heurística da F1 para código. Exige env conda 'paddleocr' + modelos VL em /mnt/nvme2/llm/models/.">
+          <Sep />
+
+          {/* Grupo: OCR */}
+          <button onClick={() => setOcrText((v) => !v)} disabled={running} className={checkBtn(ocrText)} title="O1: PaddleOCR (CPU) + Qwen3-VL extraem os identificadores EXATOS da tela do video (rotas, classes, metodos) e corrigem o garble do WhisperX na fonte. Ground-truth da tela — supera a F1 para codigo.">
             <Box on={ocrText} /> <ScanText className="w-3.5 h-3.5" /> OCR texto (O1)
           </button>
-
-          {/* O2: OCR de diagrama (Qwen3-VL) */}
-          <button onClick={() => setOcrDiagram((v) => !v)} disabled={running} className={checkBtn(ocrDiagram)} title="O2: Qwen3-VL extrai a ESTRUTURA dos diagramas da tela (DFD, DER, UML) -> Mermaid fiel ao desenhado (em vez de inferir só da fala). Exige GPU (revezamento de VRAM).">
+          <button onClick={() => setOcrDiagram((v) => !v)} disabled={running} className={checkBtn(ocrDiagram)} title="O2: Qwen3-VL extrai a ESTRUTURA dos diagramas da tela (DFD, DER, UML) -> Mermaid fiel ao desenhado. Exige GPU (revezamento de VRAM).">
             <Box on={ocrDiagram} /> <ScanText className="w-3.5 h-3.5" /> OCR diagrama (O2)
           </button>
 
-          {/* Transcrever faltantes */}
+          <Sep />
+
+          {/* Grupo: estilo + transcrição */}
+          <button onClick={() => setClarity((v) => !v)} disabled={running} className={checkBtn(clarity)} title="F3: gera a leitura no modo CLAREZA (nucleo -> analogia -> exemplo que prova -> 'Fixando'). Desligado = modo FIDELIDADE.">
+            <Box on={clarity} /> Clareza (F3)
+          </button>
           <button onClick={() => setAutoTranscribe((v) => !v)} disabled={running} className={checkBtn(autoTranscribe)} title="Transcreve via WhisperX apenas as aulas que ainda nao tem .txt">
             <Box on={autoTranscribe} /> Transcrever faltantes
           </button>
 
-          {/* Materiais (menu com checkboxes) */}
+          <Sep />
+
+          {/* Grupo: materiais */}
           <div className="relative">
             <button
               onClick={() => setMatMenuOpen((v) => !v)}
@@ -418,63 +460,25 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
               </>
             )}
           </div>
-
-          {/* Modelo (default v4-flash) */}
-          <select value={model} disabled={running} onChange={(e) => setModel(e.target.value)} className={ctl + " border-slate-700"}>
-            {MODELS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
-          </select>
-
-          <div className="flex-1" />
-
-          <button
-            onClick={handleClearCache}
-            disabled={running}
-            title="Limpa o cache em disco da pré-condensação do Qwen (.precondense-cache). Use se quiser recondensar do zero."
-            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-slate-700 text-slate-400 hover:bg-slate-800/60 text-xs disabled:opacity-40"
-          >
-            <Cpu className="w-3.5 h-3.5" /> Limpar cache Qwen
-          </button>
-          {cacheMsg && <span className="text-[11px] text-slate-400">{cacheMsg}</span>}
-
-          {started && (
-            <span
-              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 text-emerald-200 text-sm tabular-nums"
-              title="Custo estimado DeepSeek do lote: leitura (plano + condensacao) + materiais (pratica/quiz/flashcards/diario + prequiz + roteiro do podcast). Entrada+saida com cache. Soma a cada modulo processado."
-            >
-              <Cloud className="w-3.5 h-3.5" /> DeepSeek ~{fmtUSD(totalCost)}
-            </span>
-          )}
-
-          {running && (
-            <button onClick={handleCancel} className="h-9 px-3 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm">
-              Cancelar
-            </button>
-          )}
-          <button
-            onClick={handleGenerateAll}
-            disabled={!canGenerate}
-            className="h-9 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {running ? "Gerando..." : `Gerar tudo (${totalSelected})`}
-          </button>
         </div>
 
-        {/* Instrucao (editavel) — abre full-width */}
+        {/* Instrucao (editavel) */}
         {niche && showInstruction && (
           <textarea
             value={instruction}
             disabled={running}
             onChange={(e) => setInstruction(e.target.value)}
-            rows={4}
+            rows={3}
             className="w-full bg-slate-800/70 border border-slate-700 rounded-lg px-3 py-2 text-sm resize-y disabled:opacity-50"
           />
         )}
 
-        {/* Linha-resumo: opcoes escolhidas, na horizontal */}
+        {/* Linha-resumo: chips */}
         <div className="flex flex-wrap items-center gap-1.5">
           <Chip label="Nicho" value={nicheLabel || "—"} danger={!niche} />
-          <Chip label="Idioma" value={language === "pt" ? "Portugues" : language === "en" ? "Ingles" : "Auto (detecta)"} />
+          <Chip label="Idioma" value={language === "pt" ? "PT" : language === "en" ? "EN" : "Auto"} />
           <Chip label="Qwen" value={preCondense ? "sim" : "nao"} />
+          <Chip label="OCR" value={ocrText ? (ocrDiagram ? "texto+diagrama" : "texto") : ocrDiagram ? "diagrama" : "off"} />
           <Chip label="Leitura" value={clarity ? "clareza" : "fidelidade"} />
           <Chip label="Transcrever" value={autoTranscribe ? "faltantes" : "nao"} />
           <Chip
