@@ -573,6 +573,31 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
             )}
           </div>
 
+          {/* Esteira de fases: mostra em qual etapa está */}
+          {started && running && (
+            <div className="flex items-center gap-1 text-[10px]">
+              {["whisper", "ocr", "deepseek", "materials"].map((p, i) => {
+                const meta = PHASES[p];
+                const isPast = PHASES[phase] && ["whisper", "ocr", "deepseek", "materials"].indexOf(phase) > i;
+                const isCurrent = phase === p;
+                return (
+                  <React.Fragment key={p}>
+                    {i > 0 && <span className="text-slate-700">→</span>}
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border ${
+                      isCurrent ? `${meta.color} border-current bg-current/10`
+                      : isPast ? "text-slate-500 border-slate-700"
+                      : "text-slate-600 border-slate-800"
+                    }`}>
+                      {isCurrent && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
+                      {isPast && <Check className="w-2.5 h-2.5" />}
+                      {meta.label.split(" ")[0]}
+                    </span>
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )}
+
           {fatalError && <div className="text-[12px] text-red-300 border border-red-500/30 bg-red-500/5 rounded-lg px-3 py-2">{fatalError}</div>}
 
           {!started ? (
@@ -620,7 +645,7 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
                             )}
                           </div>
                           {m.note && m.status !== "done" && m.status !== "warn" && m.status !== "error" && (
-                            <div className="mt-1 text-[10px] text-slate-500">{m.note}</div>
+                            <div className={`mt-1 text-[10px] ${m.note.startsWith("OCR") ? "text-cyan-400" : "text-slate-500"}`}>{m.note}</div>
                           )}
                           {m.reading && m.status === "doing" && (
                             <div className="mt-1.5"><div className="text-[10px] text-slate-500 mb-0.5">Leitura</div><Bar {...m.reading} /></div>
