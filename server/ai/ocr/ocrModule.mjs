@@ -2,7 +2,7 @@
 //
 // O3 — orquestração robusta:
 // - keyframes (PySceneDetect pref + ffmpeg fallback, dedup perceptual)
-// - PaddleOCR (CPU, batch mode) → vocabulário canônico
+// - PaddleOCR (GPU, batch mode) → vocabulário canônico
 // - Qwen3-VL (GPU, diagrama + texto complementar) → Mermaid fiel + vocabulário
 // - Retries: se PaddleOCR falha num batch, tenta frame a frame (dentro do paddle).
 //   Se o VL falha num frame, loga e segue (não derruba o vídeo inteiro).
@@ -12,8 +12,8 @@
 // extrair o máximo possível). O VL pega o texto que o Paddle perdeu + a
 // estrutura dos diagramas.
 //
-// Revezamento de VRAM: PaddleOCR no CPU (fora da briga); VL na GPU, derrubando
-// o Qwen texto antes e depois.
+// Revezamento de VRAM: PaddleOCR na GPU como processos efêmeros (libera a VRAM
+// ao sair, antes do VL subir); VL na GPU, derrubando o Qwen texto antes e depois.
 //
 // Flags .env:
 //   OCR_TEXT_ENABLED=1     — liga o OCR de texto/código (PaddleOCR + VL-OCR)
@@ -143,4 +143,124 @@ export const processVideoOcr = async ({ videoPath, coursesPath, log = () => {} }
 
   log(`[ocr] ${videoPath.split('/').pop()}: ${vocabulary.length} tokens, ${diagrams.length} diagramas`);
   return { ...result, cached: false };
+};
+
+// Processa o OCR de UM MÓDULO INTEIRO em DUAS FASES, pra NÃO subir/derrubar o
+// Qwen3-VL uma vez por vídeo (o boot do 8B na VRAM é caro):
+//   FASE 1 — PaddleOCR (GPU, PADDLE_DEVICE=gpu) em TODOS os vídeos pendentes.
+//            Roda como processos efêmeros (sobe, faz o vídeo, sai — libera a
+//            VRAM), guardando os keyframes de cada vídeo em disco pra fase 2.
+//   FASE 2 — sobe o Qwen3-VL UMA vez e passa por TODOS os frames de TODOS os
+//            vídeos; derruba o VL no fim (boot do 8B na VRAM 1×, não N×).
+// Como as fases são sequenciais e o Paddle sai antes da fase 2, não há disputa
+// de VRAM entre o PaddleOCR e o VL.
+// Cache continua por vídeo: os já cacheados nem entram nas fases. Retorna uma
+// lista [{ videoPath, vocabulary, diagrams, frames, cached }] (o chamador agrega).
+export const processModuleOcr = async ({ videos = [], coursesPath, log = () => {}, onProgress = () => {} } = {}) => {
+  const results = [];
+  const diagramEnabled = ocrDiagramEnabled();
+  const textEnabled = ocrTextEnabled();
+  if (!videos.length || (!diagramEnabled && !textEnabled)) return results;
+
+  // 0. Separa cacheados (devolve direto) dos pendentes (entram nas 2 fases).
+  const pending = [];
+  for (const videoPath of videos) {
+    const cached = await getOcrCache(coursesPath, videoPath);
+    if (cached?.vocabulary?.length || cached?.diagrams?.length) {
+      log(`[ocr] cache hit: ${videoPath.split('/').pop()} (${cached.vocabulary?.length || 0} tokens, ${cached.diagrams?.length || 0} diagramas)`);
+      results.push({ videoPath, ...cached, cached: true });
+    } else {
+      pending.push({ videoPath, dir: null, frames: [], vocabulary: [], diagrams: [] });
+    }
+  }
+  if (!pending.length) return results;
+
+  const total = pending.length;
+
+  try {
+    // ===== FASE 1a: keyframes de TODOS os vídeos pendentes (ffmpeg, sem VRAM) =====
+    for (let i = 0; i < pending.length; i++) {
+      const p = pending[i];
+      const name = p.videoPath.split('/').pop();
+      onProgress({ video: name, index: i + 1, total, phase: 'keyframes' });
+      const { dir, frames } = await extractKeyframes({ videoPath: p.videoPath, log });
+      p.dir = dir;
+      p.frames = frames;
+      if (!frames.length) log(`[ocr] sem keyframes de ${name}`);
+    }
+
+    // ===== FASE 1b: PaddleOCR UMA vez em TODOS os frames do módulo =====
+    // 1 spawn de python + 1 load do modelo (em vez de 1 por vídeo). Reagrupa os
+    // resultados por vídeo pelo CAMINHO COMPLETO do frame (os basenames colidem
+    // entre vídeos: cada um tem kf_001.png). Depois extrai o vocabulário por vídeo
+    // (o cache é por vídeo).
+    if (textEnabled) {
+      const frameToVideo = new Map(); // caminho do frame -> vídeo
+      const allFrames = [];
+      for (const p of pending) {
+        for (const f of p.frames) { frameToVideo.set(f, p); allFrames.push(f); }
+      }
+      if (allFrames.length) {
+        onProgress({ video: `${allFrames.length} frames`, index: total, total, phase: 'paddle' });
+        const t0 = Date.now();
+        const paddleResults = await runPaddleOcr({ frames: allFrames, log });
+        const perVideo = new Map(); // vídeo -> [resultados]
+        for (const r of paddleResults) {
+          const p = frameToVideo.get(r.path);
+          if (!p) continue;
+          if (!perVideo.has(p)) perVideo.set(p, []);
+          perVideo.get(p).push(r);
+        }
+        for (const p of pending) p.vocabulary = extractVocabulary(perVideo.get(p) || []);
+        const errors = paddleResults.filter((r) => r.error).length;
+        log(`[ocr] PaddleOCR (módulo): ${allFrames.length} frames em ${((Date.now() - t0) / 1000).toFixed(0)}s${errors ? ` (${errors} erros)` : ''}`);
+      }
+    }
+
+    // ===== FASE 2: Qwen3-VL (GPU) — sobe UMA vez, passa por TODOS =====
+    const anyFrames = pending.some((p) => p.frames.length);
+    if ((diagramEnabled || textEnabled) && anyFrames) {
+      let vlStarted = false;
+      try {
+        log('[ocr] subindo Qwen3-VL (1× para o módulo)...');
+        await retry(() => startVl({ log }), 2);
+        vlStarted = true;
+      } catch (err) {
+        log(`[ocr] VL não subiu: ${err.message}; seguindo só com PaddleOCR`);
+      }
+      if (vlStarted) {
+        try {
+          for (let i = 0; i < pending.length; i++) {
+            const p = pending[i];
+            if (!p.frames.length) continue;
+            const name = p.videoPath.split('/').pop();
+            onProgress({ video: name, index: i + 1, total, phase: 'vl' });
+            try {
+              const t0 = Date.now();
+              const vlResult = await extractDiagrams({ frames: p.frames, log });
+              p.vocabulary = mergeVocab(p.vocabulary, vlResult.vocab);
+              p.diagrams = vlResult.mermaid;
+              log(`[ocr] Qwen3-VL ${name}: ${p.diagrams.length} diagramas, +${vlResult.vocab.length} tokens em ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+            } catch (err) {
+              log(`[ocr] VL falhou em ${name}: ${err.message}; segue`);
+            }
+          }
+        } finally {
+          try { await stopVl({ log: () => {} }); } catch {}
+        }
+      }
+    }
+  } finally {
+    // Grava cache (mesmo parcial) e limpa os keyframes de cada vídeo pendente.
+    for (const p of pending) {
+      const result = { vocabulary: p.vocabulary, diagrams: p.diagrams, frames: p.frames.length };
+      if (p.vocabulary.length || p.diagrams.length) {
+        try { await setOcrCache(coursesPath, p.videoPath, result); } catch {}
+      }
+      if (p.dir) { try { await cleanupKeyframes({ dir: p.dir }); } catch {} }
+      results.push({ videoPath: p.videoPath, ...result, cached: false });
+    }
+  }
+
+  return results;
 };

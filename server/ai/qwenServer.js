@@ -21,6 +21,17 @@ const START_CMD = (process.env.QWEN_START_CMD || '/mnt/nvme2/llm/start.sh').trim
 // Padrao pra casar o processo no kill (qualquer instancia do llama-server).
 const PROC_MATCH = (process.env.QWEN_PROC_MATCH || 'llama-server').trim();
 
+// pkill que so mata o Qwen TEXTO (porta 8080), sem afetar o Qwen3-VL (porta 8081).
+// O VL tem o proprio stopVl no visionServer.mjs. Antes o pkill matava TODOS os
+// llama-server — incluindo o VL, quebrando o revezamento.
+const pkillText = (signal) =>
+  new Promise((res) => {
+    // Mata pelo modelo (Qwen3.5/Qwen_Qwen3.5) — especifico do texto, nao do VL.
+    const p = spawn('pkill', [signal, '-f', 'Qwen_Qwen3.5']);
+    p.on('close', res);
+    p.on('error', res);
+  });
+
 let spawned = null; // processo que NOS subimos (se subimos)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -40,21 +51,20 @@ const probe = async (url, ms = 2000) => {
 
 export const isQwenUp = async () => (await probe(HEALTH_URL)) || (await probe(MODELS_URL));
 
-const pkill = (signal) =>
-  new Promise((res) => {
-    const p = spawn('pkill', [signal, '-f', PROC_MATCH]);
-    p.on('close', res);
-    p.on('error', res);
-  });
+// (pkill generico removido — usamos pkillText acima, especifico do Qwen texto)
 
 // Sobe o Qwen se ainda nao estiver no ar e espera ficar pronto. Idempotente.
+// Revezamento de VRAM: derruba o Kokoro E o Qwen3-VL antes de subir.
 export const startQwen = async ({ timeoutMs = 120000, log = () => {} } = {}) => {
   if (await isQwenUp()) {
     log('[qwen] ja esta no ar');
     return true;
   }
-  // Revezamento de VRAM: derruba o Kokoro (se estiver no ar) antes de subir o
-  // Qwen. Import dinamico p/ evitar ciclo com kokoro.js.
+  // Revezamento de VRAM: derruba o Qwen3-VL (se estiver no ar) e o Kokoro.
+  try {
+    const { stopVl } = await import('./ocr/visionServer.mjs');
+    await stopVl({ log: () => {} });
+  } catch (e) { log(`[qwen] nao consegui derrubar o VL: ${e.message}`); }
   try {
     const { stopKokoro } = await import('./kokoro.js');
     await stopKokoro({ log });
@@ -82,7 +92,7 @@ export const stopQwen = async ({ timeoutMs = 30000, log = () => {} } = {}) => {
   log('[qwen] derrubando pra liberar a VRAM');
 
   try { if (spawned?.pid) process.kill(-spawned.pid, 'SIGTERM'); } catch { /* grupo ja morto */ }
-  await pkill('-TERM');
+  await pkillText('-TERM');
   spawned = null;
 
   const deadline = Date.now() + timeoutMs;
@@ -95,7 +105,7 @@ export const stopQwen = async ({ timeoutMs = 30000, log = () => {} } = {}) => {
       log('[qwen] derrubado');
       return true;
     }
-    if (!killedHard) { await pkill('-KILL'); killedHard = true; }
+    if (!killedHard) { await pkillText('-KILL'); killedHard = true; }
   }
   throw new Error('Qwen nao derrubou no tempo esperado');
 };

@@ -5,8 +5,10 @@
 // (ou em batches de BATCH_SIZE) — muito mais rápido (1 carregamento do modelo,
 // inferência em lote). O modelo só carrega UMA vez (antes do loop).
 //
-// Roda no env conda `paddleocr` (python 3.11) via child_process. CPU
-// (enable_mkldnn=False — bug oneDNN no PaddlePaddle 3.3). Não disputa VRAM.
+// Roda no env conda `paddleocr` (python 3.11) via child_process, na GPU
+// (PADDLE_DEVICE=gpu, paddlepaddle-gpu cu130). Processo efêmero por chamada:
+// sobe, faz o batch, sai — libera a VRAM (não fica disputando com o VL/Qwen).
+// enable_mkldnn=False só importa no fallback CPU (bug oneDNN no PaddlePaddle 3.3).
 //
 // Config via .env:
 //   PADDLE_PYTHON   = caminho do python do env conda
@@ -23,6 +25,10 @@ const DEFAULT_PYTHON =
 const LANG = (process.env.PADDLE_LANG || 'ch').trim();
 const BATCH_SIZE = Math.max(1, parseInt(process.env.PADDLE_BATCH || '8', 10));
 const TIMEOUT_PER_BATCH = 240_000; // 4 min por batch (o 1º baixa modelos)
+// paddlepaddle-gpu instalado (cu130) — roda na GPU por padrao (muito mais rapido).
+// No GPU o oneDNN nao e usado, entao o workaround FLAGS_use_mkldnn=0 vira inocuo.
+// Fallback: PADDLE_DEVICE=cpu volta pro modo CPU.
+const DEVICE = (process.env.PADDLE_DEVICE || 'gpu').trim();
 
 // Script python: carrega PaddleOCR UMA vez, lê batches de caminhos do stdin
 // (um batch por linha, separados por `|`), processa em lote, imprime JSON por
@@ -31,7 +37,7 @@ const SCRIPT = `
 import sys, json, os
 os.environ['FLAGS_use_mkldnn'] = '0'
 from paddleocr import PaddleOCR
-ocr = PaddleOCR(lang='${LANG}', use_doc_orientation_classify=False, use_doc_unwarping=False, enable_mkldnn=False)
+ocr = PaddleOCR(lang='${LANG}', device='${DEVICE}', use_doc_orientation_classify=False, use_doc_unwarping=False, enable_mkldnn=False)
 
 def ocr_one(path):
     try:
@@ -45,9 +51,9 @@ def ocr_one(path):
                 for item in r0:
                     if isinstance(item, (list, tuple)) and len(item) >= 2:
                         texts.append(str(item[1]))
-        return {'file': os.path.basename(path), 'texts': texts}
+        return {'file': os.path.basename(path), 'path': path, 'texts': texts}
     except Exception as e:
-        return {'file': os.path.basename(path), 'error': str(e)}
+        return {'file': os.path.basename(path), 'path': path, 'error': str(e)}
 
 for line in sys.stdin:
     paths = [p.strip() for p in line.strip().split('|') if p.strip()]
@@ -63,7 +69,7 @@ for line in sys.stdin:
                 for item in r:
                     if isinstance(item, (list, tuple)) and len(item) >= 2:
                         texts.append(str(item[1]))
-            print(json.dumps({'file': os.path.basename(paths[i]), 'texts': texts}, ensure_ascii=False))
+            print(json.dumps({'file': os.path.basename(paths[i]), 'path': paths[i], 'texts': texts}, ensure_ascii=False))
     except Exception as e:
         # Batch falhou: processa um a um (retry)
         for p in paths:
@@ -83,7 +89,7 @@ export const runPaddleOcr = async ({ frames = [], log = () => {} } = {}) => {
     await new Promise((res) => chk.on('close', res));
     if (chk.exitCode !== 0) {
       log('[paddle] env conda paddleocr nao encontrado nem paddleocr no python3');
-      return frames.map((f) => ({ file: f.split('/').pop(), error: 'paddleocr nao disponivel' }));
+      return frames.map((f) => ({ file: f.split('/').pop(), path: f, error: 'paddleocr nao disponivel' }));
     }
   }
 
@@ -124,7 +130,7 @@ export const runPaddleOcr = async ({ frames = [], log = () => {} } = {}) => {
     });
   } catch (err) {
     log(`[paddle] falhou: ${err.message}`);
-    return frames.map((f) => ({ file: f.split('/').pop(), error: err.message }));
+    return frames.map((f) => ({ file: f.split('/').pop(), path: f, error: err.message }));
   } finally {
     clearTimeout(timer);
   }

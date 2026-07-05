@@ -693,7 +693,7 @@ export const READING_CONDENSE_SYSTEM =
 // `instruction` (optional): extra user request (e.g. "modernize to Spring Boot
 // 4.x and Java 25"). It has priority over the fidelity rule — it may
 // transform/update the content when asked.
-export const buildReadingCondensePrompt = ({ lessonTitle, transcript, instruction, sourceLanguage = 'pt', clarity = false }) => `
+export const buildReadingCondensePrompt = ({ lessonTitle, transcript, instruction, sourceLanguage = 'pt', clarity = false, canonicalNames = '' }) => `
 Write a complete, didactic READING LESSON, in Markdown, about: "${lessonTitle}". The lesson text
 must be in BRAZILIAN PORTUGUESE.${
   sourceLanguage === 'en'
@@ -716,7 +716,30 @@ ${instruction}
 Apply this when generating the lesson. If the instruction asks to update/modernize the content
 (e.g. newer versions of a lib/language, other patterns/syntax), YOU CAN and SHOULD adapt — including
 rewriting the code examples to the requested standard — even if the transcript uses an old version.
-Keep the lesson's subject matter/concepts; only update the form.`
+Keep the lesson's subject matter/concepts; only update the form. When modernizing, you MAY and
+SHOULD upgrade a library the lesson uses to its LATEST STABLE version and its current API idiom
+(e.g. jjwt shown as 0.9.1 with signWith(SignatureAlgorithm,...)/setSigningKey -> use the modern
+signWith(key)+verifyWith(key).build().parseSignedClaims()) — that is the modernization, not an
+invention. Follow the course CONTRACT above for exactly which version/API to use, so every lesson
+matches. The ONLY thing forbidden is FABRICATING a version number you are unsure exists: if you
+cannot name the exact version, use the modern SYNTAX/PATTERN without a number rather than reverting
+to the old API. Version numbers the instruction states (e.g. "Java 25", "Spring Boot 4") are allowed.`
+    : ''
+}${
+  canonicalNames
+    ? `
+
+CANONICAL NAMES FROM THE SCREEN (OCR ground-truth — ordered by frequency, earlier = more reliable).
+Use EXACTLY this spelling for package, class, endpoint, entity and method names, and keep it
+CONSISTENT across the whole lesson. These OVERRIDE the transcript when it garbles a name or when the
+instructor SAYS a product/company name that differs from the real package on screen. Pick ONE form
+when variants appear. NOTE: this list fixes the SPELLING of identifiers only — it is NOT a directive
+to reproduce a deprecated API call or an old library version if a token here happens to be one; when
+the instruction modernizes, use the modern API idiom (per the contract) even if an old method name
+appears in this list.
+"""
+${canonicalNames}
+"""`
     : ''
 }
 The base is the video transcript(s) below (verbose and repetitive). Turn it into a text that

@@ -14,14 +14,14 @@ const MODELS = [
 
 // Fases globais do lote (revezam a VRAM no backend: WhisperX -> Qwen -> DeepSeek).
 const PHASES = {
-  whisper: { label: "Transcrevendo (WhisperX)", Icon: Mic, color: "text-sky-300" },
-  ocr: { label: "OCR dos vídeos (PaddleOCR + Qwen3-VL)", Icon: ScanText, color: "text-cyan-300" },
-  qwen: { label: "Condensando aulas (Qwen)", Icon: Cpu, color: "text-violet-300" },
-  deepseek: { label: "Gerando leitura (Qwen + DeepSeek), módulo a módulo", Icon: Cloud, color: "text-emerald-300" },
-  materials: { label: "Gerando materiais (IA)", Icon: Sparkles, color: "text-amber-300" },
-  done: { label: "Concluido", Icon: Check, color: "text-emerald-400" },
-  cancelled: { label: "Cancelado", Icon: X, color: "text-slate-400" },
-  error: { label: "Erro", Icon: AlertTriangle, color: "text-red-400" },
+  whisper: { label: "Transcrevendo (WhisperX)", short: "Transcrevendo", Icon: Mic, color: "text-sky-300" },
+  ocr: { label: "OCR dos vídeos (PaddleOCR + Qwen3-VL)", short: "OCR", Icon: ScanText, color: "text-cyan-300" },
+  qwen: { label: "Pré-condensando aulas (Qwen)", short: "Pré-condensa", Icon: Cpu, color: "text-violet-300" },
+  deepseek: { label: "Condensando aulas agrupadas (DeepSeek), módulo a módulo", short: "Leitura", Icon: Cloud, color: "text-emerald-300" },
+  materials: { label: "Gerando materiais (IA)", short: "Materiais", Icon: Sparkles, color: "text-amber-300" },
+  done: { label: "Concluido", short: "Concluído", Icon: Check, color: "text-emerald-400" },
+  cancelled: { label: "Cancelado", short: "Cancelado", Icon: X, color: "text-slate-400" },
+  error: { label: "Erro", short: "Erro", Icon: AlertTriangle, color: "text-red-400" },
 };
 
 // Barra de progresso simples (done/total), com parte de falhas em ambar.
@@ -74,7 +74,7 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
   const [niche, setNiche] = useState("");
   const [instruction, setInstruction] = useState("");
   const [model, setModel] = useState("deepseek-v4-flash");
-  const [language, setLanguage] = useState("pt");
+  const [language, setLanguage] = useState("auto");
   const [autoTranscribe, setAutoTranscribe] = useState(true);
   const [preCondense, setPreCondense] = useState(true); // Qwen por aula — ligado por padrao
   const [normalize, setNormalize] = useState(true); // F1: normaliza mis-transcricao (exige Qwen) — ligado por padrao
@@ -162,19 +162,31 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
         note: ev.status === "start" ? "transcrevendo (WhisperX)…" : ev.transcribed ? `transcrito (+${ev.transcribed})` : "transcrito",
       }));
     } else if (ev.kind === "module-precondense") {
-      patchModule(courseTitle, modulePath, (m) => ({ ...m, note: ev.status === "start" ? "condensando (Qwen)…" : "condensado (Qwen)" }));
+      // Qwen SÓ pré-condensa (limpa a transcrição por aula). A condensação
+      // agrupada das aulas na leitura é do DeepSeek (evento module-start abaixo).
+      patchModule(courseTitle, modulePath, (m) => ({ ...m, note: ev.status === "start" ? "pré-condensando (Qwen)…" : "pré-condensado (Qwen)" }));
     } else if (ev.kind === "module-ocr") {
+      // Sub-fases do OCR: extração de frames -> texto (PaddleOCR, 1 batch/módulo)
+      // -> diagramas (Qwen3-VL, por vídeo). Deixa claro QUAL etapa está rodando.
+      const ocrLabel = (ph, i, n, v) =>
+        ph === "keyframes" ? `OCR · extraindo frames ${i}/${n}: ${v}`
+        : ph === "paddle" ? `OCR · lendo texto (PaddleOCR): ${v}`
+        : ph === "vl" ? `OCR · lendo diagramas (Qwen3-VL) ${i}/${n}: ${v}`
+        : `OCR ${i}/${n}: ${v}`;
       patchModule(courseTitle, modulePath, (m) => ({
         ...m,
-        note: ev.status === "start" ? "OCR dos vídeos…" 
-          : ev.status === "progress" ? `OCR ${ev.videoIndex}/${ev.videoTotal}: ${ev.video}`
+        note: ev.status === "start" ? "OCR dos vídeos…"
+          : ev.status === "progress" ? ocrLabel(ev.ocrPhase, ev.videoIndex, ev.videoTotal, ev.video)
           : ev.status === "error" ? "OCR falhou"
           : `OCR: ${ev.vocabulary || 0} tokens, ${ev.diagrams || 0} diagramas`,
       }));
     } else if (ev.kind === "module-start") {
-      patchModule(courseTitle, modulePath, (m) => ({ ...m, status: "doing", note: "gerando leitura…" }));
+      patchModule(courseTitle, modulePath, (m) => ({ ...m, status: "doing", note: "condensando aulas (DeepSeek)…" }));
     } else if (ev.kind === "reading") {
-      patchModule(courseTitle, modulePath, (m) => ({ ...m, reading: { total: ev.total, done: 0, fail: 0 } }));
+      // Plano pronto = o DeepSeek começa a condensar as aulas agrupadas. Vira a
+      // nota pra DeepSeek — senão fica travada em "pré-condensando (Qwen)" (que
+      // roda ANTES) durante toda a geração, dando a impressão errada de que é o Qwen.
+      patchModule(courseTitle, modulePath, (m) => ({ ...m, note: "condensando aulas (DeepSeek)…", reading: { total: ev.total, done: 0, fail: 0 } }));
     } else if (ev.kind === "reading-lesson") {
       patchModule(courseTitle, modulePath, (m) => {
         const r = m.reading || { total: 0, done: 0, fail: 0 };
@@ -404,7 +416,7 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
           <Sep />
 
           {/* Grupo: OCR */}
-          <button onClick={() => setOcrText((v) => !v)} disabled={running} className={checkBtn(ocrText)} title="O1: PaddleOCR (CPU) + Qwen3-VL extraem os identificadores EXATOS da tela do video (rotas, classes, metodos) e corrigem o garble do WhisperX na fonte. Ground-truth da tela — supera a F1 para codigo.">
+          <button onClick={() => setOcrText((v) => !v)} disabled={running} className={checkBtn(ocrText)} title="O1: PaddleOCR (GPU) + Qwen3-VL extraem os identificadores EXATOS da tela do video (rotas, classes, metodos) e corrigem o garble do WhisperX na fonte. Ground-truth da tela — supera a F1 para codigo.">
             <Box on={ocrText} /> <ScanText className="w-3.5 h-3.5" /> OCR texto (O1)
           </button>
           <button onClick={() => setOcrDiagram((v) => !v)} disabled={running} className={checkBtn(ocrDiagram)} title="O2: Qwen3-VL extrai a ESTRUTURA dos diagramas da tela (DFD, DER, UML) -> Mermaid fiel ao desenhado. Exige GPU (revezamento de VRAM).">
@@ -593,7 +605,7 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
                     }`}>
                       {isCurrent && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
                       {isPast && <Check className="w-2.5 h-2.5" />}
-                      {meta.label.split(" ")[0]}
+                      {meta.short || meta.label.split(" ")[0]}
                     </span>
                   </React.Fragment>
                 );

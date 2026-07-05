@@ -16,6 +16,7 @@
 // transcricao (a fase 0 do gerador ja roda antes desta etapa).
 
 import { getCachedPrecondense, setCachedPrecondense } from './precondenseStore.js';
+import { getCachedFingerprint, setCachedFingerprint } from './fingerprintStore.js';
 import { chatCompletion, DEFAULT_MODEL, costFromUsage } from './deepseek.js';
 
 const truthy = (v) => /^(1|true|yes|on)$/i.test((v || '').trim());
@@ -185,7 +186,15 @@ const collectNorm = (fingerprints) => {
 // ABORDAGEM/CORRECOES). IDENTICO ao `qwenExtract` do spikeReadingModuleV2.mjs — as
 // correcoes saem ANCORADAS no resto do fingerprint (mais confiaveis que pedir so a
 // lista isolada). O fingerprint completo tambem alimenta o contrato da F4.
-export const qwenExtract = async (text) => {
+export const qwenExtract = async (text, coursesPath) => {
+  const raw = (text || '').trim();
+  // CACHE content-addressed: se ja extraiu esse texto antes, reusa — mesmo com o
+  // Qwen desligado. Assim reprocessar um modulo nao re-extrai (Qwen nem sobe).
+  // `coursesPath` opcional: sem ele (spikes), cache off, comportamento identico.
+  if (coursesPath && raw) {
+    const cached = await getCachedFingerprint(coursesPath, raw);
+    if (cached != null) return cached;
+  }
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), 60000);
   try {
@@ -201,7 +210,10 @@ export const qwenExtract = async (text) => {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    return (data?.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    const out = (data?.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    // So cacheia extracao REAL (nao vazia): se falhar/degradar, tenta de novo depois.
+    if (coursesPath && raw && out) await setCachedFingerprint(coursesPath, raw, out);
+    return out;
   } catch (e) { return `(extracao falhou: ${e.message})`; } finally { clearTimeout(t); }
 };
 
@@ -302,10 +314,10 @@ export const buildNormMap = async ({ texts, contextTitle, model = DEFAULT_MODEL,
 // ============================================================================
 export const contractEnabled = () => truthy(process.env.READING_CONTRACT_ENABLED);
 
-export const buildContract = async (fingerprints, instruction, model = DEFAULT_MODEL) => {
+export const buildContract = async (fingerprints, instruction, model = DEFAULT_MODEL, ocrCanonical = '') => {
   const { content, usage } = await chatCompletion({
-    system: 'You write a COURSE CONTRACT that ALL reading lessons must follow so the course stays COHERENT end-to-end (lessons are generated independently and must not contradict each other). NEVER assume the domain (programming, modeling/diagrams, cooking, finance...). Based on what the course ACTUALLY covers (per-lesson fingerprints) and the modernization/niche target, decide: (1) for EACH recurring choice, ONE consistent option and FORBID the alternatives — this includes methods, notations/notation-variants, conventions, architectures, formats (e.g. in a modeling course: which DFD notation variant, consistent symbols; in an auth course: if it ISSUES its own tokens, forbid switching to OAuth2 Resource Server); (2) the CANONICAL name/spelling of each recurring artifact (entities, diagrams, notations, endpoints, classes, key terms) so the same thing is called the same across all lessons. Output a SHORT imperative contract in Brazilian Portuguese, ready to paste into every lesson prompt. No preamble.',
-    user: `MODERNIZATION TARGET (nicho):\n"""\n${(instruction || '').slice(0, 3200)}\n"""\n\nPER-LESSON FINGERPRINTS:\n"""\n${fingerprints.join('\n---\n').slice(0, 12000)}\n"""\n\nWrite the course contract now (architecture decisions + canonical names).`,
+    system: 'You write a COURSE CONTRACT that ALL reading lessons must follow so the course stays COHERENT end-to-end (lessons are generated independently and must not contradict each other). NEVER assume the domain (programming, modeling/diagrams, cooking, finance...). Based on what the course ACTUALLY covers (per-lesson fingerprints) and the modernization/niche target, decide: (1) for EACH recurring choice, ONE consistent option and FORBID the alternatives — this includes methods, notations/notation-variants, conventions, architectures, formats (e.g. in a modeling course: which DFD notation variant, consistent symbols; in an auth course: if it ISSUES its own tokens, forbid switching to OAuth2 Resource Server); (2) the CANONICAL name/spelling of each recurring artifact (entities, diagrams, notations, endpoints, classes, key terms) so the same thing is called the same across all lessons; (3) for EACH recurring LIBRARY/framework/tool, pin ONE version AND the canonical API idiom of THAT version, and FORBID mixing API generations across lessons — an old/deprecated call in one lesson and the new API of the SAME library in another is a FAILURE (e.g. a JWT lib: pin either the 2-arg signWith(algorithm, key)+parseClaimsJws of the old version OR signWith(key)+verifyWith(key).build().parseSignedClaims() of the new one, never both). If the MODERNIZATION TARGET asks to update to the latest version, ADOPT the current API of that latest version and apply it in EVERY lesson (state the exact version and the exact method calls to use, so no lesson falls back to the old API). IMPORTANT: when a SCREEN GROUND-TRUTH block (OCR) is given, it is AUTHORITATIVE for canonical names/spelling (package, class, endpoint, entity, method) — it comes from the actual screen and OVERRIDES the audio fingerprints when they disagree (the instructor may SAY a product/company name that differs from the real package on screen; the OCR list is ordered by frequency, so earlier = more reliable, and pick ONE canonical form when variants appear, e.g. WebSecurityConfig over SecurityConfig). BUT the OCR screen is NOT authoritative for the VERSION or API generation of a library: the version shown on screen is from the recording era and may be OUTDATED. If the modernization target asks to update, you MUST upgrade that library to its LATEST STABLE version and use its current API idiom in EVERY lesson — do NOT freeze the code to the old version/API just because that is what the screen shows (e.g. if the screen shows jjwt 0.9.1 with signWith(SignatureAlgorithm,...)/setSigningKey but the target modernizes, pin the current jjwt and use signWith(key)+verifyWith(key).build().parseSignedClaims() everywhere). Adopting the latest stable release of a library that the course really uses is MODERNIZATION, not invention. The only thing forbidden is FABRICATING a version that does not exist: do not print a version number you are unsure of; if you cannot name the exact latest version, describe the modern API idiom without a number rather than falling back to the old one. Language/framework versions the target names explicitly (e.g. "Java 25", "Spring Boot 4") come from the instruction and ARE allowed. Output a SHORT imperative contract in Brazilian Portuguese, ready to paste into every lesson prompt. No preamble.',
+    user: `MODERNIZATION TARGET (nicho):\n"""\n${(instruction || '').slice(0, 3200)}\n"""\n\n${ocrCanonical ? `SCREEN GROUND-TRUTH (OCR — AUTHORITATIVE for canonical names/spelling; overrides the audio below):\n"""\n${ocrCanonical.slice(0, 8000)}\n"""\n\n` : ''}PER-LESSON FINGERPRINTS (from AUDIO — may garble names; defer to the screen ground-truth above):\n"""\n${fingerprints.join('\n---\n').slice(0, 40000)}\n"""\n\nWrite the course contract now (architecture decisions + canonical names).`,
     model, temperature: 0.2, maxTokens: 2000, thinking: { type: 'disabled' },
   });
   return { text: (content || '').trim(), usage };

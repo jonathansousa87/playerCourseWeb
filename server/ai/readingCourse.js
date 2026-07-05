@@ -12,10 +12,11 @@ import {
   preCondenseCached, preCondenseEnabled, normalizeEnabled, applyNorm,
   qwenExtract, normMapFromFingerprints, contractEnabled, buildContract,
 } from './precondense.js';
+import { getCachedFingerprint } from './fingerprintStore.js';
 import { startQwen, stopQwen } from './qwenServer.js';
 import { parseTranscript, parseTranscriptRaw } from './generator.js';
 import { transcribeToTxt, detectAudioLanguage } from './whisperx.js';
-import { processVideoOcr, ocrTextEnabled, ocrDiagramEnabled } from './ocr/ocrModule.mjs';
+import { processModuleOcr, ocrTextEnabled, ocrDiagramEnabled } from './ocr/ocrModule.mjs';
 import { correctTranscriptWithOcr } from './ocr/ocrCorrect.mjs';
 import { query } from '../../db/index.js';
 import {
@@ -291,40 +292,42 @@ const runOcrForModule = async (moduleDir, coursesPath, log = () => {}, onProgres
   const videos = await collectModuleVideos(moduleDir);
   if (!videos.length) return { vocabulary: [], diagrams: [], ocrCorrections: [] };
 
-  log(`[ocr] processando ${videos.length} vídeos do módulo...`);
-  const allVocab = new Map(); // dedup case-insensitive
-  const allDiagrams = [];
-  let processed = 0;
+  log(`[ocr] processando ${videos.length} vídeos do módulo (fase 1: PaddleOCR em todos; fase 2: Qwen3-VL 1× em todos)...`);
+  // Duas fases no módulo: todo o OCR de texto (PaddleOCR/GPU, processos efêmeros)
+  // primeiro, depois o VL uma vez só — sem subir/derrubar o VL por vídeo
+  // (ocrModule.processModuleOcr).
+  const results = await processModuleOcr({ videos, coursesPath, log, onProgress });
 
-  for (const v of videos) {
-    const videoName = v.split('/').pop();
-    onProgress({ video: videoName, index: processed + 1, total: videos.length });
-    log(`[ocr] vídeo ${processed + 1}/${videos.length}: ${videoName}`);
-    try {
-      const r = await processVideoOcr({ videoPath: v, coursesPath, log });
-      processed++;
-      // Funde vocabulário (dedup, prefere versão com mais maiúsculas)
-      for (const tok of r.vocabulary || []) {
-        if (!tok || tok.length < 2) continue;
-        const lower = tok.toLowerCase();
-        const existing = allVocab.get(lower);
-        if (existing) {
-          const capsExisting = (existing.match(/[A-Z]/g) || []).length;
-          const capsNew = (tok.match(/[A-Z]/g) || []).length;
-          if (capsNew > capsExisting) allVocab.set(lower, tok);
-        } else {
-          allVocab.set(lower, tok);
-        }
+  const allVocab = new Map(); // lower -> grafia canônica (mais maiúsculas)
+  const df = new Map(); // lower -> frequência de documento (nº de vídeos que mostram)
+  const allDiagrams = [];
+  for (const r of results) {
+    const seenInVideo = new Set(); // conta 1× por vídeo (document frequency)
+    // Funde vocabulário (dedup, prefere versão com mais maiúsculas)
+    for (const tok of r.vocabulary || []) {
+      if (!tok || tok.length < 2) continue;
+      const lower = tok.toLowerCase();
+      if (!seenInVideo.has(lower)) { df.set(lower, (df.get(lower) || 0) + 1); seenInVideo.add(lower); }
+      const existing = allVocab.get(lower);
+      if (existing) {
+        const capsExisting = (existing.match(/[A-Z]/g) || []).length;
+        const capsNew = (tok.match(/[A-Z]/g) || []).length;
+        if (capsNew > capsExisting) allVocab.set(lower, tok);
+      } else {
+        allVocab.set(lower, tok);
       }
-      for (const d of r.diagrams || []) allDiagrams.push(d);
-    } catch (err) {
-      log(`[ocr] erro em ${videoName}: ${err.message}`);
-      processed++;
     }
+    for (const d of r.diagrams || []) allDiagrams.push(d);
   }
 
-  const vocabulary = [...allVocab.values()];
-  log(`[ocr] módulo: ${processed}/${videos.length} vídeos, ${vocabulary.length} tokens, ${allDiagrams.length} diagramas`);
+  // Ordena por frequência de documento (nº de vídeos) desc: o nome que aparece
+  // em MAIS aulas é o mais canônico (ex.: WebSecurityConfig >> SecurityConfig).
+  // Assim os primeiros da lista — os que sobrevivem em qualquer corte — são os
+  // mais confiáveis para o contrato e para o bloco canônico da condensação.
+  const vocabulary = [...allVocab.keys()]
+    .sort((a, b) => (df.get(b) || 0) - (df.get(a) || 0) || a.localeCompare(b))
+    .map((lower) => allVocab.get(lower));
+  log(`[ocr] módulo: ${results.length}/${videos.length} vídeos, ${vocabulary.length} tokens, ${allDiagrams.length} diagramas`);
   return { vocabulary, diagrams: allDiagrams, ocrCorrections: [] };
 };
 
@@ -465,7 +468,7 @@ const planGrouping = async ({ moduleTitle, transcripts, model, fingerprints = []
 // Fase 2 (parte IA): condensa um texto ja montado numa aula de leitura.
 // `normMap` (F1, opcional): correcoes de mis-transcricao ja vetadas p/ o modulo,
 // aplicadas DETERMINISTICO ao texto antes do DeepSeek (no-op se vazio/ausente).
-const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt', normMap, clarity = false, contract = '' }) => {
+const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt', normMap, clarity = false, contract = '', ocrVocabulary = [] }) => {
   if (!merged || merged.length < 40) return null;
   const text = normMap && normMap.length ? applyNorm(merged, normMap) : merged;
   // "auto" -> detecta o idioma desta aula a partir do texto (lote misto PT/EN).
@@ -475,9 +478,19 @@ const condenseText = async ({ lessonTitle, merged, model, instruction, language 
   const contractHeader = contract
     ? `CONTRATO DO CURSO (PRIORIDADE MÁXIMA — TODAS as aulas seguem isto para o projeto ficar coerente; se a modernização oferecer mais de uma abordagem, o contrato decide qual usar em TODO o curso):\n"""\n${contract}\n"""\n\n`
     : '';
+  // OCR: âncora canônica REDUNDANTE no prompt da aula — mesmo que o contrato
+  // perca um nome, o DeepSeek vê a grafia certa da tela aqui (compacto: top-40,
+  // ~100-200 tokens; ranqueado por frequência). Barato e blinda pacote/classe.
+  // NÃO injeta número de versão (ex.: "0.9.1"): versão não é nome canônico e,
+  // vinda de uma tela da época da gravação, TRAVA a aula na API antiga contra o
+  // preset de modernização (a versão/API é decidida pelo contrato, não aqui).
+  const isVer = (t) => /^\d+\.\d+(?:\.\d+)?(?:[.-]\w+)?$/.test(t);
+  const canonicalNames = ocrVocabulary?.length
+    ? ocrVocabulary.filter((t) => !isVer(t)).slice(0, 40).join(', ')
+    : '';
   const { content, usage, model: usedModel } = await chatCompletion({
     system: READING_CONDENSE_SYSTEM,
-    user: contractHeader + buildReadingCondensePrompt({ lessonTitle, transcript: text, instruction, sourceLanguage, clarity }),
+    user: contractHeader + buildReadingCondensePrompt({ lessonTitle, transcript: text, instruction, sourceLanguage, clarity, canonicalNames }),
     model,
     temperature: 0.3,
     // Generoso: grupos grandes (ate ~60k de input) precisam de saida longa pra
@@ -508,7 +521,53 @@ const condenseLesson = async ({ lessonTitle, sources, model, instruction, langua
       }
     }
   }
-  return condenseText({ lessonTitle, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity, contract });
+  return condenseText({ lessonTitle, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity, contract, ocrVocabulary });
+};
+
+// Monta o bloco OCR CANONICO (ground-truth da tela) pro contrato F4: separa
+// BIBLIOTECAS/versoes (puxadas pra frente pra nao serem cortadas no ranking) dos
+// NOMES canonicos, e anexa os diagramas. Usado no contrato per-modulo E per-curso.
+const buildOcrCanonical = (ocrVocabulary = [], ocrDiagrams = []) => {
+  let ocrCanonical = '';
+  if (ocrVocabulary.length) {
+    // Bibliotecas e versões (ex.: jjwt, 0.9.1) têm frequência baixa e afundam no
+    // ranking -> puxa pra frente num bloco próprio, pra o contrato saber QUAIS libs
+    // existem (o número de versão é só referência: se o preset moderniza, o contrato
+    // sobe pra atual). O app package `com.client...` fica no resto (`com.` fora do
+    // isLib de propósito, senão viraria "biblioteca").
+    const isVer = (t) => /^\d+\.\d+(?:\.\d+)?(?:[.-]\w+)?$/.test(t);
+    const isLib = (t) => /^(io|org|net|jakarta|javax)\.[a-z]/.test(t)
+      || /(jjwt|jsonwebtoken|lombok|mockito|junit|hibernate|jackson|flyway|slf4j|logback|bcrypt)/i.test(t)
+      || /[a-z][\w.-]*:[\w.-]+/.test(t);
+    const libs = ocrVocabulary.filter((t) => isVer(t) || isLib(t));
+    const rest = ocrVocabulary.filter((t) => !(isVer(t) || isLib(t)));
+    if (libs.length) {
+      ocrCanonical += `BIBLIOTECAS NA TELA (nomes canônicos; a VERSÃO que aparece é da época da gravação e PODE ESTAR DESATUALIZADA). Se o alvo de modernização pede a mais recente, NÃO fixe a versão antiga da tela — suba para a versão estável ATUAL dessa biblioteca e use a API dela (idioma novo, ex.: no jjwt use signWith(key)+verifyWith(key).build().parseSignedClaims(), nunca signWith(SignatureAlgorithm,...)/setSigningKey) em TODAS as aulas. Só mantenha a versão da tela se o alvo NÃO pedir modernização. Em qualquer caso, fixe UMA versão + UM idioma de API para o curso inteiro:\n${libs.slice(0, 40).join(', ')}\n\n`;
+    }
+    ocrCanonical += `NOMES CANÔNICOS (ordenados por frequência — os primeiros são os mais confiáveis; escolha UMA grafia quando houver variantes):\n${rest.slice(0, 220).join(', ')}\n`;
+  }
+  if (ocrDiagrams.length) {
+    ocrCanonical += `\nDIAGRAMAS DA TELA (reproduza fielmente):\n${ocrDiagrams.map((d) => d.mermaid).join('\n\n---\n\n')}\n`;
+  }
+  return ocrCanonical;
+};
+
+// Extrai o fingerprint (Qwen) de CADA aula, do texto CRU, com boot LAZY do Qwen:
+// so sobe se ALGUMA aula nao estiver no cache de fingerprint (reprocesso puro =
+// Qwen nem sobe). Retorna { fingerprints, ok } — ok=false se o Qwen era preciso e
+// nao subiu (chamador degrada). `readParts(t)` -> textos crus (fs/Drive).
+const extractFingerprints = async ({ transcripts, readParts, coursesPath, ensureQwen, log = () => {} }) => {
+  const rawsPerT = [];
+  for (const t of transcripts) rawsPerT.push((await readParts(t)).filter(Boolean));
+  let needQwen = false;
+  for (const raws of rawsPerT) {
+    if (!raws.length) continue;
+    if ((await getCachedFingerprint(coursesPath, raws.join('\n\n').trim())) == null) { needQwen = true; break; }
+  }
+  if (needQwen && ensureQwen && !(await ensureQwen())) { log('[reading] Qwen indisponivel; sem F1/F4.'); return { fingerprints: [], ok: false }; }
+  const fingerprints = [];
+  for (const raws of rawsPerT) fingerprints.push(raws.length ? await qwenExtract(raws.join('\n\n'), coursesPath) : '');
+  return { fingerprints, ok: true };
 };
 
 // F1 (normalizacao) + F4 (contrato + fingerprints p/ o planejador) por MODULO.
@@ -520,35 +579,20 @@ const condenseLesson = async ({ lessonTitle, sources, model, instruction, langua
 // FIX A: extrai do texto CRU (`parseTranscript`), NAO do pre-condensado — a limpeza do
 // Qwen apaga o garble. Degrada gracioso: off/Qwen fora -> tudo vazio.
 // `readParts(t)` -> lista de textos crus (parseTranscript no fs, fetch no Drive).
-const buildModulePrep = async ({ transcripts, readParts, preCondenseOn, normalizeOn, contractOn, incomingContract = '', ensureQwen, moduleTitle, instruction, model, log, ocrVocabulary = [], ocrDiagrams = [] }) => {
+const buildModulePrep = async ({ transcripts, readParts, preCondenseOn, normalizeOn, contractOn, incomingContract = '', ensureQwen, moduleTitle, instruction, model, log, ocrVocabulary = [], ocrDiagrams = [], coursesPath } = {}) => {
   const base = { normMap: [], fingerprints: [], contract: incomingContract, usages: [], ocrDiagrams };
   if (!preCondenseOn) return base;
   const needFp = normalizeOn || (contractOn && !incomingContract);
   if (!needFp) return base;
-  // Espelha o preCondenseCached: se ha ensureQwen (lote), garante o Qwen; se nao ha
-  // (1 modulo), assume que ja esta no ar (degrada se nao).
-  if (ensureQwen && !(await ensureQwen())) { log('[reading] Qwen indisponivel; sem F1/F4 neste modulo.'); return base; }
-  const fingerprints = [];
-  for (const t of transcripts) {
-    const raws = (await readParts(t)).filter(Boolean);
-    fingerprints.push(raws.length ? await qwenExtract(raws.join('\n\n')) : '');
-  }
+  const { fingerprints, ok } = await extractFingerprints({ transcripts, readParts, coursesPath, ensureQwen, log });
+  if (!ok) return base;
   const usages = [];
   // F4 contrato PRIMEIRO — o normMap da F1 ancora nele (o /alf so morre com o contrato).
   let contract = incomingContract;
   if (contractOn && !contract) {
     const named = fingerprints.map((fp, i) => `${transcripts[i]?.title || ''}\n${fp}`);
-    // OCR: injeta o vocabulário canônico (ground-truth da tela) e os diagramas
-    // Mermaid no contrato — os nomes canônicos passam a vir do OCR, muito mais
-    // confiáveis que o fingerprint ruidoso do Qwen.
-    let ocrBlock = '';
-    if (ocrVocabulary.length) {
-      ocrBlock += `\nVOCABULÁRIO CANÔNICO (extraído via OCR da tela do vídeo — USE EXATAMENTE estes nomes; são a verdade da tela):\n${ocrVocabulary.slice(0, 200).join(', ')}\n`;
-    }
-    if (ocrDiagrams.length) {
-      ocrBlock += `\nDIAGRAMAS (extraídos via OCR da tela do vídeo — reproduza fielmente):\n${ocrDiagrams.map((d) => d.mermaid).join('\n\n---\n\n')}\n`;
-    }
-    const c = await buildContract(named, instruction + (ocrBlock ? `\n\n${ocrBlock}` : ''), model);
+    const ocrCanonical = buildOcrCanonical(ocrVocabulary, ocrDiagrams);
+    const c = await buildContract(named, instruction, model, ocrCanonical);
     contract = c.text; if (c.usage) usages.push(c.usage);
     if (contract) log(`[contract] F4 gerado p/ "${moduleTitle}" (${contract.length} chars${ocrVocabulary.length ? `, OCR: ${ocrVocabulary.length} tokens` : ''})`);
   }
@@ -668,14 +712,16 @@ export const generateReadingBatch = async ({
   const ocrOn = ocrTextOn || ocrDiagramOn;
   if (ocrOn && !isDrive) {
     onProgress({ type: 'phase', phase: 'ocr', status: 'start' });
-    // PaddleOCR roda no CPU (não disputa VRAM); VL derruba o Qwen texto e sobe.
+    // OCR roda ANTES da leitura: o Qwen texto ainda nao subiu e o WhisperX ja
+    // caiu, entao a GPU esta livre. PaddleOCR roda na GPU como processos efemeros
+    // (sobe, faz, sai — libera a VRAM) e o VL sobe 1x por modulo, sem overlap.
     for (const job of jobs) {
       const tag = { courseTitle: job.courseTitle, module: job.moduleTitle, modulePath: job.modulePath };
       onProgress({ type: 'ocr', ...tag, status: 'start' });
       try {
         const moduleDir = join(coursesPath, job.courseTitle, job.modulePath);
         const ocr = await runOcrForModule(moduleDir, coursesPath, log, (p) => {
-          onProgress({ type: 'ocr', ...tag, status: 'progress', video: p.video, videoIndex: p.index, videoTotal: p.total });
+          onProgress({ type: 'ocr', ...tag, status: 'progress', ocrPhase: p.phase, video: p.video, videoIndex: p.index, videoTotal: p.total });
         });
         ocrByJob.set(job.modulePath, ocr);
         onProgress({ type: 'ocr', ...tag, status: 'done', vocabulary: ocr.vocabulary.length, diagrams: ocr.diagrams.length });
@@ -716,6 +762,87 @@ export const generateReadingBatch = async ({
     }
   };
 
+  // ---- FASE 1.9: CONTRATO PER-CURSO (F4, TD-14) ----
+  // Um contrato POR CURSO em vez de por módulo: agrega os fingerprints de TODAS as
+  // aulas de TODOS os módulos do curso + o OCR canônico do curso e sintetiza UM
+  // contrato, passado a cada módulo via `contractText`. Pega drift CROSS-módulo
+  // (ex.: a mesma classe/abordagem coerente entre o mód 04 e o 05), essencial p/
+  // cursos build-along. Fingerprints já cacheados (fase de OCR/whisper): barato.
+  // Degrada gracioso: se o Qwen não sobe ou o curso não rende contrato, cai no
+  // per-módulo (cada módulo sintetiza o seu). Só no modo filesystem.
+  const courseContract = new Map();
+  if (contractOn && preCondenseOn && !isDrive) {
+    onProgress({ type: 'phase', phase: 'contract', status: 'start' });
+    // Agrupa jobs por curso preservando a ordem.
+    const byCourse = new Map();
+    for (const job of jobs) {
+      if (!byCourse.has(job.courseTitle)) byCourse.set(job.courseTitle, []);
+      byCourse.get(job.courseTitle).push(job);
+    }
+    // OCR canônico do CURSO: token que aparece em MAIS módulos = mais canônico.
+    const aggregateCourseOcr = (courseJobs) => {
+      const df = new Map(); const canon = new Map(); const diagrams = [];
+      for (const job of courseJobs) {
+        const ocr = ocrByJob.get(job.modulePath); if (!ocr) continue;
+        const seen = new Set();
+        for (const tok of ocr.vocabulary || []) {
+          if (!tok || tok.length < 2) continue;
+          const lower = tok.toLowerCase();
+          if (!seen.has(lower)) { df.set(lower, (df.get(lower) || 0) + 1); seen.add(lower); }
+          const ex = canon.get(lower);
+          if (!ex || (tok.match(/[A-Z]/g) || []).length > (ex.match(/[A-Z]/g) || []).length) canon.set(lower, tok);
+        }
+        for (const d of ocr.diagrams || []) diagrams.push(d);
+      }
+      const vocabulary = [...canon.keys()]
+        .sort((a, b) => (df.get(b) || 0) - (df.get(a) || 0) || a.localeCompare(b))
+        .map((lower) => canon.get(lower));
+      return { vocabulary, diagrams };
+    };
+    for (const [courseTitle, courseJobs] of byCourse) {
+      try {
+        const { vocabulary: courseVocab, diagrams: courseDiagrams } = aggregateCourseOcr(courseJobs);
+        const named = [];
+        let aborted = false;
+        for (const job of courseJobs) {
+          const moduleDir = join(coursesPath, courseTitle, job.modulePath);
+          const transcripts = await collectModuleTranscripts(moduleDir);
+          if (!transcripts.length) continue;
+          const modVocab = ocrByJob.get(job.modulePath)?.vocabulary || [];
+          const readParts = async (t) => {
+            const out = [];
+            for (const part of t.parts || [t]) {
+              try {
+                let text = await parseTranscript(part.path);
+                if (modVocab.length && text) {
+                  const { text: corrected, map } = correctTranscriptWithOcr(text, modVocab);
+                  if (map.length) text = corrected;
+                }
+                out.push(text);
+              } catch { /* ilegivel */ }
+            }
+            return out;
+          };
+          const { fingerprints, ok } = await extractFingerprints({ transcripts, readParts, coursesPath, ensureQwen, log });
+          if (!ok) { aborted = true; break; } // Qwen fora -> cai no per-módulo
+          fingerprints.forEach((fp, i) => named.push(`[${job.moduleTitle}] ${transcripts[i]?.title || ''}\n${fp}`));
+        }
+        if (!aborted && named.length) {
+          const ocrCanonical = buildOcrCanonical(courseVocab, courseDiagrams);
+          const c = await buildContract(named, instruction, model, ocrCanonical);
+          if (c.text) {
+            courseContract.set(courseTitle, c.text);
+            log(`[contract] F4 PER-CURSO p/ "${courseTitle}" (${c.text.length} chars, ${named.length} aulas, OCR ${courseVocab.length} tokens)`);
+            onProgress({ type: 'contract', courseTitle, chars: c.text.length, scope: 'course' });
+          }
+        }
+      } catch (err) {
+        log(`[contract] contrato per-curso de "${courseTitle}" falhou (${err.message}); cai no per-módulo`);
+      }
+    }
+    onProgress({ type: 'phase', phase: 'contract', status: 'done' });
+  }
+
   onProgress({ type: 'phase', phase: 'deepseek', status: 'start' });
   try {
     for (const job of jobs) {
@@ -743,7 +870,9 @@ export const generateReadingBatch = async ({
           preCondense: preCondenseOn, // usa o cache; sobe o Qwen so no 1o miss real
           normalize: normalizeOn, // F1: normalizacao de mis-transcricao por modulo
           clarity: clarityOn, // F3: modo clareza
-          contract: contractOn, // F4: contrato (per-modulo; per-curso = TD-14)
+          contract: contractOn, // F4: liga o contrato
+          // TD-14: contrato PER-CURSO (fase 1.9); vazio -> módulo sintetiza o seu (per-módulo).
+          contractText: courseContract.get(job.courseTitle) || '',
           ocrVocabulary: ocrByJob.get(job.modulePath)?.vocabulary || [], // OCR: correção ground-truth
           ocrDiagrams: ocrByJob.get(job.modulePath)?.diagrams || [], // OCR: Mermaid fiel
           ensureQwen,
@@ -831,7 +960,7 @@ const generateReadingModuleFs = async ({
   const prep = await buildModulePrep({
     transcripts, preCondenseOn, normalizeOn, contractOn, incomingContract, ensureQwen,
     moduleTitle, instruction, model, log: (m) => console.log(m),
-    ocrVocabulary: ocrVocab, ocrDiagrams: ocrDiags,
+    ocrVocabulary: ocrVocab, ocrDiagrams: ocrDiags, coursesPath,
     readParts: async (t) => {
       const out = [];
       for (const part of t.parts || [t]) {
@@ -966,7 +1095,7 @@ const generateReadingModuleDrive = async ({
   const prep = await buildModulePrep({
     transcripts, preCondenseOn, normalizeOn, contractOn, incomingContract, ensureQwen,
     moduleTitle, instruction, model, log: (m) => console.log(m),
-    ocrVocabulary: ocrVocab, ocrDiagrams: ocrDiags,
+    ocrVocabulary: ocrVocab, ocrDiagrams: ocrDiags, coursesPath,
     readParts: async (t) => {
       const out = [];
       for (const part of t.parts || [t]) {
@@ -1043,7 +1172,7 @@ const generateReadingModuleDrive = async ({
         throw new Error(`falha ao ler ${readErrors}/${totalParts} transcricao(oes) no Drive`);
       }
       const out = await condenseText({
-        lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity: clarityOn, contract,
+        lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab,
       });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };

@@ -16,7 +16,7 @@ Portar o spike **fiel** (sem "melhorar" o que já foi validado).
 | **F1** | Normalização de mis-transcrição (Qwen propõe → DeepSeek veta → aplica determinístico) | Baixo | `PRECOND_NORMALIZE_ENABLED=1` + toggle UI "Normalizar (F1)" default ON | `[x]` Implementada, **ATIVA** |
 | **F2** | Trava de correção técnica (código/exemplo que roda; desambiguar; termos precisos) em leitura **e** prática | Baixo | `READING_CORRECTNESS=1` (env, global) | `[x]` Implementada, **ATIVA** |
 | **F3** | Regra de clareza como **modo** (fidelidade × clareza, escolha por geração) | Médio | `READING_CLARITY_ENABLED=1` + toggle UI "Clareza (F3)" default ON | `[x]` Implementada, **ATIVA** |
-| **F4** | Contrato de curso + fingerprint + planejador enriquecido + `initial_prompt` no Whisper (mata drift e `/alf`) | Alto | `READING_CONTRACT_ENABLED=1` + toggle UI "Contrato (F4)" default ON | `[x]` Implementada, **ATIVA** (contrato per-módulo; per-curso = TD-14) |
+| **F4** | Contrato de curso + fingerprint + planejador enriquecido + `initial_prompt` no Whisper (mata drift e `/alf`) | Alto | `READING_CONTRACT_ENABLED=1` + toggle UI "Contrato (F4)" default ON | `[x]` Implementada, **ATIVA** (contrato per-curso no lote — TD-14; per-módulo no fluxo individual) |
 
 ### F1 — detalhe e como testar
 Checklist:
@@ -79,7 +79,7 @@ um bloco condicional; com a flag off o prompt é **byte-a-byte** o de antes (ver
 - [x] Flag `READING_CONTRACT_ENABLED=1` + toggle UI "Contrato (F4)" (default on, exige Qwen)
 - [x] Validado via `spikeF1Audit.mjs --contract`: contrato pina `/auth`, nomes canônicos, trava arquitetura (mod 04)
 - [x] `initial_prompt`: **decidido = título** (TD-12); vocab-de-nicho e contrato-fed descartados (re-transcrição não vale)
-- [ ] **TD-14**: contrato **por curso** (hoje per-módulo — pega drift intra-módulo; per-curso pega cross-módulo no lote)
+- [x] **TD-14**: contrato **por curso** no lote (fase 1.9 do `generateReadingBatch`) — agrega fingerprints de todos os módulos + OCR canônico do curso, gera 1 contrato, passa via `contractText`; fallback pro per-módulo
 - [ ] Contrato injetado também na **prática** (`buildExemplosPrompt`) p/ alinhar leitura × prática
 - [ ] Leitura humana: regenerar mod 04 e conferir que some o `/alf` e a contradição RS×filtro
 - [ ] Commit da F4
@@ -108,7 +108,7 @@ um bloco condicional; com a flag off o prompt é **byte-a-byte** o de antes (ver
 | TD-15 | `[ ]` | **PT → `large-v2`** (era `large-v3-turbo`). Validado: v3 alucina ~4× mais que v2 (Deepgram); v2 mais preciso no termo (/alf 2 vs 4) e sem alucinação. `.env` `WHISPERX_MODEL=large-v2`. Só afeta NOVAS transcrições. EN (`distil-large-v3.5`) não testado — avaliar. | Whisper | Aplicado (.env) |
 | TD-16 | `[ ]` | **Modelos 2026 (avaliação futura, troca MAIOR — sai do WhisperX)**: Voxtral Transcribe 2 (5.9% WER, PT, streaming), Qwen3-ASR (SOTA, 52 idiomas), NVIDIA Canary 1B v2 (3–5% europeias). Perdem alinhamento/VAD/flags do WhisperX → integração nova. | Whisper | Ideia |
 | TD-17 | `[x]` | **OCR forte dos frames do vídeo (IMPLEMENTADO — Bloco B)**: PaddleOCR (PP-OCRv6, CPU) + Qwen3-VL (GPU) extraem identificadores EXATOS da tela → vocabulário canônico → corrige transcrição na fonte (ground-truth) + alimenta contrato (F4). Módulos em `server/ai/ocr/`. Flags `OCR_TEXT_ENABLED` (O1) + `OCR_DIAGRAM_ENABLED` (O2). Cache por vídeo. Supera a heurística da F1 para código. | F4/Whisper | Implementado |
-| TD-14 | `[ ]` | Contrato hoje é **per-módulo** (pega drift intra-módulo, ex.: RS×filtro no mod 04). Para build-along, agregar fingerprints **por curso** no fluxo de lote (`generateReadingBatch`) e gerar UM contrato por curso, passado via `contractText`. | F4 | Média |
+| TD-14 | `[x]` | **Contrato PER-CURSO** no lote (fase 1.9 do `generateReadingBatch`): agrega fingerprints de TODAS as aulas de TODOS os módulos do curso (cacheados) + OCR canônico agregado por df cross-módulo, sintetiza UM contrato via `buildContract` e passa a cada módulo via `contractText` (buildModulePrep reusa em vez de sintetizar o seu). Pega drift cross-módulo (build-along). Fatorados `buildOcrCanonical`+`extractFingerprints`; slice de fingerprints no buildContract 12k→40k. Fallback gracioso: Qwen fora/curso sem contrato → per-módulo. Só fs. Validado: import OK + ranking cross-módulo. Falta rodar lote real (mod 04+05) e ler. | F4 | Implementado |
 
 ---
 
