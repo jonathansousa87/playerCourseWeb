@@ -166,7 +166,10 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
     } else if (ev.kind === "module-ocr") {
       patchModule(courseTitle, modulePath, (m) => ({
         ...m,
-        note: ev.status === "start" ? "OCR dos vídeos…" : ev.status === "error" ? "OCR falhou" : `OCR: ${ev.vocabulary || 0} tokens, ${ev.diagrams || 0} diagramas`,
+        note: ev.status === "start" ? "OCR dos vídeos…" 
+          : ev.status === "progress" ? `OCR ${ev.videoIndex}/${ev.videoTotal}: ${ev.video}`
+          : ev.status === "error" ? "OCR falhou"
+          : `OCR: ${ev.vocabulary || 0} tokens, ${ev.diagrams || 0} diagramas`,
       }));
     } else if (ev.kind === "module-start") {
       patchModule(courseTitle, modulePath, (m) => ({ ...m, status: "doing", note: "gerando leitura…" }));

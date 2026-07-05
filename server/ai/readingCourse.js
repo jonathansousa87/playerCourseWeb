@@ -284,7 +284,7 @@ const collectModuleVideos = async (moduleDir) => {
 
 // Processa OCR de todos os vídeos de um módulo e agrega o vocabulário + diagramas.
 // Retorna { vocabulary: [...], diagrams: [...], ocrCorrections: [...] }.
-const runOcrForModule = async (moduleDir, coursesPath, log = () => {}) => {
+const runOcrForModule = async (moduleDir, coursesPath, log = () => {}, onProgress = () => {}) => {
   if (!ocrTextEnabled() && !ocrDiagramEnabled()) {
     return { vocabulary: [], diagrams: [], ocrCorrections: [] };
   }
@@ -297,6 +297,9 @@ const runOcrForModule = async (moduleDir, coursesPath, log = () => {}) => {
   let processed = 0;
 
   for (const v of videos) {
+    const videoName = v.split('/').pop();
+    onProgress({ video: videoName, index: processed + 1, total: videos.length });
+    log(`[ocr] vídeo ${processed + 1}/${videos.length}: ${videoName}`);
     try {
       const r = await processVideoOcr({ videoPath: v, coursesPath, log });
       processed++;
@@ -315,7 +318,8 @@ const runOcrForModule = async (moduleDir, coursesPath, log = () => {}) => {
       }
       for (const d of r.diagrams || []) allDiagrams.push(d);
     } catch (err) {
-      log(`[ocr] erro em ${v.split('/').pop()}: ${err.message}`);
+      log(`[ocr] erro em ${videoName}: ${err.message}`);
+      processed++;
     }
   }
 
@@ -670,7 +674,9 @@ export const generateReadingBatch = async ({
       onProgress({ type: 'ocr', ...tag, status: 'start' });
       try {
         const moduleDir = join(coursesPath, job.courseTitle, job.modulePath);
-        const ocr = await runOcrForModule(moduleDir, coursesPath, log);
+        const ocr = await runOcrForModule(moduleDir, coursesPath, log, (p) => {
+          onProgress({ type: 'ocr', ...tag, status: 'progress', video: p.video, videoIndex: p.index, videoTotal: p.total });
+        });
         ocrByJob.set(job.modulePath, ocr);
         onProgress({ type: 'ocr', ...tag, status: 'done', vocabulary: ocr.vocabulary.length, diagrams: ocr.diagrams.length });
       } catch (err) {
@@ -798,7 +804,9 @@ const generateReadingModuleFs = async ({
   if ((!ocrVocab.length && !ocrDiags.length) && (ocrTextEnabled() || ocrDiagramEnabled())) {
     onProgress({ type: 'ocr', status: 'start' });
     try {
-      const ocr = await runOcrForModule(moduleDir, coursesPath, (m) => console.log(m));
+      const ocr = await runOcrForModule(moduleDir, coursesPath, (m) => console.log(m), (p) => {
+        onProgress({ type: 'ocr', status: 'progress', video: p.video, videoIndex: p.index, videoTotal: p.total });
+      });
       ocrVocab.push(...ocr.vocabulary);
       ocrDiags.push(...ocr.diagrams);
       onProgress({ type: 'ocr', status: 'done', vocabulary: ocrVocab.length, diagrams: ocrDiags.length });
