@@ -181,6 +181,8 @@ export const generateCourseReading = async ({
 //   { kind:'module-transcribe'|'module-precondense', courseTitle, modulePath, status }
 //   { kind:'module-start' } / { kind:'reading', total } / { kind:'reading-lesson', status }
 //   { kind:'module-done', result } / { kind:'module-error', error }
+//   { kind:'module-extract-stats', local, deepseek } (Etapa 1 da leitura: quantas aulas
+//     saíram do Qwen local vs caíram pro DeepSeek — só quando EXTRACT_LOCAL_ENABLED=1)
 //   { kind:'materials-init', total } / { kind:'material', i, status } / { kind:'materials-errors', errors }
 export const generateReadingCourseBatch = async ({
   courses,
@@ -241,6 +243,7 @@ export const generateReadingCourseBatch = async ({
         case "aula": onProgress({ kind: "reading-lesson", ...tag, status: ev.status === "start" ? "doing" : ev.ok ? "ok" : "fail" }); break;
         case "module-result": onProgress({ kind: "module-done", ...tag, result: ev.result }); break;
         case "module-error": onProgress({ kind: "module-error", ...tag, error: ev.error }); break;
+        case "extract-stats": onProgress({ kind: "module-extract-stats", ...tag, local: ev.local, deepseek: ev.deepseek }); break;
         default: break;
       }
     },

@@ -138,6 +138,54 @@ didática funcionarem de verdade.
   corrigido" (SpingBoot→Spring Boot). (MiMo)
 - [x] **R.4 Calibrar duração do podcast** — "18-30 turns" → "28-40 turns, 2-4 frases/turno",
   + junior interrompe / senior não despeja tudo num turno. (MiMo, Grok)
+- [x] **R.5 Etapa 1 (extração de fatos) no Qwen local, não no DeepSeek** — testado com spikes
+  (Qwen3.5-9B venceu Gemma4-12B-Q4 em completude e velocidade; JSON inválido em ~1/3 das
+  chamadas, mitigável). Implementado em `readingCourse.js` (`extractFactsCached`) +
+  `localChat.js` (novo): guarda de tamanho (`fitsLocalContext` — se o prompt não couber no
+  contexto do Qwen, nem tenta local, cai direto pro DeepSeek — evita truncamento silencioso
+  do schema, como vimos no spike do Gemma) + reparo de JSON (`jsonrepair`) + validação de
+  FORMA (`looksLikeFacts`, schema mínimo — jsonrepair sozinho "conserta" até texto solto sem
+  sentido virando JSON sintaticamente válido porém vazio; a validação de forma pega isso).
+  Nunca cacheia JSON inválido. Validado ponta a ponta: fluxo normal, guarda de tamanho forçada,
+  JSON reparável forçado e JSON irreparável forçado — os 4 cenários caem no caminho certo sem
+  quebrar a geração. Flag `EXTRACT_LOCAL_ENABLED=1`.
+- [x] **R.6 Agrupamento do planejador de leitura — ajuste fino** — usuário reportou aumento no
+  número de aulas de leitura vs. o que lembrava (não é regressão desta sessão: `buildReadingPlanPrompt`
+  não foi tocado desde 29/jun, antes deste trabalho — confirmado via `git log -p -L`). Testado ao
+  vivo em curso real (`Spring Rest-Construindo Web Services Poderosos`, módulos 01 e 02): a regra
+  bate com a meta documentada no próprio prompt (32 aulas-vídeo → 11 aulas de leitura, grupos
+  tematicamente corretos, teto de ~5 respeitado, complementos mesclados). A pedido do usuário,
+  ajustado PARA UM POUCO MAIS AGRESSIVO (nem tão frouxo quanto o atual, nem tão agressivo quanto
+  versões antigas): meta "metade" → "um terço a metade", exemplo "15-18→5-6" → "15-18→4-5", piso de
+  aulas por grupo "2 a 5" → "3 a 5 (grupo de 2 é exceção)".
+- [x] **R.7 Bug de corrupção de conteúdo no F1 (normalização)** — achado ao vivo durante o teste
+  do R.6: o vet (DeepSeek) aprovou a correção `Richardson->escala` (a troca seria aplicada por
+  word-boundary em TODO o texto), que corromperia "a escala de Richardson" (Richardson Maturity
+  Model — tema central da aula "Modelo arquitetural REST e a escala Richardson"). Causa raiz:
+  o vet não tem contexto suficiente pra saber que "Richardson" é um termo técnico real — e o
+  PRÓPRIO fingerprint que propôs a correção já listava "Leonard Richardson, Richardson Maturity
+  Model" na linha TERMOS, uma autocontradição que o vet não pegou. Corrigido com trava
+  determinística nova (Fix C, `precondense.js`): `extractRecognizedTerms` varre TERMOS/ARTEFATOS
+  de TODOS os fingerprints do módulo; qualquer candidato de correção cujo `from` bate com um termo
+  reconhecido (mesmo dentro de um termo composto, ex. "Richardson" dentro de "Richardson Maturity
+  Model") é descartado, independente do que o vet aprovou. Validado com o fingerprint real que
+  causou o bug: "Richardson" reconhecido corretamente (descartaria), candidatos legítimos como
+  "alf"/"ratios"/"SWAG" não são afetados (nenhum falso positivo). Mesma família de trava do Fix B
+  (`NORM_STOPWORDS`) e do "FIX ANCORADO" (que já fazia uma checagem parecida, mas só contra o
+  CONTRATO F4 e só pro próprio ramo `anchorToContract` — o vet ficava sem essa rede de segurança).
+- [x] **R.8 Fix D — gap na NORM_STOPWORDS (achado ao revisar se a R.7 deixou outros buracos)**
+  — `it->@Autowired` estava ATIVO em produção (aprovado pelo vet, aplicado), independente do bug
+  do Richardson: "it" é pronome comum do inglês e não estava na lista de stopwords (que só tinha
+  `to/is/as/of/in` como palavras curtas — o resto é vocabulário técnico). Mais arriscado que o
+  caso Richardson: "it" é genérico, pode aparecer em qualquer lugar do texto, não só numa aula
+  específica. `NORM_STOPWORDS` completada com a classe FECHADA de palavras funcionais do inglês
+  (pronomes/artigos/conjunções/preposições/auxiliares — ~130 palavras) em vez de ir tapando
+  buraco por buraco: essa classe é finita e pequena, dá pra listar por completo (diferente de
+  substantivos/verbos de conteúdo, que são classe aberta). Validado: "it" e "out" agora bloqueados,
+  "alf"/"SWAG"/"BIM"/"ratios"/"Richardson" continuam passando por essa camada (sem falso positivo).
+  Ressalva: ainda não é blindagem total — candidatos tipo "surface->service" ou "Package->Base"
+  (palavras de CONTEÚDO comuns, não função) continuam dependendo só do vet + Fix C; não há como
+  bloquear por lista fechada nesse caso sem um dicionário completo.
 
 ---
 

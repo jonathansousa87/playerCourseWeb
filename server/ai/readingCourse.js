@@ -37,6 +37,8 @@ import {
   PROMPT_VERSION,
 } from './prompts.js';
 import { getCachedFacts, setCachedFacts } from './factsStore.js';
+import { callLocalChat, extractLocalEnabled, fitsLocalContext, localOutputBudget } from './localChat.js';
+import { jsonrepair } from 'jsonrepair';
 
 // Mesmo padrao usado pelo findTranscript: _dub[.locale].(txt|vtt)
 const TRANSCRIPT_RE = /_dub(?:\.[a-z]{2,3}(?:-[a-zA-Z]{2,4})?)?\.(txt|vtt)$/i;
@@ -522,35 +524,106 @@ const preparedInputs = ({ merged, language = 'pt', normMap, contract = '', ocrVo
   return { text, sourceLanguage, contractHeader, canonicalNames };
 };
 
+const stripFences = (s) => (s || '').trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+
+// Schema minimo do Canonical Lesson JSON (buildReadingExtractFactsPrompt). Confirma
+// que o resultado e mesmo uma FICHA DE FATOS, nao qualquer JSON sintaticamente
+// valido — testado ao vivo: jsonrepair "conserta" ate texto solto sem sentido
+// nenhum transformando em `["frase", "outra frase", {}]`, que passaria no
+// JSON.parse mas destruiria a Etapa 2 (viraria a "ficha de fatos" da aula).
+const FACTS_SHAPE_KEYS = ['title', 'core_concepts', 'code_examples', 'steps'];
+const looksLikeFacts = (obj) =>
+  !!obj && typeof obj === 'object' && !Array.isArray(obj)
+  && FACTS_SHAPE_KEYS.every((k) => k in obj);
+
+// Valida (e tenta reparar) o JSON vindo do modelo LOCAL — mais propenso a erro de
+// escape (aspa nao escapada dentro de codigo embutido) que o DeepSeek. jsonrepair
+// conserta essa classe de erro deterministico, sem chamada extra de modelo. Alem de
+// parsear, confirma a FORMA (looksLikeFacts) — sintaxe valida nao basta. Se nem o
+// reparo resolver ou a forma nao bater, devolve null -> o chamador cai pro DeepSeek.
+const repairFactsJson = (raw) => {
+  const clean = stripFences(raw);
+  try { const p = JSON.parse(clean); if (looksLikeFacts(p)) return clean; } catch { /* tenta reparar */ }
+  try {
+    const fixed = jsonrepair(clean);
+    const p = JSON.parse(fixed); // confirma que o reparo resultou em JSON de fato valido
+    if (looksLikeFacts(p)) return fixed;
+  } catch { /* nem o reparo resolveu */ }
+  return null;
+};
+
 // ETAPA 1 — extrai o Canonical Lesson JSON (cache content-addressed). Usada pela
 // condensacao E pelo pre-passe da Course Memory, com a MESMA chave -> 1 extracao so.
-const extractFactsCached = async ({ lessonTitle, prepared, instruction, contract = '', model, coursesPath }) => {
+//
+// Roda no Qwen LOCAL quando EXTRACT_LOCAL_ENABLED=1 E o prompt cabe no contexto do
+// modelo local (fitsLocalContext — guarda de tamanho: aula grande/agrupada que
+// estouraria o contexto NEM TENTA local, pra nao truncar o schema silenciosamente,
+// como aconteceu no spike com outro modelo). Se o Qwen falhar, nao subir, ou o JSON
+// nao validar nem apos o reparo (jsonrepair), cai pro DeepSeek — igual ao fluxo de
+// sempre. Nunca cacheia JSON invalido.
+const extractFactsCached = async ({ lessonTitle, prepared, instruction, contract = '', model, coursesPath, ensureQwen, extractStats }) => {
   const { text, sourceLanguage, canonicalNames, contractHeader } = prepared;
   const factsKey = { merged: text, canonicalNames, contract, instruction, sourceLanguage };
   let facts = await getCachedFacts(coursesPath, factsKey);
   let usage = null;
   if (facts == null) {
-    const ex = await chatCompletion({
-      system: READING_EXTRACT_SYSTEM,
-      user: contractHeader + buildReadingExtractFactsPrompt({ lessonTitle, transcript: text, instruction, sourceLanguage, canonicalNames }),
-      model,
-      temperature: 0, // extracao e decisao estruturada, nao prosa criativa
-      maxTokens: 14000,
-    });
-    facts = ex.content.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
-    usage = ex.usage;
+    const userPrompt = contractHeader + buildReadingExtractFactsPrompt({ lessonTitle, transcript: text, instruction, sourceLanguage, canonicalNames });
+
+    if (extractLocalEnabled()) {
+      if (!fitsLocalContext(READING_EXTRACT_SYSTEM, userPrompt)) {
+        console.log(`[extract] "${lessonTitle}": prompt nao cabe no contexto local (guarda de tamanho) -> DeepSeek`);
+        if (extractStats) extractStats.deepseek += 1;
+      } else {
+        try {
+          const ready = !ensureQwen || (await ensureQwen());
+          if (ready) {
+            const local = await callLocalChat({
+              system: READING_EXTRACT_SYSTEM, user: userPrompt,
+              maxTokens: localOutputBudget(), temperature: 0,
+            });
+            const repaired = repairFactsJson(local.content);
+            if (repaired) {
+              facts = repaired;
+              console.log(`[extract] "${lessonTitle}": extraido no Qwen local`);
+              if (extractStats) extractStats.local += 1;
+            } else {
+              console.warn(`[extract] "${lessonTitle}": JSON local invalido mesmo apos reparo; caindo pro DeepSeek`);
+              if (extractStats) extractStats.deepseek += 1;
+            }
+          } else {
+            console.warn(`[extract] "${lessonTitle}": Qwen local indisponivel; caindo pro DeepSeek`);
+            if (extractStats) extractStats.deepseek += 1;
+          }
+        } catch (err) {
+          console.warn(`[extract] "${lessonTitle}": Qwen local falhou (${err.message}); caindo pro DeepSeek`);
+          if (extractStats) extractStats.deepseek += 1;
+        }
+      }
+    }
+
+    if (facts == null) {
+      const ex = await chatCompletion({
+        system: READING_EXTRACT_SYSTEM,
+        user: userPrompt,
+        model,
+        temperature: 0, // extracao e decisao estruturada, nao prosa criativa
+        maxTokens: 14000,
+      });
+      facts = stripFences(ex.content);
+      usage = ex.usage;
+    }
     await setCachedFacts(coursesPath, factsKey, facts);
   }
   return { facts, usage };
 };
 
-const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt', normMap, clarity = false, contract = '', ocrVocabulary = [], coursesPath, courseMemory = '' }) => {
+const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt', normMap, clarity = false, contract = '', ocrVocabulary = [], coursesPath, courseMemory = '', ensureQwen, extractStats }) => {
   if (!merged || merged.length < 40) return null;
   const prepared = preparedInputs({ merged, language, normMap, contract, ocrVocabulary });
   let content, usage, usedModel;
   if (twoStageEnabled()) {
     // === Leitura em 2 ETAPAS ===
-    const { facts, usage: extractUsage } = await extractFactsCached({ lessonTitle, prepared, instruction, contract, model, coursesPath });
+    const { facts, usage: extractUsage } = await extractFactsCached({ lessonTitle, prepared, instruction, contract, model, coursesPath, ensureQwen, extractStats });
     // ETAPA 2 (redigir a aula didatica a partir do JSON + Course Memory).
     const wr = await chatCompletion({
       system: READING_WRITE_SYSTEM,
@@ -631,18 +704,18 @@ const mergedForLesson = async ({ sources, ocrVocabulary = [], preCondenseOn, cou
   return parts.filter(Boolean).join('\n\n');
 };
 
-const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, clarity = false, contract = '', ocrVocabulary = [], courseMemory = '' }) => {
+const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, clarity = false, contract = '', ocrVocabulary = [], courseMemory = '', extractStats }) => {
   const merged = await mergedForLesson({ sources, ocrVocabulary, preCondenseOn, coursesPath, ensureQwen });
-  return condenseText({ lessonTitle, merged, model, instruction, language, normMap, clarity, contract, ocrVocabulary, coursesPath, courseMemory });
+  return condenseText({ lessonTitle, merged, model, instruction, language, normMap, clarity, contract, ocrVocabulary, coursesPath, courseMemory, ensureQwen, extractStats });
 };
 
 // F2.1 — Course Memory. Pre-passe: extrai SO os fatos de uma aula (merged + ETAPA 1),
 // pra montar o "ja ensinado" antes de redigir. Cacheado -> a condensacao reusa (cache hit).
-const extractFactsForLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, contract = '', ocrVocabulary = [] }) => {
+const extractFactsForLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, contract = '', ocrVocabulary = [], extractStats }) => {
   const merged = await mergedForLesson({ sources, ocrVocabulary, preCondenseOn, coursesPath, ensureQwen });
   if (!merged || merged.length < 40) return null;
   const prepared = preparedInputs({ merged, language, normMap, contract, ocrVocabulary });
-  const { facts } = await extractFactsCached({ lessonTitle, prepared, instruction, contract, model, coursesPath });
+  const { facts } = await extractFactsCached({ lessonTitle, prepared, instruction, contract, model, coursesPath, ensureQwen, extractStats });
   return facts;
 };
 
@@ -1047,10 +1120,10 @@ export const generateReadingBatch = async ({
     for (const job of jobs) {
       const tag = { courseTitle: job.courseTitle, module: job.moduleTitle, modulePath: job.modulePath };
       onProgress({ type: 'module-start', ...tag });
-      // Repassa precondense/plano/aula do modulo (transcricao ja foi na fase 1).
+      // Repassa precondense/plano/aula/extract-stats do modulo (transcricao ja foi na fase 1).
       const moduleProgress = (ev) => {
         if (ev.type === 'precondense') onProgress({ type: 'precondense', ...tag, status: 'start' });
-        else if (ev.type === 'plano' || ev.type === 'aula') onProgress({ ...ev, ...tag });
+        else if (ev.type === 'plano' || ev.type === 'aula' || ev.type === 'extract-stats') onProgress({ ...ev, ...tag });
       };
       try {
         // Idioma da condensacao: se "auto" ja foi resolvido pro curso (fase 1, fs),
@@ -1211,13 +1284,17 @@ const generateReadingModuleFs = async ({
   // F2.1 Course Memory: pre-passe extrai os fatos de TODAS as aulas (paralelo, cacheado)
   // pra montar o "ja ensinado" acumulado por posicao no plano. O loop de redacao abaixo
   // so escreve (a ETAPA 1 vira cache hit). So roda com 2 etapas + memoria ligadas.
+  // extractStats: conta quantas EXTRACOES REAIS (cache-miss) sairam do Qwen local vs
+  // caíram pro DeepSeek (guarda de tamanho/falha/JSON invalido) — emitido no fim do
+  // modulo pra UI mostrar de forma macro ("Extração: N local / M DeepSeek").
+  const extractStats = { local: 0, deepseek: 0 };
   let memoryByIdx = [];
   if (twoStageEnabled() && courseMemoryEnabled()) {
     const titles = plan.map((l) => cleanLessonTitle(l.title));
     const factsByIdx = await mapPool(plan, 4, async (lesson, idx) => {
       const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
       try {
-        return await extractFactsForLesson({ lessonTitle: titles[idx], sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, contract, ocrVocabulary: ocrVocab });
+        return await extractFactsForLesson({ lessonTitle: titles[idx], sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, contract, ocrVocabulary: ocrVocab, extractStats });
       } catch { return null; }
     });
     memoryByIdx = buildCourseMemory(factsByIdx, titles);
@@ -1231,7 +1308,7 @@ const generateReadingModuleFs = async ({
     const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
     let res;
     try {
-      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab, courseMemory: memoryByIdx[idx] || '' });
+      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab, courseMemory: memoryByIdx[idx] || '', extractStats });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };
       } else {
@@ -1260,13 +1337,16 @@ const generateReadingModuleFs = async ({
     onProgress({ type: 'aula', status: 'done', i: idx, title, ok: res.ok });
     return res;
   });
+  if (extractLocalEnabled() && (extractStats.local + extractStats.deepseek) > 0) {
+    onProgress({ type: 'extract-stats', local: extractStats.local, deepseek: extractStats.deepseek });
+  }
 
   // Custo DeepSeek do modulo (USD): plano + prep (vet F1 + contrato F4) + condensacao.
   let cost = costFromUsage(planUsage, model);
   for (const u of prep.usages) cost += costFromUsage(u, model);
   for (const c of created) if (c.ok && c.usage) cost += costFromUsage(c.usage, model);
 
-  return { module: moduleTitle, outDir, transcription, created, originalLessons: transcripts.length, cost };
+  return { module: moduleTitle, outDir, transcription, created, originalLessons: transcripts.length, cost, extractStats };
 };
 
 // Versao Drive. modulePath = id da pasta do modulo no Drive (vem da arvore).
@@ -1355,6 +1435,7 @@ const generateReadingModuleDrive = async ({
 
   const outFolderId = await drive.ensureSubfolder(leituraRootId, moduleFolderName);
 
+  const extractStats = { local: 0, deepseek: 0 };
   const created = await mapPool(plan, 4, async (lesson, idx) => {
     const title = cleanLessonTitle(lesson.title);
     onProgress({ type: 'aula', status: 'start', i: idx, title });
@@ -1386,7 +1467,7 @@ const generateReadingModuleDrive = async ({
         throw new Error(`falha ao ler ${readErrors}/${totalParts} transcricao(oes) no Drive`);
       }
       const out = await condenseText({
-        lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab, coursesPath,
+        lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab, coursesPath, ensureQwen, extractStats,
       });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };
@@ -1414,11 +1495,14 @@ const generateReadingModuleDrive = async ({
     onProgress({ type: 'aula', status: 'done', i: idx, title, ok: res.ok });
     return res;
   });
+  if (extractLocalEnabled() && (extractStats.local + extractStats.deepseek) > 0) {
+    onProgress({ type: 'extract-stats', local: extractStats.local, deepseek: extractStats.deepseek });
+  }
 
   // Custo DeepSeek do modulo (USD): plano + prep (vet F1 + contrato F4) + condensacao.
   let cost = costFromUsage(planUsage, model);
   for (const u of prep.usages) cost += costFromUsage(u, model);
   for (const c of created) if (c.ok && c.usage) cost += costFromUsage(c.usage, model);
 
-  return { module: moduleTitle, outFolderId, transcription, created, originalLessons: transcripts.length, cost };
+  return { module: moduleTitle, outFolderId, transcription, created, originalLessons: transcripts.length, cost, extractStats };
 };

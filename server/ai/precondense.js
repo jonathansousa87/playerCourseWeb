@@ -158,6 +158,20 @@ const NORM_STOPWORDS = new Set([
   'unit', 'task', 'role', 'rule', 'note', 'link', 'tool', 'mode', 'area', 'side', 'kind',
   'sort', 'load', 'save', 'edit', 'view', 'form', 'page', 'class', 'object', 'method',
   'event', 'count', 'index', 'order', 'group', 'level', 'state', 'to', 'is', 'as', 'of', 'in',
+  // Fix D — a lista acima e de palavras TECNICAS comuns (classe ABERTA, nunca vai cobrir
+  // tudo). Isso deixou passar "it->@Autowired" ao vivo (pronome comum do ingles, nao listado
+  // -> vet aprovou, teto trocou TODO "it" do texto por "@Autowired"). Complementa com as
+  // PALAVRAS FUNCIONAIS do ingles (pronomes/artigos/conjuncoes/preposicoes/auxiliares) — essa
+  // classe e FECHADA e pequena (ao contrario de substantivos/verbos de conteudo), da pra listar
+  // por completo de uma vez em vez de tapar buraco por buraco.
+  'it', 'he', 'she', 'we', 'they', 'you', 'i', 'a', 'an', 'the', 'this', 'that', 'these', 'those',
+  'and', 'or', 'but', 'if', 'so', 'no', 'not', 'do', 'did', 'does', 'can', 'will', 'would', 'may',
+  'might', 'must', 'shall', 'should', 'has', 'have', 'had', 'was', 'were', 'are', 'am', 'be',
+  'been', 'being', 'on', 'at', 'by', 'for', 'with', 'from', 'into', 'onto', 'than', 'then',
+  'when', 'where', 'why', 'how', 'who', 'whom', 'whose', 'what', 'which', 'all', 'any', 'each',
+  'few', 'more', 'most', 'some', 'such', 'only', 'own', 'same', 'too', 'very', 'just', 'over',
+  'off', 'again', 'once', 'here', 'there', 'both', 'its', 'our', 'your', 'their', 'his', 'her',
+  'them', 'us', 'me', 'my', 'mine', 'yours', 'ours', 'theirs', 'him', 'out',
 ]);
 
 // Consolida as linhas "CORRECOES:" dos fingerprints num mapa unico (dedup).
@@ -279,8 +293,36 @@ const unionMaps = (...maps) => {
   return out;
 };
 
+// FIX C — trava DETERMINISTICA sobre o vet (que e estocastico e as vezes aprova um candidato
+// AUTOCONTRADITORIO: o mesmo fingerprint que propos "X->Y" em CORRECOES tambem lista X como
+// termo/artefato REAL em TERMOS/ARTEFATOS). Pegou ao vivo: o vet aprovou "Richardson->escala"
+// numa aula cujo proprio fingerprint listava "TERMOS: ..., Leonard Richardson, Richardson
+// Maturity Model" — teria virado "a escala de escala" no texto final. Reune os termos
+// reconhecidos de TODOS os fingerprints do modulo (nao so o da aula que propos o candidato,
+// pra pegar tambem inconsistencia entre aulas) e descarta qualquer correcao cujo `from` e um
+// desses termos — palavra INTEIRA ou como token dentro de um termo composto (ex.: "Richardson"
+// dentro de "Richardson Maturity Model").
+const extractRecognizedTerms = (fingerprints) => {
+  const terms = new Set();
+  for (const fp of fingerprints || []) {
+    for (const label of ['TERMOS', 'ARTEFATOS']) {
+      const line = (fp.match(new RegExp(`${label}:\\s*(.+)`, 'i')) || [])[1] || '';
+      for (const raw of line.split(/[,;]/)) {
+        const phrase = bareTok(raw.trim()).toLowerCase();
+        if (phrase.length >= 4) terms.add(phrase);
+        for (const w of phrase.split(/\s+/)) if (w.length >= 4) terms.add(w);
+      }
+    }
+  }
+  return terms;
+};
+const isRecognizedTerm = (from, recognizedTerms) => {
+  const t = bareTok(from).toLowerCase();
+  return t.length >= 4 && recognizedTerms.has(t);
+};
+
 // So a parte F1 a partir de fingerprints JA extraidos (collectNorm -> vet -> ancora no
-// contrato). Assim o chamador extrai o fingerprint UMA vez e reusa. `contract` (F4,
+// contrato -> Fix C). Assim o chamador extrai o fingerprint UMA vez e reusa. `contract` (F4,
 // opcional): ancora as correcoes cujo `to` e nome canonico do contrato (mata o /alf).
 export const normMapFromFingerprints = async ({ fingerprints, contextTitle, model = DEFAULT_MODEL, log = () => {}, contract = '' }) => {
   const candidates = collectNorm(fingerprints);
@@ -290,10 +332,14 @@ export const normMapFromFingerprints = async ({ fingerprints, contextTitle, mode
   }
   const { keep, usage } = await vetNormMap(candidates, contextTitle, model);
   const anchored = anchorToContract(candidates, contract);
-  const map = unionMaps(keep, anchored);
+  const recognizedTerms = extractRecognizedTerms(fingerprints);
+  const merged = unionMaps(keep, anchored);
+  const dropped = merged.filter((c) => isRecognizedTerm(c.from, recognizedTerms));
+  const map = merged.filter((c) => !isRecognizedTerm(c.from, recognizedTerms));
   log(`[normalize] candidatos (Qwen): ${candidates.map((m) => `${m.from}->${m.to}`).join(', ')}`);
   log(`[normalize] vet manteve: ${keep.map((m) => `${m.from}->${m.to}`).join(', ') || '(nenhum)'}`);
   if (anchored.length) log(`[normalize] ANCORADO no contrato (F4): ${anchored.map((m) => `${m.from}->${m.to}`).join(', ')}`);
+  if (dropped.length) log(`[normalize] Fix C — descartado (from e termo reconhecido no proprio fingerprint): ${dropped.map((m) => `${m.from}->${m.to}`).join(', ')}`);
   log(`[normalize] aplicados (uniao): ${map.map((m) => `${m.from}->${m.to}`).join(', ') || '(nenhum)'}`);
   return { map, candidates, usage };
 };

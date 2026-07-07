@@ -10,7 +10,10 @@
 // Uso:
 //   node server/ai/spikeExtractLocal.mjs --transcript "<caminho .txt|.vtt>" --title "..."
 //   node server/ai/spikeExtractLocal.mjs --transcript "..." --title "..." --compare
+//   node server/ai/spikeExtractLocal.mjs --transcript "..." --title "..." --url http://127.0.0.1:11434/v1/chat/completions --model gemma4:12b-it-q4_K_M
 // Flags: --instruction "..."  --lang pt|en  --out <dir>  --maxtokens 8000  --compare (roda DeepSeek tambem, pra comparar)
+//        --url <endpoint OpenAI-compatible>  --model <nome>  (default: Qwen via llama-server/PRECONDENSE_URL;
+//        com --url apontando pro Ollama (11434), nao sobe o llama-server — o Ollama gerencia o proprio modelo)
 
 import '../load-env.js';
 import { writeFile, mkdir } from 'fs/promises';
@@ -27,37 +30,53 @@ const arg = (name, def) => {
 };
 const flag = (name) => argv.includes(`--${name}`);
 
-const LOCAL_URL = (process.env.PRECONDENSE_URL || 'http://127.0.0.1:8080/v1/chat/completions').trim();
-const LOCAL_MODEL = (process.env.PRECONDENSE_MODEL || 'local').trim();
+// --url/--model customizam o endpoint local (ex.: Ollama em 11434 servindo gemma4).
+// Sem --url, usa o llama-server do Qwen (PRECONDENSE_URL) e sobe sob demanda.
+const customEndpoint = !!arg('url');
+const LOCAL_URL = (arg('url') || process.env.PRECONDENSE_URL || 'http://127.0.0.1:8080/v1/chat/completions').trim();
+const LOCAL_MODEL = (arg('model') || process.env.PRECONDENSE_MODEL || 'local').trim();
+// Ollama (porta 11434): o endpoint OpenAI-compatible nao aceita num_ctx, e o
+// default do servidor (n_ctx_slot ~4096, metade reservada) TRUNCA prompts grandes
+// pela FRENTE — cortando justamente o bloco de schema/regras antes da transcricao
+// (visto no log: "truncating input prompt limit=2051 prompt=4200 keep=5 new=2051").
+// Pra evitar isso, usa a API NATIVA /api/chat com "options.num_ctx" explicito.
+const isOllama = /:11434\b/.test(LOCAL_URL);
+const NUM_CTX = parseInt(arg('numctx', '16384'), 10);
 
-// Chamada OpenAI-compatible ao llama-server local. Sem response_format (o build
-// atual do llama.cpp usado pelo start.sh nao garante grammar JSON); a producao ja
-// se apoia so na instrucao "Output PURE JSON only" pro Qwen (ver precondense.js).
 const callLocal = async ({ system, user, maxTokens, temperature = 0 }) => {
   const t0 = Date.now();
-  const res = await fetch(LOCAL_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: LOCAL_MODEL,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature,
-      max_tokens: maxTokens,
-      stream: false,
-    }),
-  });
+  const url = isOllama ? LOCAL_URL.replace(/\/v1\/chat\/completions$/, '/api/chat') : LOCAL_URL;
+  const body = isOllama
+    ? {
+        model: LOCAL_MODEL,
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        stream: false,
+        options: { temperature, num_predict: maxTokens, num_ctx: NUM_CTX },
+      }
+    : {
+        // OpenAI-compatible (llama-server do Qwen). Sem response_format (o build
+        // atual do llama.cpp nao garante grammar JSON); a producao ja se apoia so
+        // na instrucao "Output PURE JSON only" (ver precondense.js).
+        model: LOCAL_MODEL,
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        temperature,
+        max_tokens: maxTokens,
+        stream: false,
+      };
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`local HTTP ${res.status}${body ? ` — ${body.slice(0, 300)}` : ''}`);
+    const errBody = await res.text().catch(() => '');
+    throw new Error(`local HTTP ${res.status}${errBody ? ` — ${errBody.slice(0, 300)}` : ''}`);
   }
   const data = await res.json();
-  const content = (data?.choices?.[0]?.message?.content || '')
-    .replace(/<think>[\s\S]*?<\/think>/gi, '') // reasoning off, mas remove se vazar
+  const raw = isOllama ? data?.message?.content : data?.choices?.[0]?.message?.content;
+  const content = (raw || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '') // reasoning/thinking, mas remove se vazar
     .trim();
-  return { content, usage: data.usage || null, ms: Date.now() - t0 };
+  const usage = isOllama
+    ? { prompt_tokens: data.prompt_eval_count, completion_tokens: data.eval_count }
+    : (data.usage || null);
+  return { content, usage, ms: Date.now() - t0 };
 };
 
 // Extrai o primeiro objeto JSON valido de uma string (tolera fences/preambulo que
@@ -119,12 +138,12 @@ const run = async () => {
   const user = buildReadingExtractFactsPrompt({ lessonTitle: title, transcript, instruction, sourceLanguage, canonicalNames: '' });
   console.log(`[spike] prompt: ${(system.length + user.length)} chars (~${Math.round((system.length + user.length) / 3.7)} tokens estimados)`);
 
-  if (!(await isQwenUp())) {
+  if (!customEndpoint && !(await isQwenUp())) {
     console.log('[spike] Qwen local fora do ar, subindo...');
     await startQwen({ log: (m) => console.log(m) });
   }
 
-  process.stdout.write('[spike] chamando o Qwen local... ');
+  process.stdout.write('[spike] chamando o modelo local... ');
   const local = await callLocal({ system, user, maxTokens });
   console.log(`ok (${local.ms}ms, ${local.usage?.completion_tokens ?? '?'} tok saida)`);
   const { json: localJson, clean: localClean } = extractJson(local.content);
@@ -157,7 +176,7 @@ const run = async () => {
 `;
 
   let report = `# Spike — extracao (Etapa 1) no Qwen local\n\nAula: ${title}\nTranscricao: ${transcriptPath} (${transcript.length} chars)\n\n`;
-  report += fmtAudit('LOCAL (Qwen)', localAudit, local.ms);
+  report += fmtAudit(`LOCAL (${LOCAL_MODEL})`, localAudit, local.ms);
   if (compare) report += `\n${fmtAudit('DEEPSEEK (baseline)', deepAudit, deep.ms)}`;
   report += `\nArquivos: LOCAL_facts.json${compare ? ', DEEPSEEK_facts.json' : ''} — leia os dois e compare a QUALIDADE do conteudo (nao so contagem): fidelidade, completude, se o codigo esta correto, se nao inventou nada.\n`;
 

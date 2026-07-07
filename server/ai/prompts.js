@@ -757,12 +757,15 @@ Below is the list of video lessons in this module (in their original order). Pla
 READING course: combine RELATED short lessons (same topic) into larger reading lessons, without
 losing content. Aim for BALANCE — neither 1 giant shallow lesson, nor 1-to-1.
 
-Goal: a module usually becomes HALF OR LESS. A dense module of ~15-18 short, sequential lessons
-typically becomes ~5-6 reading lessons. Each reading lesson typically gathers 2 to 5 related
-original lessons. Prefer CONSOLIDATING the whole arc of ONE feature into a single reading lesson —
-its intro/overview + creation + refactor + challenge that build on each other — instead of
-splitting them. Do NOT leave a lone short lesson by itself when it shares the subject with an
-adjacent group — fold it in (e.g. a "JPQL queries" lesson belongs with the other query lessons).
+Goal: a module usually becomes ABOUT A THIRD TO HALF of the original count — lean toward the
+THIRD end when the lessons are short and sequential. A dense module of ~15-18 short, sequential
+lessons typically becomes ~4-5 reading lessons. Each reading lesson typically gathers 3 to 5
+related original lessons (a group of only 2 should be the exception — only when the pair is
+truly self-contained and does not fit a larger arc). Prefer CONSOLIDATING the whole arc of ONE
+feature into a single reading lesson — its intro/overview + creation + refactor + challenge that
+build on each other — instead of splitting them. Do NOT leave a lone short lesson by itself when
+it shares the subject with an adjacent group — fold it in (e.g. a "JPQL queries" lesson belongs
+with the other query lessons).
 ${hasSize ? `
 DENSITY (important): each lesson is tagged (short), (medium) or (LONG) by transcript size.
 Balance the MASS of the groups, not just the count: one (LONG) lesson alone can already become a

@@ -144,7 +144,7 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent, queueLa
     for (const mod of chosen) {
       if (cancelRef.current) break;
       setCurrent(mod.title);
-      setLive({ module: mod.title, transcricao: null, transcribed: 0, leituraTotal: null, aulas: [], mats: null });
+      setLive({ module: mod.title, transcricao: null, transcribed: 0, leituraTotal: null, aulas: [], mats: null, extractStats: null });
       // index = posicao do modulo no curso inteiro (estavel entre rodadas),
       // pra a numeracao das pastas (01, 02, ...) nao colidir ao gerar um por vez.
       const index = modules.findIndex((m) => m.path === mod.path) + 1;
@@ -163,6 +163,9 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent, queueLa
             const aulas = L.aulas.slice();
             aulas[ev.i] = ev.status === "start" ? "doing" : ev.ok ? "ok" : "fail";
             return { ...L, aulas };
+          }
+          if (ev.type === "extract-stats") {
+            return { ...L, extractStats: { local: ev.local, deepseek: ev.deepseek } };
           }
           return L;
         });
@@ -473,6 +476,12 @@ const ReadingCourseModal = ({ open, onClose, courseTitle, courseContent, queueLa
                           <div>
                             Materiais ({live.mats.states.filter((s) => s === "ok" || s === "fail").length}/{live.mats.total})
                             <Dots states={live.mats.states} />
+                          </div>
+                        )}
+                        {live.extractStats && (
+                          <div>
+                            Extração de fatos: {live.extractStats.local} local (Qwen)
+                            {live.extractStats.deepseek > 0 ? ` / ${live.extractStats.deepseek} DeepSeek` : ""}
                           </div>
                         )}
                       </div>

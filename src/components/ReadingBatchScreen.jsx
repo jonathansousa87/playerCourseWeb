@@ -17,7 +17,7 @@ const PHASES = {
   whisper: { label: "Transcrevendo (WhisperX)", short: "Transcrevendo", Icon: Mic, color: "text-sky-300" },
   ocr: { label: "OCR dos vídeos (PaddleOCR + Qwen3-VL)", short: "OCR", Icon: ScanText, color: "text-cyan-300" },
   qwen: { label: "Pré-condensando aulas (Qwen)", short: "Pré-condensa", Icon: Cpu, color: "text-violet-300" },
-  deepseek: { label: "Condensando aulas agrupadas (DeepSeek), módulo a módulo", short: "Leitura", Icon: Cloud, color: "text-emerald-300" },
+  deepseek: { label: "Redigindo as aulas, módulo a módulo", short: "Leitura", Icon: Cloud, color: "text-emerald-300" },
   materials: { label: "Gerando materiais (IA)", short: "Materiais", Icon: Sparkles, color: "text-amber-300" },
   done: { label: "Concluido", short: "Concluído", Icon: Check, color: "text-emerald-400" },
   cancelled: { label: "Cancelado", short: "Cancelado", Icon: X, color: "text-slate-400" },
@@ -181,12 +181,12 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
           : `OCR: ${ev.vocabulary || 0} tokens, ${ev.diagrams || 0} diagramas`,
       }));
     } else if (ev.kind === "module-start") {
-      patchModule(courseTitle, modulePath, (m) => ({ ...m, status: "doing", note: "condensando aulas (DeepSeek)…" }));
+      patchModule(courseTitle, modulePath, (m) => ({ ...m, status: "doing", note: "redigindo as aulas…" }));
     } else if (ev.kind === "reading") {
-      // Plano pronto = o DeepSeek começa a condensar as aulas agrupadas. Vira a
-      // nota pra DeepSeek — senão fica travada em "pré-condensando (Qwen)" (que
-      // roda ANTES) durante toda a geração, dando a impressão errada de que é o Qwen.
-      patchModule(courseTitle, modulePath, (m) => ({ ...m, note: "condensando aulas (DeepSeek)…", reading: { total: ev.total, done: 0, fail: 0 } }));
+      // Plano pronto = comeca a redacao das aulas agrupadas (DeepSeek + Qwen local
+      // na extracao, ver module-extract-stats). Vira a nota — senao fica travada em
+      // "pré-condensando (Qwen)" (que roda ANTES) durante toda a geração.
+      patchModule(courseTitle, modulePath, (m) => ({ ...m, note: "redigindo as aulas…", reading: { total: ev.total, done: 0, fail: 0 } }));
     } else if (ev.kind === "reading-lesson") {
       patchModule(courseTitle, modulePath, (m) => {
         const r = m.reading || { total: 0, done: 0, fail: 0 };
@@ -213,6 +213,10 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
           errors: [...(m.errors || []), ...errors],
         };
       });
+    } else if (ev.kind === "module-extract-stats") {
+      // Etapa 1 (extração de fatos) da leitura: quantas aulas saíram do Qwen local
+      // vs caíram pro DeepSeek (guarda de tamanho/JSON inválido/Qwen fora do ar).
+      patchModule(courseTitle, modulePath, (m) => ({ ...m, extractStats: { local: ev.local, deepseek: ev.deepseek } }));
     } else if (ev.kind === "module-cost") {
       patchModule(courseTitle, modulePath, (m) => ({ ...m, materialsCost: ev.materialsCost || 0 }));
     } else if (ev.kind === "module-error") {
@@ -257,6 +261,7 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
         modules: Object.fromEntries(order.map((m) => [m.path, {
           title: m.title, status: "queue", note: "", reading: null, materials: null,
           errors: [], originalLessons: null, condensedLessons: null, cost: 0, materialsCost: 0,
+          extractStats: null,
         }])),
       };
     }
@@ -664,6 +669,12 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
                           )}
                           {m.reading && m.status === "doing" && (
                             <div className="mt-1.5"><div className="text-[10px] text-slate-500 mb-0.5">Leitura</div><Bar {...m.reading} /></div>
+                          )}
+                          {m.extractStats && (
+                            <div className="mt-1 text-[10px] text-slate-500" title="Etapa 1 (extração de fatos): quantas aulas rodaram no Qwen local vs caíram pro DeepSeek">
+                              Extração: {m.extractStats.local} local (Qwen)
+                              {m.extractStats.deepseek > 0 ? ` · ${m.extractStats.deepseek} DeepSeek` : ""}
+                            </div>
                           )}
                           {m.materials && (
                             <div className="mt-1.5"><div className="text-[10px] text-slate-500 mb-0.5">Materiais</div><Bar {...m.materials} /></div>
