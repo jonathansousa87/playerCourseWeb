@@ -198,6 +198,53 @@ didática funcionarem de verdade.
   Ressalva: ainda não é blindagem total — candidatos tipo "surface->service" ou "Package->Base"
   (palavras de CONTEÚDO comuns, não função) continuam dependendo só do vet + Fix C; não há como
   bloquear por lista fechada nesse caso sem um dicionário completo.
+- [x] **R.10 Upload pro Drive não sobrescrevia aula regenerada** — usuário reportou: regenerou
+  um curso localmente, mandou pro Drive, trocou pra `COURSE_SOURCE=drive` e a aula continuava
+  com conteúdo antigo. Causa: `uploadReadingCourseToDrive` (uploadReading.js) só fazia upsert dos
+  arquivos que existem HOJE localmente — nunca apagava do Drive um arquivo de uma geração anterior
+  que sumiu localmente (ex.: o planejador reagrupa diferente a cada rodada, mudando nome/número
+  dos arquivos de aula). Como a leitura em modo Drive escaneia TUDO que está na pasta (sem
+  manifesto/índice), o arquivo órfão continuava aparecendo como aula, com conteúdo velho. Mesmo
+  padrão que `readingCourse.js` já usa na geração local e na geração nativa em Drive (apagar a
+  pasta do módulo inteira antes de recriar) — só faltava no upload manual. Regra confirmada pelo
+  usuário: disco local é a fonte da verdade, reenviar ESPELHA exatamente (apaga arquivo E pasta
+  vazia remanescente que não bate mais localmente). Caveat documentado no código: narração/podcast
+  gerados direto em `COURSE_SOURCE=drive` (sem passar pelo disco local) não aparecem na varredura
+  local — se existirem sem contraparte local, o sync os apaga também.
+- [x] **R.11 Bug pré-existente achado ao testar o R.10: narração parava de tocar no 2º reenvio**
+  — usuário reportou que a narração, que tocava antes, ficou sem link após reenviar. Causa: o
+  loop de upload SEMPRE apagava o arquivo existente no Drive antes de subir o novo (padrão
+  presente desde o commit original de `uploadReading.js`, não introduzido agora) — mas
+  `uploadFileFromPath` (drive/index.js) já faz update EM CIMA do arquivo existente, preservando o
+  MESMO fileId, quando não é apagado antes. Apagar-e-recriar trocava o fileId a cada reenvio; e
+  `fixAudioMaterials` só sabia casar pelo valor ANTIGO salvo no banco (path local na 1ª correção,
+  fileId depois) — no 2º reenvio esse valor já era um fileId (não mais um path), a busca não batia
+  e o link ficava morto, apontando pro arquivo recém-apagado. Corrigido: (1) removido o
+  apagar-antes-de-subir (deixa `uploadFileFromPath` preservar o fileId sozinho); (2)
+  `fixAudioMaterials` reescrito pra reparar pelo NOME determinístico do arquivo
+  (`${lessonPrefix}_narracao_dub_01.mp3` / `..._podcast_dub_01.mp3`), não pelo valor antigo —
+  fica idempotente e auto-corretivo em qualquer reenvio, inclusive repara um link já quebrado.
+- [x] **R.12 R.11 ainda quebrava a narração em modo FILESYSTEM** — usuário reportou: mesmo
+  corrigido o R.11, subir pro Drive continuava perdendo o áudio, só que agora em modo filesystem
+  (o mp3 local continua intacto, só o link quebra). Causa: `fixAudioMaterials` sobrescrevia
+  `content.audio` (o campo que a rota `/cursos/:file` usa) direto pro fileId do Drive — mas essa
+  MESMA rota decide, na hora de SERVIR (não no momento do upload), se trata o valor como path
+  local ou fileId do Drive, conforme o `COURSE_SOURCE` ATIVO naquele instante. Sobrescrever
+  incondicionalmente quebrava a reprodução em modo filesystem assim que o upload terminava,
+  mesmo o áudio local nunca tendo sido tocado. Corrigido: `content.driveAudio` agora é um campo
+  SEPARADO (nunca sobrescreve `content.audio`); a rota `/api/materials/.../:kind`
+  (server/routes/materials.js) escolhe `driveAudio` só quando `COURSE_SOURCE=drive` está
+  realmente ativo AGORA, senão serve `audio` (local) normalmente. `audio` também passou a ser
+  RECALCULADO a cada upload a partir da varredura local atual — repara sozinho um valor que a
+  versão com o bug do R.11 já tinha corrompido.
+- [x] **R.13 Upload pro Drive paralelizado** — usuário reportou lentidão (curso de 150MB
+  demorando muito). Gargalo real não é banda, é latência de rede por arquivo — o loop subia UM
+  arquivo de cada vez. Google não oferece mais lote/batch pra upload de mídia (deprecado), mas
+  aguenta bem concorrência (~12000 req/100s por usuário). Paralelizado com `mapPool`
+  (`DRIVE_UPLOAD_CONCURRENCY`, default 6, mesmo padrão já usado em `readingCourse.js`). Corrigida
+  de quebra uma race condition que isso destravaria: `ensurePath` (cria pasta de módulo) agora
+  cacheia a PROMISE da criação, não o resultado — sem isso, duas aulas do mesmo módulo terminando
+  no mesmo instante veriam "pasta não existe" ao mesmo tempo e criariam pasta DUPLICADA no Drive.
 
 ---
 

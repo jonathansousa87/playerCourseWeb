@@ -1,9 +1,24 @@
 import express from 'express';
 import { query } from '../../db/index.js';
+import { getCourseSource } from '../config.js';
 
 const router = express.Router();
 
 const dec = (s) => decodeURIComponent(s);
+
+// narracao/podcast podem ter DOIS ponteiros de audio: `audio` (path local,
+// gravado na geracao) e `driveAudio` (fileId, gravado so quando o curso foi
+// enviado pro Drive via uploadReading.js — ver server/ai/uploadReading.js).
+// Escolhe o certo conforme o COURSE_SOURCE ATIVO agora (nao o que era no
+// momento em que o material foi gerado/enviado): em modo drive sem audio
+// gerado nativamente em drive, `audio` ja e o fileId (mantido por compat).
+const resolveAudioPointer = (content) => {
+  let parsed;
+  try { parsed = JSON.parse(content); } catch { return content; }
+  if (!parsed || typeof parsed !== 'object' || !parsed.driveAudio) return content;
+  if (getCourseSource() === 'drive') parsed.audio = parsed.driveAudio;
+  return JSON.stringify(parsed);
+};
 
 // GET /api/materials/:course/:prefix/:kind
 // Retorna o conteudo em texto puro para o viewer no frontend.
@@ -15,7 +30,8 @@ router.get('/api/materials/:course/:prefix/:kind', async (req, res) => {
       [dec(course), dec(prefix), kind],
     );
     if (!rows[0]) return res.status(404).send('Material nao encontrado');
-    res.type('text/plain; charset=utf-8').send(rows[0].content);
+    const content = (kind === 'narracao' || kind === 'podcast') ? resolveAudioPointer(rows[0].content) : rows[0].content;
+    res.type('text/plain; charset=utf-8').send(content);
   } catch (err) {
     res.status(500).send(err.message);
   }

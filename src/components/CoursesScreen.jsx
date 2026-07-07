@@ -92,7 +92,7 @@ const CoursesScreen = ({
         },
       });
       const status = r.failed ? "warn" : "done";
-      setDriveUp((s) => ({ ...s, [course.title]: { status, done: r.done, total: r.total, failed: r.failed } }));
+      setDriveUp((s) => ({ ...s, [course.title]: { status, done: r.done, total: r.total, failed: r.failed, orphansRemoved: r.orphansRemoved || 0 } }));
       return { status, failed: r.failed || 0 };
     } catch (e) {
       setDriveUp((s) => ({ ...s, [course.title]: { status: "error", error: e.message } }));
@@ -443,7 +443,11 @@ const CoursesScreen = ({
                   <button
                     onClick={(e) => { e.stopPropagation(); handleUploadDrive(course); }}
                     disabled={up?.status === "running"}
-                    title="Enviar este curso de leitura para o Google Drive"
+                    title={
+                      up?.status === "done" && up.orphansRemoved > 0
+                        ? `Enviado — ${up.orphansRemoved} arquivo(s) órfão(s) de gerações anteriores removido(s) do Drive`
+                        : "Enviar este curso de leitura para o Google Drive"
+                    }
                     className="absolute top-2 left-2 z-10 flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-900/85 border border-slate-600/50 text-slate-200 text-[11px] font-medium shadow hover:bg-slate-800 disabled:opacity-70"
                   >
                     {up?.status === "running" ? <Loader2 className="w-3 h-3 animate-spin" />
