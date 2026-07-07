@@ -183,6 +183,18 @@ didática funcionarem de verdade.
   buraco por buraco: essa classe é finita e pequena, dá pra listar por completo (diferente de
   substantivos/verbos de conteúdo, que são classe aberta). Validado: "it" e "out" agora bloqueados,
   "alf"/"SWAG"/"BIM"/"ratios"/"Richardson" continuam passando por essa camada (sem falso positivo).
+- [x] **R.9 3 correções achadas ao diagnosticar um "1 problema(s)" real na UI (print do usuário)**
+  — journalctl mostrou 2 causas empilhadas na mesma aula ("Validação do Código de Recuperação"):
+  (a) 4 aulas do módulo rodando em paralelo (`mapPool`, concorrência 4) tentaram extração local ao
+  MESMO tempo; o llama-server parece dividir o contexto (`-c 16384`) entre requisições
+  simultâneas, então prompts que cabem sozinhos estouram juntos ("Context size has been exceeded")
+  — inofensivo sozinho (cai pro DeepSeek), confirmado num módulo irmão que teve o mesmo padrão e
+  completou limpo; (b) só nessa aula, o fallback pro DeepSeek TAMBÉM bateu "resposta sem content"
+  (instabilidade ocasional da API), e esse caso não tinha retry — falha na hora, aula não gerada.
+  Corrigido: `localChat.js` ganhou semáforo (`EXTRACT_LOCAL_CONCURRENCY=1`, default) serializando
+  só as chamadas locais (DeepSeek continua paralelo); `deepseek.js` agora trata "resposta sem
+  content" como transitório e re-tenta com backoff (mesmo mecanismo já usado pra 429/5xx); erro de
+  aula falhada agora também vai pro `console.error` do servidor (antes só aparecia no tooltip da UI).
   Ressalva: ainda não é blindagem total — candidatos tipo "surface->service" ou "Package->Base"
   (palavras de CONTEÚDO comuns, não função) continuam dependendo só do vet + Fix C; não há como
   bloquear por lista fechada nesse caso sem um dicionário completo.

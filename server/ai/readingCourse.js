@@ -1332,6 +1332,9 @@ const generateReadingModuleFs = async ({
         res = { title, file: fileName, prefix: fileTitle, sources: sources.map((s) => s.title), ok: true, usage: out.usage };
       }
     } catch (err) {
+      // Antes ficava mudo no servidor — so aparecia no tooltip da UI. Loga aqui pra
+      // dar pra investigar (journalctl) sem precisar reproduzir na tela.
+      console.error(`[leitura] "${title}": falhou (${err.message})`);
       res = { title, ok: false, error: err.message };
     }
     onProgress({ type: 'aula', status: 'done', i: idx, title, ok: res.ok });
@@ -1490,6 +1493,9 @@ const generateReadingModuleDrive = async ({
         res = { title, file: fileName, prefix: fileTitle, sources: sources.map((s) => s.title), ok: true, usage: out.usage };
       }
     } catch (err) {
+      // Antes ficava mudo no servidor — so aparecia no tooltip da UI. Loga aqui pra
+      // dar pra investigar (journalctl) sem precisar reproduzir na tela.
+      console.error(`[leitura] "${title}": falhou (${err.message})`);
       res = { title, ok: false, error: err.message };
     }
     onProgress({ type: 'aula', status: 'done', i: idx, title, ok: res.ok });

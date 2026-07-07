@@ -143,8 +143,12 @@ export const chatCompletion = async ({
         }
         throw new DeepSeekError(`DeepSeek respondeu HTTP ${res.status}`, { status: res.status, body: text });
       } catch (err) {
-        // Timeout (AbortError) / erro de rede: re-tenta com backoff.
-        const transient = err.name === 'AbortError' || err.name === 'TypeError' || err.code === 'ECONNRESET';
+        // Timeout (AbortError) / erro de rede / resposta 200 SEM content (instabilidade
+        // ocasional da API, ja vista ao vivo: HTTP ok mas choices[0].message.content vazio)
+        // sao transitorias: re-tenta com backoff. Sem isso, essa falha derrubava a aula na
+        // hora, sem chance de recuperar numa proxima tentativa.
+        const transient = err.name === 'AbortError' || err.name === 'TypeError' || err.code === 'ECONNRESET'
+          || (err instanceof DeepSeekError && err.message === 'Resposta da DeepSeek sem content');
         if (transient && attempt < MAX_RETRIES) {
           lastErr = err;
           await sleep(backoffMs(attempt));

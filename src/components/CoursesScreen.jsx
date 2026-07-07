@@ -63,11 +63,25 @@ const CoursesScreen = ({
   // Saldo DeepSeek (consulta leve, nao gasta creditos de geracao).
   const [balance, setBalance] = useState(null);
 
-  // Upload de curso de leitura pro Drive (estado por curso).
+  // Upload de curso de leitura pro Drive (estado por curso — cada card mostra o
+  // proprio status via `driveUp[title]`, tanto no envio individual quanto no lote).
   const [driveUp, setDriveUp] = useState({});
-  const handleUploadDrive = async (course) => {
-    if (driveUp[course.title]?.status === "running") return;
-    if (!window.confirm(`Enviar "${course.title}" pro Google Drive? (recria a estrutura e substitui arquivos de mesmo nome)`)) return;
+  // Selecao de VARIOS cursos pra enviar de uma vez (modo opt-in — nao muda o botao
+  // individual de sempre). `driveSelectMode` liga o checkbox nos cards; o envio real
+  // roda sequencial (1 curso de cada vez, evita sobrecarregar a API do Drive).
+  const [driveSelectMode, setDriveSelectMode] = useState(false);
+  const [driveSelected, setDriveSelected] = useState(() => new Set());
+  const toggleDriveSelected = (title) =>
+    setDriveSelected((prev) => {
+      const next = new Set(prev);
+      next.has(title) ? next.delete(title) : next.add(title);
+      return next;
+    });
+
+  // Retorna o status final ({ status, failed }) — o chamador do LOTE usa isso pra
+  // contar sucesso/falha sem depender de ler `driveUp` logo apos o `setState` (que
+  // pode nao ter aplicado ainda por causa do batching do React).
+  const uploadOneCourseToDrive = async (course) => {
     setDriveUp((s) => ({ ...s, [course.title]: { status: "running", done: 0, total: 0 } }));
     try {
       const r = await uploadReadingCourseToDrive({
@@ -77,13 +91,52 @@ const CoursesScreen = ({
           else if (ev.type === "file") setDriveUp((s) => ({ ...s, [course.title]: { status: "running", done: ev.done, total: ev.total } }));
         },
       });
-      setDriveUp((s) => ({ ...s, [course.title]: { status: r.failed ? "warn" : "done", done: r.done, total: r.total, failed: r.failed } }));
-      // Sem isso, a lista de cursos em memoria continua com os paths antigos
-      // do filesystem (curso some ou toca com URL quebrada em modo drive).
-      onCoursesChanged?.();
+      const status = r.failed ? "warn" : "done";
+      setDriveUp((s) => ({ ...s, [course.title]: { status, done: r.done, total: r.total, failed: r.failed } }));
+      return { status, failed: r.failed || 0 };
     } catch (e) {
       setDriveUp((s) => ({ ...s, [course.title]: { status: "error", error: e.message } }));
+      return { status: "error", failed: 0 };
     }
+  };
+
+  const handleUploadDrive = async (course) => {
+    if (driveUp[course.title]?.status === "running") return;
+    if (!window.confirm(`Enviar "${course.title}" pro Google Drive? (recria a estrutura e substitui arquivos de mesmo nome)`)) return;
+    await uploadOneCourseToDrive(course);
+    // Sem isso, a lista de cursos em memoria continua com os paths antigos
+    // do filesystem (curso some ou toca com URL quebrada em modo drive).
+    onCoursesChanged?.();
+  };
+
+  // Progresso do LOTE (persistente — nao some quando sai do modo de selecao). Cada
+  // card AINDA mostra o proprio selo de status (`driveUp`), mas essa barra fica
+  // fixa no topo da grade mostrando "X/N" + o curso atual, ate o usuario fechar.
+  const [driveBatch, setDriveBatch] = useState(null); // { total, done, current, ok, fail } | null
+
+  // Envia TODOS os cursos selecionados, um de cada vez (sequencial). Sai do modo de
+  // selecao assim que comeca (os cards voltam a mostrar o selo normal), mas a barra
+  // de progresso do lote (`driveBatch`) fica visivel ate o usuario fechar.
+  const handleUploadDriveBatch = async () => {
+    const titles = [...driveSelected];
+    if (!titles.length) return;
+    if (!window.confirm(`Enviar ${titles.length} curso(s) pro Google Drive, um de cada vez? (recria a estrutura e substitui arquivos de mesmo nome)`)) return;
+    setDriveSelectMode(false);
+    setDriveSelected(new Set());
+    setDriveBatch({ total: titles.length, done: 0, current: titles[0], ok: 0, fail: 0 });
+    for (const title of titles) {
+      setDriveBatch((b) => (b ? { ...b, current: title } : b));
+      const course = courses.find((c) => c.title === title);
+      if (!course) { setDriveBatch((b) => (b ? { ...b, done: b.done + 1, fail: b.fail + 1 } : b)); continue; }
+      const { status } = await uploadOneCourseToDrive(course);
+      setDriveBatch((b) => (b ? {
+        ...b, done: b.done + 1,
+        ok: b.ok + (status === "done" ? 1 : 0),
+        fail: b.fail + (status !== "done" ? 1 : 0),
+      } : b));
+    }
+    setDriveBatch((b) => (b ? { ...b, current: null } : b)); // terminou; fica ate o usuario fechar
+    onCoursesChanged?.();
   };
   useEffect(() => { fetchDeepseekBalance().then(setBalance).catch(() => {}); }, []);
   const reloadOrphans = () =>
@@ -181,6 +234,18 @@ const CoursesScreen = ({
               <span className="hidden sm:inline">Gerar leitura</span>
             </button>
             <button
+              onClick={() => { setDriveSelectMode((v) => !v); setDriveSelected(new Set()); }}
+              className={`flex items-center gap-2 px-3.5 py-2 border rounded-xl transition-all text-sm ${
+                driveSelectMode
+                  ? "bg-sky-600/25 border-sky-500/40 text-sky-200"
+                  : "bg-sky-600/15 hover:bg-sky-600/25 border-sky-500/20 text-sky-300 hover:text-sky-200"
+              }`}
+              title="Selecionar varios cursos de leitura pra enviar ao Google Drive de uma vez"
+            >
+              <UploadCloud className="w-4 h-4" />
+              <span className="hidden sm:inline">{driveSelectMode ? "Cancelar selecao" : "Enviar vários p/ Drive"}</span>
+            </button>
+            <button
               onClick={() => setShowAdmin(true)}
               className="flex items-center gap-2 px-3.5 py-2 bg-purple-600/15 hover:bg-purple-600/25 border border-purple-500/20 rounded-xl transition-all text-sm text-purple-300 hover:text-purple-200"
               title="Modo admin: renomear ou excluir cursos"
@@ -268,6 +333,65 @@ const CoursesScreen = ({
           </div>
         )}
 
+        {driveSelectMode && (
+          <div className="mb-6 flex items-center gap-3 bg-sky-500/10 border border-sky-500/30 rounded-2xl px-5 py-3">
+            <UploadCloud className="w-5 h-5 text-sky-300 flex-shrink-0" />
+            <span className="flex-1 text-sm text-sky-100">
+              {driveSelected.size > 0
+                ? `${driveSelected.size} curso(s) de leitura selecionado(s)`
+                : "Clique nos cursos de leitura (selo azul) que quer marcar"}
+            </span>
+            <button
+              onClick={handleUploadDriveBatch}
+              disabled={driveSelected.size === 0}
+              className="px-3 py-1.5 bg-sky-500/20 border border-sky-500/40 rounded-lg text-sm text-sky-200 font-medium hover:bg-sky-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Enviar pro Drive
+            </button>
+          </div>
+        )}
+
+        {driveBatch && (() => {
+          // Progresso do curso ATUAL (arquivo a arquivo) ja existe em `driveUp` — sem
+          // isso a barra so avancava quando um curso INTEIRO terminava, e ficava parada
+          // "0/2" o tempo todo enquanto o primeiro curso (com bastante conteudo) subia.
+          const cur = driveBatch.current ? driveUp[driveBatch.current] : null;
+          const curFrac = cur?.total ? cur.done / cur.total : 0;
+          const pct = driveBatch.total
+            ? Math.round(((driveBatch.done + curFrac) / driveBatch.total) * 100)
+            : 0;
+          return (
+            <div className="mb-6 bg-sky-500/10 border border-sky-500/30 rounded-2xl px-5 py-3">
+              <div className="flex items-center gap-3">
+                {driveBatch.current ? (
+                  <Loader2 className="w-5 h-5 text-sky-300 flex-shrink-0 animate-spin" />
+                ) : (
+                  <Check className="w-5 h-5 text-emerald-400 flex-shrink-0" />
+                )}
+                <span className="flex-1 text-sm text-sky-100">
+                  {driveBatch.current
+                    ? `Enviando pro Drive (curso ${driveBatch.done + 1}/${driveBatch.total}): "${driveBatch.current}"${cur?.total ? ` — ${cur.done}/${cur.total} arquivo(s)` : ""}`
+                    : `Concluído: ${driveBatch.ok} enviado(s)${driveBatch.fail > 0 ? `, ${driveBatch.fail} com problema` : ""} de ${driveBatch.total}`}
+                </span>
+                {!driveBatch.current && (
+                  <button
+                    onClick={() => setDriveBatch(null)}
+                    className="px-3 py-1.5 bg-slate-700/60 border border-slate-600/50 rounded-lg text-sm text-slate-200 font-medium hover:bg-slate-700"
+                  >
+                    Fechar
+                  </button>
+                )}
+              </div>
+              <div className="w-full h-1.5 bg-slate-700/50 rounded-full overflow-hidden mt-2.5">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ease-out ${driveBatch.fail > 0 ? "bg-amber-500" : "bg-sky-500"}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            </div>
+          );
+        })()}
+
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-5">
           {onOpenTyping && (
             <TypingCourseCard
@@ -292,13 +416,30 @@ const CoursesScreen = ({
             const due = dueByCourse[course.title] || 0;
             const isReading = / - Leitura$/.test(course.title);
             const up = driveUp[course.title];
+            const selected = driveSelected.has(course.title);
             return (
               <div
                 key={index}
-                onClick={() => onSelectCourse(course)}
-                className="cursor-pointer relative"
+                onClick={() => {
+                  if (driveSelectMode) { if (isReading) toggleDriveSelected(course.title); return; }
+                  onSelectCourse(course);
+                }}
+                className={`cursor-pointer relative ${driveSelectMode && !isReading ? "opacity-50" : ""}`}
               >
-                {isReading && (
+                {isReading && (driveSelectMode ? (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleDriveSelected(course.title); }}
+                    title="Marcar este curso pra enviar ao Google Drive"
+                    className={`absolute top-2 left-2 z-10 flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-medium shadow ${
+                      selected
+                        ? "bg-sky-500/90 border-sky-400 text-white"
+                        : "bg-slate-900/85 border-slate-600/50 text-slate-200 hover:bg-slate-800"
+                    }`}
+                  >
+                    {selected ? <Check className="w-3 h-3" /> : <UploadCloud className="w-3 h-3" />}
+                    {selected ? "Selecionado" : "Marcar"}
+                  </button>
+                ) : (
                   <button
                     onClick={(e) => { e.stopPropagation(); handleUploadDrive(course); }}
                     disabled={up?.status === "running"}
@@ -314,7 +455,7 @@ const CoursesScreen = ({
                         : up?.status === "warn" ? `${up.failed} falha(s)`
                           : up?.status === "error" ? "erro" : "Drive"}
                   </button>
-                )}
+                ))}
                 {due > 0 && (
                   <span
                     className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/90 text-amber-950 text-[11px] font-bold shadow"

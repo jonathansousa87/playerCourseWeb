@@ -35,7 +35,29 @@ export const fitsLocalContext = (system, user) => {
 
 export const localOutputBudget = () => LOCAL_OUTPUT_BUDGET;
 
+// Semaforo: SO 1 chamada local por vez. Achado ao vivo (journalctl): quando 4 aulas
+// batem `mapPool` em paralelo, o llama-server DIVIDE o contexto total (-c 16384) entre
+// as requisicoes simultaneas — 4 prompts que cabem sozinhos estouram juntos ("Context
+// size has been exceeded", HTTP 500), mesmo passando na guarda (que assume o contexto
+// INTEIRO disponivel pra 1 chamada). Serializando, cada chamada local usa o orcamento
+// cheio que `fitsLocalContext` calculou. O DeepSeek (extracao de fallback + redacao)
+// continua paralelo normalmente — so a chamada ao Qwen fica 1 de cada vez.
+const LOCAL_CONCURRENCY = Math.max(1, parseInt(process.env.EXTRACT_LOCAL_CONCURRENCY || '1', 10));
+let activeLocal = 0;
+const localWaiters = [];
+const acquireLocal = () =>
+  new Promise((resolve) => {
+    if (activeLocal < LOCAL_CONCURRENCY) { activeLocal += 1; resolve(); }
+    else localWaiters.push(resolve);
+  });
+const releaseLocal = () => {
+  const next = localWaiters.shift();
+  if (next) next();
+  else activeLocal = Math.max(0, activeLocal - 1);
+};
+
 export const callLocalChat = async ({ system, user, maxTokens = 4096, temperature = 0.1, timeoutMs = 300000 }) => {
+  await acquireLocal();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -66,5 +88,6 @@ export const callLocalChat = async ({ system, user, maxTokens = 4096, temperatur
     return { content, usage: data.usage || null };
   } finally {
     clearTimeout(timeout);
+    releaseLocal();
   }
 };
