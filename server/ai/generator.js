@@ -10,9 +10,16 @@ import {
   buildUpdateReadingPrompt,
   UPDATE_READING_SYSTEM,
   SYSTEM_PROMPTS,
+  READING_EXTRACT_SYSTEM,
+  buildReadingExtractFactsPrompt,
+  twoStageEnabled,
 } from './prompts.js';
 import { importDeckFromContent, parseAnkiFlashcards } from '../flashcards.js';
 import { query } from '../../db/index.js';
+import { getCachedPrecondense } from './precondenseStore.js';
+import { getCachedFacts, setCachedFacts } from './factsStore.js';
+import { correctTranscriptWithOcr } from './ocr/ocrCorrect.mjs';
+import { repairMarkdownMermaid, mermaidRepairEnabled } from './mermaidRepair.mjs';
 
 
 // Remove tags/fences se o modelo retornar envolto em ```lang...```
@@ -95,6 +102,76 @@ export const loadTranscriptForLesson = async ({ courseTitle, lessonPrefix, cours
 // quando as DUAS condicoes batem — senao, fallback pro `text` achatado de sempre.
 const isReadingMarkdown = (courseTitle, md) =>
   /\s-\sLeitura$/.test(courseTitle) && !!md && /\n#{1,3}\s/.test(md);
+
+// Resolve a MELHOR fonte de texto pra gerar materiais de UMA aula, na regra:
+//   1) LEITURA — curso "- Leitura": o `rawText` ja E a leitura (achatada);
+//   2) PRE-CONDENSACAO em cache — reproduz a MESMA chave da leitura (transcrito
+//      OCR-corrigido com o vocab ranqueado do modulo) e le do `.precondense-cache`.
+//      Reusa o que o "Gerar leitura" ja limpou, SEM subir o Qwen;
+//   3) TRANSCRICAO CRUA — fallback.
+// So-cache no tier 2 (nunca sobe o Qwen aqui): se nao ha pre-condensacao, usa o
+// cru — exatamente a regra pedida. Qualquer erro/miss degrada pro tier seguinte.
+// Etapa 1 do pipeline de 2 etapas, no fluxo de MATERIAIS: extrai o Canonical Lesson
+// JSON do texto resolvido (pre-condensado ou cru), cacheado em .facts-cache. Assim
+// todos os materiais da aula (flashcards/quiz/exemplos/diario/piada) nascem do MESMO
+// JSON e ficam consistentes entre si. So-cache + 1 chamada de extracao por aula.
+const isVersionToken = (t) => /^\d+\.\d+(?:\.\d+)?(?:[.-]\w+)?$/.test(t);
+const resolveFacts = async ({ coursesPath, text, canonicalNames = '', instruction = '', sourceLanguage = 'pt', lessonTitle = '' }) => {
+  if (!text || text.length < 40) return null;
+  const key = { merged: text, canonicalNames, contract: '', instruction, sourceLanguage };
+  let facts = await getCachedFacts(coursesPath, key);
+  if (facts == null) {
+    const ex = await chatCompletion({
+      system: READING_EXTRACT_SYSTEM,
+      user: buildReadingExtractFactsPrompt({ lessonTitle, transcript: text, instruction, sourceLanguage, canonicalNames }),
+      model: DEFAULT_MODEL,
+      temperature: 0,
+      maxTokens: 14000,
+    });
+    facts = ex.content.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+    await setCachedFacts(coursesPath, key, facts);
+  }
+  return facts;
+};
+
+export const resolveMaterialSource = async ({ courseTitle, coursesPath, lessonPrefix, lessonDir, rawText, readingMarkdown, instruction = '', lessonTitle = '' }) => {
+  if (isReadingMarkdown(courseTitle, readingMarkdown)) return { text: rawText, source: 'leitura', facts: null };
+  let text = rawText;
+  let source = 'transcrição crua';
+  let canonicalNames = '';
+  try {
+    // lessonDir: usa o passado; senao descobre (so filesystem — no Drive nao ha dir local).
+    const dir = lessonDir !== undefined
+      ? lessonDir
+      : (coursesPath && process.env.COURSE_SOURCE !== 'drive'
+        ? await findLessonDir(join(coursesPath, courseTitle), lessonPrefix)
+        : null);
+    if (coursesPath && dir && rawText) {
+      const { readCachedModuleOcr } = await import('./readingCourse.js'); // dinamico: evita ciclo com generator
+      const { vocabulary } = await readCachedModuleOcr(coursesPath, dir);
+      if (vocabulary?.length) {
+        // Mesma grafia canonica que a leitura injeta (top-40, sem numeros de versao).
+        canonicalNames = vocabulary.filter((t) => !isVersionToken(t)).slice(0, 40).join(', ');
+      }
+      let key = rawText;
+      if (vocabulary?.length) {
+        const { text: corrected, map } = correctTranscriptWithOcr(rawText, vocabulary);
+        if (map.length) key = corrected;
+      }
+      const pre = (await getCachedPrecondense(coursesPath, key.trim()))
+        || (key !== rawText ? await getCachedPrecondense(coursesPath, rawText.trim()) : null);
+      if (pre) { text = pre; source = 'pré-condensação'; }
+    }
+  } catch { /* best-effort -> cai pro cru */ }
+
+  // Canonical Lesson JSON (materiais consomem ELE, nao a transcricao) — atras da flag.
+  let facts = null;
+  if (twoStageEnabled()) {
+    try { facts = await resolveFacts({ coursesPath, text, canonicalNames, instruction, lessonTitle }); }
+    catch { facts = null; } // extracao falhou -> materiais caem na transcricao
+  }
+  return { text, source, facts };
+};
 
 // Alias mantido pra compatibilidade. Usar `parseTranscript` em codigo novo.
 export const parseVtt = parseTranscript;
@@ -249,6 +326,10 @@ export const generateForLesson = async ({
   );
   const weekLabel = `Semana ${String(weekNumber).padStart(2, '0')}/${now.getFullYear()}`;
 
+  // Fonte dos materiais (nao-resumo): leitura > pre-condensacao (cache) > cru.
+  const material = await resolveMaterialSource({ courseTitle, coursesPath, lessonPrefix, lessonDir, rawText: transcript, readingMarkdown, instruction, lessonTitle });
+  if (material.source !== 'leitura') console.log(`[materiais] fonte do input: ${material.source}${material.facts ? ' + fatos (JSON)' : ''} (aula ${lessonPrefix})`);
+
   // Kinds em paralelo (a concorrencia real na API + retry sao garantidos pelo
   // semaforo do deepseek.js). Cobre tambem chamadas multi-kind (ex.: materiais
   // gerados apos o curso de leitura).
@@ -263,8 +344,11 @@ export const generateForLesson = async ({
       // pode voltar como 1 linha so. Os demais kinds usam o transcript de sempre.
       const source = kind === 'resumo' && isReadingMarkdown(courseTitle, readingMarkdown)
         ? readingMarkdown
-        : transcript;
-      const user = promptBuilders[kind]({ lessonTitle, transcript: source, weekLabel, instruction });
+        : material.text;
+      // 'resumo' ATUALIZA a leitura existente (buildUpdateReadingPrompt) — nao usa fatos.
+      // Os demais materiais nascem do Canonical JSON quando disponivel (consistencia).
+      const facts = kind === 'resumo' ? null : material.facts;
+      const user = promptBuilders[kind]({ lessonTitle, transcript: source, weekLabel, instruction, facts });
       const { content, usage, model: usedModel } = await chatCompletion({
         system: systemForKind[kind],
         user,
@@ -275,6 +359,17 @@ export const generateForLesson = async ({
         maxTokens: kind === 'exemplos' || kind === 'resumo' ? 13000 : kind === 'quiz' ? 8000 : 6000,
       });
       const cleaned = stripCodeFence(content);
+
+      // Reparo automatico de Mermaid quebrado antes de salvar (so resumo/exemplos
+      // carregam diagrama). So chama a API nos blocos que falham a validacao.
+      let finalContent = cleaned;
+      if ((kind === 'resumo' || kind === 'exemplos') && mermaidRepairEnabled()) {
+        const r = await repairMarkdownMermaid(cleaned, { lessonTitle, model, instruction });
+        if (r.repaired || r.failed) {
+          console.log(`[mermaid] aula ${lessonPrefix}/${kind}: ${r.repaired} reparado(s), ${r.failed} sem conserto de ${r.checked} diagrama(s)`);
+        }
+        finalContent = r.markdown;
+      }
 
       // Validar conteudo antes de salvar
       if (kind === 'flashcards') {
@@ -306,7 +401,7 @@ export const generateForLesson = async ({
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (course_title, lesson_prefix, kind)
            DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
-          [courseTitle, lessonPrefix, kind, cleaned],
+          [courseTitle, lessonPrefix, kind, finalContent],
         );
       }
 

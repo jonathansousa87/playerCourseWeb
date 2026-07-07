@@ -5,7 +5,7 @@
 
 import { chatCompletion, DEFAULT_MODEL } from './deepseek.js';
 import { buildPrequestionsPrompt, SYSTEM_PROMPTS } from './prompts.js';
-import { loadTranscriptForLesson } from './generator.js';
+import { loadTranscriptForLesson, resolveMaterialSource } from './generator.js';
 
 // Tira fence ```json...``` se o modelo ignorar a regra.
 const stripFence = (s) => {
@@ -46,7 +46,7 @@ export const generatePrequestionsForLesson = async ({
   model = DEFAULT_MODEL,
   instruction = '',
 }) => {
-  const { text: transcript, lessonTitle: lessonTitleFromTranscript } =
+  const { text: transcript, markdown: readingMarkdown, lessonTitle: lessonTitleFromTranscript } =
     await loadTranscriptForLesson({ courseTitle, lessonPrefix, coursesPath });
   if (transcript.length < 50) {
     const err = new Error('transcricao vazia ou muito curta');
@@ -54,8 +54,12 @@ export const generatePrequestionsForLesson = async ({
     throw err;
   }
 
+  // Mesma cadeia de input dos demais materiais: leitura > pre-condensacao (cache) > cru.
   const lessonTitle = lessonPrefix.replace(/[-_]+$/, '').replace(/-/g, ' ').trim();
-  const user = buildPrequestionsPrompt({ lessonTitle, transcript, instruction });
+  const material = await resolveMaterialSource({ courseTitle, coursesPath, lessonPrefix, rawText: transcript, readingMarkdown, instruction, lessonTitle });
+  if (material.source !== 'leitura') console.log(`[prequestions] fonte do input: ${material.source}${material.facts ? ' + fatos (JSON)' : ''} (aula ${lessonPrefix})`);
+
+  const user = buildPrequestionsPrompt({ lessonTitle, transcript: material.text, instruction, facts: material.facts });
 
   const { content, usage, model: usedModel } = await chatCompletion({
     system: SYSTEM_PROMPTS.prequestions,

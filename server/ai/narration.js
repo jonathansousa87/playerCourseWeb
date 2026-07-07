@@ -80,15 +80,44 @@ const spellOut = (a) => a.toUpperCase().split('').map((c) => LETTER_PT[c] || c).
 const WORD_ACRONYMS = new Set(
   ['REST', 'JSON', 'SOAP', 'SAGA', 'YAML', 'TOML', 'AJAX', 'CORS', 'CRUD', 'SPA', 'JPEG', 'GIF',
     'NASA', 'NATO', 'OTAN', 'ASCII', 'UNIX', 'LINUX', 'BIOS', 'RAID', 'WIFI', 'PIX', 'COVID',
-    'AIDS', 'LASER', 'RADAR', 'SCRUM', 'KANBAN', 'DEVOPS', 'BERT', 'EBITDA', 'OAUTH', 'OK']
+    'AIDS', 'LASER', 'RADAR', 'SCRUM', 'KANBAN', 'DEVOPS', 'BERT', 'EBITDA', 'OAUTH', 'OK',
+    // Verbos HTTP: sao FALADOS como palavra ("get", "post"), nao soletrados (g-e-t).
+    'GET', 'PUT', 'POST', 'PATCH', 'DELETE', 'HEAD', 'TRACE']
     .concat((process.env.NARRATION_WORD_ACRONYMS || '').split(',').map((s) => s.trim().toUpperCase()))
     .filter(Boolean),
 );
 // `\b([A-Z]{2,6})(s)?\b`: pega sigla MAIUSCULA com plural opcional (APIs, DTOs);
 // o \b evita pegar prefixo de palavra CamelCase (ex.: nao casa "OA" em "OAuth").
 const ACRO_RE = /\b([A-Z]{2,6})(s)?\b/g;
-const speakable = (text) => String(text).replace(ACRO_RE, (m, acro, plural) =>
-  (WORD_ACRONYMS.has(acro) ? m : spellOut(acro) + (plural ? 's' : '')));
+const speakable = (text) => String(text)
+  // Seta de chamada (cliente → servidor, metodo → metodo): o Kokoro leria o
+  // simbolo "→"; aqui vira a palavra "chama". Cobre a seta unicode e o "->" ascii.
+  .replace(/\s*(?:→|⇒|->)\s*/g, ' chama ')
+  // Marcador de resposta/pergunta de Q&A: "R:" o Kokoro le so "érre"; expande p/
+  // "Resposta:"/"Pergunta:". So quando isolado (inicio ou apos espaco), p/ nao
+  // pegar "HR:" nem ":" de codigo.
+  .replace(/(^|\s)R:(?=\s|$)/g, '$1Resposta:')
+  .replace(/(^|\s)P:(?=\s|$)/g, '$1Pergunta:')
+  .replace(ACRO_RE, (m, acro, plural) =>
+    (WORD_ACRONYMS.has(acro) ? m : spellOut(acro) + (plural ? 's' : '')));
+
+// Tabela markdown -> blocos falaveis, UMA linha por vez, INCLUINDO o cabecalho
+// (antes a tabela era pulada). Cada celula vira "celula1, celula2, ...". A linha
+// separadora (|---|---|) e descartada. Celulas mantidas se tiverem letra OU
+// numero (p/ nao perder "200", "404" numa tabela de status).
+const hasContent = (s) => /[\p{L}\p{N}]/u.test(s || '');
+const splitCells = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+const isSepRow = (cells) => cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c));
+const tableToBlocks = (rows) => {
+  const out = [];
+  for (const line of rows) {
+    const cells = splitCells(line);
+    if (isSepRow(cells)) continue;
+    const spoken = cells.map((c) => stripMd(c)).filter(hasContent).join(', ');
+    if (hasContent(spoken)) out.push({ text: spoken });
+  }
+  return out;
+};
 
 const parseNarratableBlocks = (md) => {
   const lines = String(md || '').split(/\r?\n/);
@@ -109,7 +138,14 @@ const parseNarratableBlocks = (md) => {
     }
     if (t === '') { flushPara(); continue; }
     if (/^([*_-])\1{2,}\s*$/.test(t)) { flushPara(); continue; } // regua horizontal (--- *** ___) -> nao narra
-    if (/^\s*\|/.test(raw)) { flushPara(); continue; } // linha de tabela -> nao narra
+    if (/^\s*\|/.test(raw)) { // tabela -> narra linha a linha (cabecalho incluso)
+      flushPara();
+      const tbl = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) { tbl.push(lines[i]); i++; }
+      i--; // o for faz i++ de novo
+      for (const b of tableToBlocks(tbl)) blocks.push(b);
+      continue;
+    }
     if (/^#{1,6}\s+/.test(t)) { flushPara(); const x = stripMd(t); if (x && hasWord(x)) blocks.push({ text: x }); continue; }
     if (/^\s*([-*+]|\d+\.)\s+/.test(raw)) { flushPara(); const x = stripMd(t); if (x && hasWord(x)) blocks.push({ text: x }); continue; }
     // Paragrafo (acumula linhas). Citacao (>) entra como paragrafo: o ReactMarkdown
@@ -158,6 +194,13 @@ export const generateLessonNarration = async ({ coursesPath, courseTitle, lesson
 
   const blocks = parseNarratableBlocks(content);
   if (blocks.length === 0) { const e = new Error('nada para narrar (so codigo/diagramas?)'); e.code = 'EMPTY'; throw e; }
+
+  // Kokoro fala o TITULO da aula primeiro (deriva do prefixo, tira o NN da frente —
+  // igual ao titulo mostrado na pagina). Vira o bloco 0; o front nao realca nada nesse
+  // trecho (o titulo fica fora do articleRef), so a voz o anuncia. speakable() cuida de
+  // siglas no titulo (ex.: "JWT").
+  const lessonTitle = String(lessonPrefix || '').replace(/^\d+\s*/, '').trim();
+  if (lessonTitle && hasWord(lessonTitle)) blocks.unshift({ text: lessonTitle });
 
   // Onde gravar o mp3 (pasta da aula). ref = caminho (fs) ou fileId (drive).
   const { ref } = await loadTranscriptForLesson({ courseTitle, lessonPrefix, coursesPath });

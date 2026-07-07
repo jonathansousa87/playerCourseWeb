@@ -18,7 +18,33 @@ import iaRouter from './server/routes/ia.js';
 import typingRouter from './server/routes/typing.js';
 import maintenanceRouter from './server/routes/maintenance.js';
 
+import { stopVl } from './server/ai/ocr/visionServer.mjs';
+import { stopQwen } from './server/ai/qwenServer.js';
+import { stopKokoro } from './server/ai/kokoro.js';
+
 const app = express();
+
+// Derruba os modelos (llama-server VL/Qwen + Kokoro) ao encerrar o backend.
+// Sem isso, um Ctrl+C / stop.sh no MEIO de um processamento deixava os
+// llama-server (spawnados `detached`) ORFAOS: seguravam ~10GB de RAM (GGUF
+// mmap + buffers pinned do CUDA) e a VRAM, e o run seguinte nao cabia na GPU
+// (o PaddleOCR caia pra CPU). Kill dirigido pela existencia do processo.
+let shuttingDown = false;
+const shutdownModels = async (sig) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n[shutdown] ${sig}: derrubando modelos (VL/Qwen/Kokoro)...`);
+  try {
+    await Promise.allSettled([
+      stopVl({ log: (m) => console.log(m) }),
+      stopQwen({ log: (m) => console.log(m) }),
+      stopKokoro({ log: (m) => console.log(m) }),
+    ]);
+  } catch { /* best-effort */ }
+  process.exit(0);
+};
+process.on('SIGINT', () => shutdownModels('SIGINT'));
+process.on('SIGTERM', () => shutdownModels('SIGTERM'));
 
 // CORS com credentials para o cliente Vite (porta 5173 por padrao)
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -53,6 +79,16 @@ app.use(maintenanceRouter);
 const PORT = Number(process.env.PORT) || 3001;
 app.listen(PORT, async () => {
   console.log(`Servidor rodando na porta ${PORT}`);
+
+  // Limpa llama-server ORFAOS de uma execucao anterior encerrada no meio
+  // (stop.sh/kill nao derruba os detached). Se sobrar um VL/Qwen vivo, ele
+  // segura VRAM/RAM e o PaddleOCR nao cabe na GPU -> cai pra CPU. No-op rapido
+  // se nao houver nenhum.
+  try {
+    await Promise.allSettled([stopVl({ log: () => {} }), stopQwen({ log: () => {} })]);
+    console.log('[boot] llama-server orfaos verificados/limpos.');
+  } catch { /* best-effort */ }
+
   const ok = await ensureReady();
   console.log(ok ? 'Postgres conectado.' : 'AVISO: Postgres indisponivel (usando fallback).');
 

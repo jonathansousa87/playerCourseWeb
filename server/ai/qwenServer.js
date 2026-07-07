@@ -9,6 +9,7 @@
 //   subiu manualmente) e espera o endpoint cair, liberando a VRAM.
 
 import { spawn } from 'child_process';
+import { killLlama, listLlamaPids } from './modelProc.mjs';
 
 // Deriva a base (http://host:porta) a partir da URL de chat do precondense.
 const BASE = (process.env.PRECONDENSE_URL || 'http://127.0.0.1:8080/v1/chat/completions')
@@ -18,19 +19,12 @@ const BASE = (process.env.PRECONDENSE_URL || 'http://127.0.0.1:8080/v1/chat/comp
 const HEALTH_URL = `${BASE}/health`;
 const MODELS_URL = `${BASE}/v1/models`;
 const START_CMD = (process.env.QWEN_START_CMD || '/mnt/nvme2/llm/start.sh').trim();
-// Padrao pra casar o processo no kill (qualquer instancia do llama-server).
-const PROC_MATCH = (process.env.QWEN_PROC_MATCH || 'llama-server').trim();
-
-// pkill que so mata o Qwen TEXTO (porta 8080), sem afetar o Qwen3-VL (porta 8081).
-// O VL tem o proprio stopVl no visionServer.mjs. Antes o pkill matava TODOS os
-// llama-server — incluindo o VL, quebrando o revezamento.
-const pkillText = (signal) =>
-  new Promise((res) => {
-    // Mata pelo modelo (Qwen3.5/Qwen_Qwen3.5) — especifico do texto, nao do VL.
-    const p = spawn('pkill', [signal, '-f', 'Qwen_Qwen3.5']);
-    p.on('close', res);
-    p.on('error', res);
-  });
+// Porta do Qwen TEXTO (derivada da BASE, default 8080). Discrimina o texto do
+// Qwen3-VL (8081) de forma confiavel no kill — independe do nome do modelo.
+const PORT = (BASE.match(/:(\d+)/) || [])[1] || '8080';
+// Padrao do pgrep: llama-server cujo cmdline tem `--port <PORT>` (o proprio texto,
+// nunca o VL). Dirigido pela EXISTENCIA do processo, nao pelo /health.
+const PROC_PATTERN = `llama-server.*port ${PORT}`;
 
 let spawned = null; // processo que NOS subimos (se subimos)
 
@@ -51,8 +45,6 @@ const probe = async (url, ms = 2000) => {
 
 export const isQwenUp = async () => (await probe(HEALTH_URL)) || (await probe(MODELS_URL));
 
-// (pkill generico removido — usamos pkillText acima, especifico do Qwen texto)
-
 // Sobe o Qwen se ainda nao estiver no ar e espera ficar pronto. Idempotente.
 // Revezamento de VRAM: derruba o Kokoro E o Qwen3-VL antes de subir.
 export const startQwen = async ({ timeoutMs = 120000, log = () => {} } = {}) => {
@@ -69,6 +61,10 @@ export const startQwen = async ({ timeoutMs = 120000, log = () => {} } = {}) => 
     const { stopKokoro } = await import('./kokoro.js');
     await stopKokoro({ log });
   } catch (e) { log(`[qwen] nao consegui derrubar o Kokoro: ${e.message}`); }
+  // Limpa zumbi ANTES de subir: se ha um texto PENDURADO no 8080 (health caido
+  // mas processo vivo), o spawn empilharia um segundo. killLlama e no-op rapido
+  // se nao houver nenhum.
+  await killLlama({ pattern: PROC_PATTERN, label: 'qwen', log: () => {} });
   log(`[qwen] subindo via: ${START_CMD}`);
   // shell+detached: start.sh faz `exec llama-server`, virando lider de sessao;
   // assim da pra matar o grupo inteiro no stop.
@@ -86,26 +82,14 @@ export const startQwen = async ({ timeoutMs = 120000, log = () => {} } = {}) => 
   throw new Error(`Qwen nao subiu em ${Math.round(timeoutMs / 1000)}s (cmd: ${START_CMD})`);
 };
 
-// Derruba o Qwen (qualquer instancia) e espera o endpoint cair + a VRAM liberar.
+// Derruba o Qwen texto (o que subimos E qualquer instancia pendurada no 8080) e
+// espera a VRAM liberar. Dirigido pela EXISTENCIA do processo (pgrep), nao pelo
+// /health — um servidor pendurado (health caido, processo vivo) tambem morre.
 export const stopQwen = async ({ timeoutMs = 30000, log = () => {} } = {}) => {
-  if (!spawned && !(await isQwenUp())) return true;
-  log('[qwen] derrubando pra liberar a VRAM');
-
-  try { if (spawned?.pid) process.kill(-spawned.pid, 'SIGTERM'); } catch { /* grupo ja morto */ }
-  await pkillText('-TERM');
+  const pid = spawned?.pid || null;
   spawned = null;
-
-  const deadline = Date.now() + timeoutMs;
-  let killedHard = false;
-  while (Date.now() < deadline) {
-    await sleep(1000);
-    if (!(await isQwenUp())) {
-      // respiro pro driver liberar a VRAM de fato antes do WhisperX/proximo passo.
-      await sleep(1500);
-      log('[qwen] derrubado');
-      return true;
-    }
-    if (!killedHard) { await pkillText('-KILL'); killedHard = true; }
-  }
-  throw new Error('Qwen nao derrubou no tempo esperado');
+  return killLlama({ pattern: PROC_PATTERN, spawnedPid: pid, label: 'qwen', timeoutMs, log });
 };
+
+// Diagnostico: PIDs de Qwen texto vivos (independe do /health).
+export const qwenPids = () => listLlamaPids(PROC_PATTERN);

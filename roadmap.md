@@ -17,6 +17,7 @@ Portar o spike **fiel** (sem "melhorar" o que já foi validado).
 | **F2** | Trava de correção técnica (código/exemplo que roda; desambiguar; termos precisos) em leitura **e** prática | Baixo | `READING_CORRECTNESS=1` (env, global) | `[x]` Implementada, **ATIVA** |
 | **F3** | Regra de clareza como **modo** (fidelidade × clareza, escolha por geração) | Médio | `READING_CLARITY_ENABLED=1` + toggle UI "Clareza (F3)" default ON | `[x]` Implementada, **ATIVA** |
 | **F4** | Contrato de curso + fingerprint + planejador enriquecido + `initial_prompt` no Whisper (mata drift e `/alf`) | Alto | `READING_CONTRACT_ENABLED=1` + toggle UI "Contrato (F4)" default ON | `[x]` Implementada, **ATIVA** (contrato per-curso no lote — TD-14; per-módulo no fluxo individual) |
+| **F5** | Estrutura/scaffolding: onde cada artefato vai no projeto e por quê, construção incremental passo a passo, genérico p/ qualquer nicho de tecnologia. Em leitura **e** prática | Baixo | `READING_STRUCTURE_ENABLED=1` (env, global) | `[x]` Implementada, **ATIVA** |
 
 ### F1 — detalhe e como testar
 Checklist:
@@ -88,6 +89,27 @@ um bloco condicional; com a flag off o prompt é **byte-a-byte** o de antes (ver
 
 ---
 
+### F5 — detalhe e como testar
+Motivação: leitura gerada ficava só "código + explicação teórica", sem dizer ONDE cada
+arquivo/pacote/classe entra no projeto nem construir passo a passo — o leitor tinha que
+adivinhar (ex.: em qual pacote a interface vai, o que fica no service vs repository).
+- [x] `STRUCTURE_BLOCK` (server/ai/prompts.js): exige local explícito de cada artefato
+  criado + o porquê (papel na arquitetura), construção incremental (conecta com o passo
+  anterior), explicita convenções implícitas. GENÉRICO (não hardcoded pra nenhuma stack).
+- [x] Injetado em `buildReadingCondensePrompt` (leitura) e `buildExemplosPrompt` (prática)
+- [x] Flag `READING_STRUCTURE_ENABLED=1` (env, global; sem toggle UI — só endurece a regra)
+- [x] Junto: extraído `VERSION_GUARD` (server/ai/prompts.js) como fonte única do guard de
+  versão/modernização — antes duplicado (texto solto na leitura + outro na prática, que
+  divergiam). Corrigido bug: `buildExemplosPrompt` já tinha `CORRECTNESS_BLOCK` (via
+  `correctnessBlock()`) e uma injeção duplicada tinha sido adicionada por engano — removida.
+- [ ] Validar em curso real (regenerar um módulo e conferir "onde criar o pacote X" aparece)
+- [ ] Commit da F5
+
+**Testar:** `READING_STRUCTURE_ENABLED=1` (já default no `.env`). Gere/regenere uma leitura
+com criação de arquivo/classe/pacote e confira se o texto diz onde e por quê.
+
+---
+
 ## Débitos técnicos (vamos ajustando)
 
 | ID | Feito? | Débito | Origem | Sev. |
@@ -108,7 +130,7 @@ um bloco condicional; com a flag off o prompt é **byte-a-byte** o de antes (ver
 | TD-15 | `[ ]` | **PT → `large-v2`** (era `large-v3-turbo`). Validado: v3 alucina ~4× mais que v2 (Deepgram); v2 mais preciso no termo (/alf 2 vs 4) e sem alucinação. `.env` `WHISPERX_MODEL=large-v2`. Só afeta NOVAS transcrições. EN (`distil-large-v3.5`) não testado — avaliar. | Whisper | Aplicado (.env) |
 | TD-16 | `[ ]` | **Modelos 2026 (avaliação futura, troca MAIOR — sai do WhisperX)**: Voxtral Transcribe 2 (5.9% WER, PT, streaming), Qwen3-ASR (SOTA, 52 idiomas), NVIDIA Canary 1B v2 (3–5% europeias). Perdem alinhamento/VAD/flags do WhisperX → integração nova. | Whisper | Ideia |
 | TD-17 | `[x]` | **OCR forte dos frames do vídeo (IMPLEMENTADO — Bloco B)**: PaddleOCR (PP-OCRv6, CPU) + Qwen3-VL (GPU) extraem identificadores EXATOS da tela → vocabulário canônico → corrige transcrição na fonte (ground-truth) + alimenta contrato (F4). Módulos em `server/ai/ocr/`. Flags `OCR_TEXT_ENABLED` (O1) + `OCR_DIAGRAM_ENABLED` (O2). Cache por vídeo. Supera a heurística da F1 para código. | F4/Whisper | Implementado |
-| TD-14 | `[x]` | **Contrato PER-CURSO** no lote (fase 1.9 do `generateReadingBatch`): agrega fingerprints de TODAS as aulas de TODOS os módulos do curso (cacheados) + OCR canônico agregado por df cross-módulo, sintetiza UM contrato via `buildContract` e passa a cada módulo via `contractText` (buildModulePrep reusa em vez de sintetizar o seu). Pega drift cross-módulo (build-along). Fatorados `buildOcrCanonical`+`extractFingerprints`; slice de fingerprints no buildContract 12k→40k. Fallback gracioso: Qwen fora/curso sem contrato → per-módulo. Só fs. Validado: import OK + ranking cross-módulo. Falta rodar lote real (mod 04+05) e ler. | F4 | Implementado |
+| TD-14 | `[x]` | **Contrato PREFIXO por módulo** (refinou o per-curso): o contrato do módulo N cobre 01..N — o atual + os ANTERIORES que já têm cache (fingerprint+OCR), escaneando as pastas irmãs de índice menor (nunca os futuros, que podem não ter cache). Reprocessar só o N já fica coerente com 01..N-1 sem rodar os anteriores (só cache, nunca sobe o Qwen por eles). Módulo 01 = só ele. No lote os módulos rodam em ordem → a cadeia se forma sozinha. Cache do contrato (`contractStore.js`, content-addressed por instrução+OCR+fingerprints 01..N) → não re-chama o DeepSeek se o prefixo não mudou. Fatorados `buildOcrCanonical`/`extractFingerprints`/`rankModuleVocab`; `readCachedModuleOcr` usa o MESMO ranking da geração (senão a correção OCR diverge e a chave do fingerprint não bate — validado 19/19 no mód 04). Removida a fase 1.9 per-curso. Só fs (Drive = per-módulo). Falta rodar lote real e ler. | F4 | Implementado |
 
 ---
 

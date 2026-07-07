@@ -6,13 +6,28 @@ import { Play, Pause, Rewind } from "lucide-react";
 // leitura inteira (e os diagramas/mapas piscavam). Aqui o re-render fica contido
 // na barra; a sincronia com a leitura (realce + scroll) e feita no DOM via ref.
 
-// Realce do trecho em reproducao: so a cor azul (fundo + barra lateral), SEM
-// cantos arredondados.
-const HL = { background: "rgba(56,189,248,0.10)", boxShadow: "inset 3px 0 0 #38bdf8" };
+// Realce do trecho em reproducao: fundo azul + barra lateral. A barra (inset 3px)
+// ficava POR CIMA da primeira letra -> abrimos um espaco a esquerda com paddingLeft,
+// compensado por marginLeft negativo do MESMO valor pra o texto NAO deslocar quando o
+// realce liga/desliga (a barra cai nesse espaco, nunca sobre a letra).
+const HL_PAD = 12;
+const HL = {
+  background: "rgba(56,189,248,0.10)",
+  boxShadow: "inset 3px 0 0 #38bdf8",
+  paddingLeft: `${HL_PAD}px`,
+  marginLeft: `-${HL_PAD}px`,
+  borderRadius: "0 4px 4px 0",
+};
 const setHL = (el, on) => {
   if (!el) return;
   if (on) Object.assign(el.style, HL);
-  else { el.style.background = ""; el.style.boxShadow = ""; }
+  else {
+    el.style.background = "";
+    el.style.boxShadow = "";
+    el.style.paddingLeft = "";
+    el.style.marginLeft = "";
+    el.style.borderRadius = "";
+  }
 };
 const fmtTime = (s) => { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 

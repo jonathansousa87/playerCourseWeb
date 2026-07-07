@@ -53,6 +53,7 @@ const warmup = async () => {
 // Derruba o Kokoro (container docker) pra liberar a VRAM — usado pelo
 // revezamento: o Qwen (llama-server) e o Kokoro nao cabem juntos na GPU de 11GB.
 export const stopKokoro = async ({ log = () => {} } = {}) => {
+  cancelIdleStop(); // um stop explicito (revezamento/ocioso) cancela o timer pendente
   if (!(await reachable())) return true;
   const cmd = (process.env.KOKORO_STOP_CMD ?? 'docker stop kokoro-container').trim();
   if (!cmd) return false;
@@ -69,9 +70,30 @@ export const stopKokoro = async ({ log = () => {} } = {}) => {
   return true;
 };
 
+// IDLE-STOP com debounce: o Kokoro segura ~1.3GB de VRAM enquanto o container
+// esta no ar. Nada o derrubava depois da narracao (so o revezamento, quando o
+// Qwen/VL precisava da GPU) — entao apos gerar as narracoes ele ficava pendurado.
+// Aqui cada sintese (re)agenda um stop; enquanto voce gera aula atras de aula o
+// timer se renova (sem cold-start); parou de gerar -> apos KOKORO_IDLE_STOP_MS
+// (default 120s; 0 desliga) o container cai sozinho e libera a VRAM.
+let idleTimer = null;
+const IDLE_STOP_MS = Math.max(0, parseInt(process.env.KOKORO_IDLE_STOP_MS || '120000', 10) || 0);
+const cancelIdleStop = () => { if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } };
+const scheduleIdleStop = () => {
+  if (!IDLE_STOP_MS) return;
+  cancelIdleStop();
+  idleTimer = setTimeout(async () => {
+    idleTimer = null;
+    if (kkActive > 0) { scheduleIdleStop(); return; } // ainda sintetizando -> adia
+    try { await stopKokoro({ log: (m) => console.log(m) }); } catch { /* best-effort */ }
+  }, IDLE_STOP_MS);
+  idleTimer.unref?.();
+};
+
 // Garante o Kokoro no ar E com o modelo pronto pra sintetizar. Se cair, tenta
 // subir o container (configuravel). Em docker o boot + carga leva ~15-30s.
 export const ensureServer = async () => {
+  cancelIdleStop(); // vamos usar o Kokoro agora: cancela um stop-por-ociosidade pendente
   // Revezamento de VRAM: antes de subir/usar o Kokoro, derruba o Qwen (se estiver
   // no ar) pra liberar a GPU. Import dinamico p/ evitar ciclo com qwenServer.
   try {
@@ -139,6 +161,7 @@ export const synthesize = async (args) => {
     return await synthesizeNow(args);
   } finally {
     kkRelease();
+    scheduleIdleStop(); // apos a ultima sintese, o timer derruba o Kokoro sozinho
   }
 };
 

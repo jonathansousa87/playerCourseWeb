@@ -16,8 +16,10 @@
 // ao sair, antes do VL subir); VL na GPU, derrubando o Qwen texto antes e depois.
 //
 // Flags .env:
-//   OCR_TEXT_ENABLED=1     — liga o OCR de texto/código (PaddleOCR + VL-OCR)
-//   OCR_DIAGRAM_ENABLED=1  — liga o VL de diagrama (exige GPU)
+//   OCR_TEXT_ENABLED=1     — liga o PaddleOCR (texto/código, GPU, rápido)
+//   OCR_DIAGRAM_ENABLED=1  — liga o Qwen3-VL (diagramas, 8B, caro/lento; só p/
+//                            cursos com diagramas de verdade — em curso de código
+//                            agrega pouco e é o gargalo)
 //
 // Degrada gracioso: se PaddleOCR/VL indisponível, devolve vazios (a F1
 // heurística segue como fallback).
@@ -104,9 +106,9 @@ export const processVideoOcr = async ({ videoPath, coursesPath, log = () => {} }
       log('[ocr] PaddleOCR desligado (OCR_TEXT_ENABLED=0)');
     }
 
-    // 2. Qwen3-VL em todos os frames — texto complementar + diagramas
-    // Usuário pediu: sempre rodar ambos para extrair o máximo.
-    if (diagramEnabled || textEnabled) {
+    // 2. Qwen3-VL em todos os frames — SO se o diagrama estiver ligado (o VL e
+    // caro e, em curso de codigo, agrega pouco sobre o PaddleOCR). O1 = so Paddle.
+    if (diagramEnabled) {
       let vlStarted = false;
       try {
         log('[ocr] subindo Qwen3-VL...');
@@ -218,8 +220,12 @@ export const processModuleOcr = async ({ videos = [], coursesPath, log = () => {
     }
 
     // ===== FASE 2: Qwen3-VL (GPU) — sobe UMA vez, passa por TODOS =====
+    // Roda SO se o diagrama estiver ligado. O VL e a parte cara (8B, ~10GB RAM,
+    // lento) e em curso de codigo produz quase so diagramas alucinados de telas
+    // de navegador/UI; o "texto complementar" dele e redundante com o PaddleOCR.
+    // Entao O1 (texto) sozinho = so PaddleOCR (rapido); O2 (diagrama) = liga o VL.
     const anyFrames = pending.some((p) => p.frames.length);
-    if ((diagramEnabled || textEnabled) && anyFrames) {
+    if (diagramEnabled && anyFrames) {
       let vlStarted = false;
       try {
         log('[ocr] subindo Qwen3-VL (1× para o módulo)...');

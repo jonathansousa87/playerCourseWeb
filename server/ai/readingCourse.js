@@ -13,19 +13,30 @@ import {
   qwenExtract, normMapFromFingerprints, contractEnabled, buildContract,
 } from './precondense.js';
 import { getCachedFingerprint } from './fingerprintStore.js';
+import { getCachedContract, setCachedContract } from './contractStore.js';
+import { getOcrCache } from './ocr/ocrStore.mjs';
 import { startQwen, stopQwen } from './qwenServer.js';
 import { parseTranscript, parseTranscriptRaw } from './generator.js';
 import { transcribeToTxt, detectAudioLanguage } from './whisperx.js';
 import { processModuleOcr, ocrTextEnabled, ocrDiagramEnabled } from './ocr/ocrModule.mjs';
 import { correctTranscriptWithOcr } from './ocr/ocrCorrect.mjs';
+import { repairMarkdownMermaid, mermaidRepairEnabled } from './mermaidRepair.mjs';
 import { query } from '../../db/index.js';
 import {
   READING_PLAN_SYSTEM,
   buildReadingPlanPrompt,
   READING_CONDENSE_SYSTEM,
   buildReadingCondensePrompt,
+  READING_EXTRACT_SYSTEM,
+  buildReadingExtractFactsPrompt,
+  READING_WRITE_SYSTEM,
+  buildReadingWriteDidacticPrompt,
+  twoStageEnabled,
+  courseMemoryEnabled,
   clarityEnabled,
+  PROMPT_VERSION,
 } from './prompts.js';
+import { getCachedFacts, setCachedFacts } from './factsStore.js';
 
 // Mesmo padrao usado pelo findTranscript: _dub[.locale].(txt|vtt)
 const TRANSCRIPT_RE = /_dub(?:\.[a-z]{2,3}(?:-[a-zA-Z]{2,4})?)?\.(txt|vtt)$/i;
@@ -283,27 +294,19 @@ const collectModuleVideos = async (moduleDir) => {
   return videos;
 };
 
-// Processa OCR de todos os vídeos de um módulo e agrega o vocabulário + diagramas.
-// Retorna { vocabulary: [...], diagrams: [...], ocrCorrections: [...] }.
-const runOcrForModule = async (moduleDir, coursesPath, log = () => {}, onProgress = () => {}) => {
-  if (!ocrTextEnabled() && !ocrDiagramEnabled()) {
-    return { vocabulary: [], diagrams: [], ocrCorrections: [] };
-  }
-  const videos = await collectModuleVideos(moduleDir);
-  if (!videos.length) return { vocabulary: [], diagrams: [], ocrCorrections: [] };
-
-  log(`[ocr] processando ${videos.length} vídeos do módulo (fase 1: PaddleOCR em todos; fase 2: Qwen3-VL 1× em todos)...`);
-  // Duas fases no módulo: todo o OCR de texto (PaddleOCR/GPU, processos efêmeros)
-  // primeiro, depois o VL uma vez só — sem subir/derrubar o VL por vídeo
-  // (ocrModule.processModuleOcr).
-  const results = await processModuleOcr({ videos, coursesPath, log, onProgress });
-
+// Agrega + ranqueia o vocabulário OCR de um módulo a partir dos resultados por
+// vídeo (`[{vocabulary, diagrams}]`). Ordena por DOCUMENT-FREQUENCY (nº de vídeos
+// que mostram o token) desc — o nome que aparece em MAIS aulas é o mais canônico
+// (ex.: WebSecurityConfig >> SecurityConfig). DETERMINÍSTICO: mesmos resultados
+// por vídeo -> mesmo vocabulário. Por isso é reusado pra reproduzir, do cache, o
+// vocab que a geração usou (readCachedModuleOcr) — senão a correção OCR diverge e
+// a chave do fingerprint não bate.
+const rankModuleVocab = (results) => {
   const allVocab = new Map(); // lower -> grafia canônica (mais maiúsculas)
-  const df = new Map(); // lower -> frequência de documento (nº de vídeos que mostram)
+  const df = new Map(); // lower -> frequência de documento
   const allDiagrams = [];
   for (const r of results) {
     const seenInVideo = new Set(); // conta 1× por vídeo (document frequency)
-    // Funde vocabulário (dedup, prefere versão com mais maiúsculas)
     for (const tok of r.vocabulary || []) {
       if (!tok || tok.length < 2) continue;
       const lower = tok.toLowerCase();
@@ -319,16 +322,29 @@ const runOcrForModule = async (moduleDir, coursesPath, log = () => {}, onProgres
     }
     for (const d of r.diagrams || []) allDiagrams.push(d);
   }
-
-  // Ordena por frequência de documento (nº de vídeos) desc: o nome que aparece
-  // em MAIS aulas é o mais canônico (ex.: WebSecurityConfig >> SecurityConfig).
-  // Assim os primeiros da lista — os que sobrevivem em qualquer corte — são os
-  // mais confiáveis para o contrato e para o bloco canônico da condensação.
   const vocabulary = [...allVocab.keys()]
     .sort((a, b) => (df.get(b) || 0) - (df.get(a) || 0) || a.localeCompare(b))
     .map((lower) => allVocab.get(lower));
-  log(`[ocr] módulo: ${results.length}/${videos.length} vídeos, ${vocabulary.length} tokens, ${allDiagrams.length} diagramas`);
-  return { vocabulary, diagrams: allDiagrams, ocrCorrections: [] };
+  return { vocabulary, diagrams: allDiagrams };
+};
+
+// Processa OCR de todos os vídeos de um módulo e agrega o vocabulário + diagramas.
+// Retorna { vocabulary: [...], diagrams: [...], ocrCorrections: [...] }.
+const runOcrForModule = async (moduleDir, coursesPath, log = () => {}, onProgress = () => {}) => {
+  if (!ocrTextEnabled() && !ocrDiagramEnabled()) {
+    return { vocabulary: [], diagrams: [], ocrCorrections: [] };
+  }
+  const videos = await collectModuleVideos(moduleDir);
+  if (!videos.length) return { vocabulary: [], diagrams: [], ocrCorrections: [] };
+
+  log(`[ocr] processando ${videos.length} vídeos do módulo (fase 1: PaddleOCR em todos; fase 2: Qwen3-VL 1× em todos)...`);
+  // Duas fases no módulo: todo o OCR de texto (PaddleOCR/GPU, processos efêmeros)
+  // primeiro, depois o VL uma vez só — sem subir/derrubar o VL por vídeo
+  // (ocrModule.processModuleOcr).
+  const results = await processModuleOcr({ videos, coursesPath, log, onProgress });
+  const { vocabulary, diagrams } = rankModuleVocab(results);
+  log(`[ocr] módulo: ${results.length}/${videos.length} vídeos, ${vocabulary.length} tokens, ${diagrams.length} diagramas`);
+  return { vocabulary, diagrams, ocrCorrections: [] };
 };
 
 // Detecta o idioma do CURSO inteiro (para "auto", modo filesystem): usa o texto
@@ -426,11 +442,16 @@ const planGrouping = async ({ moduleTitle, transcripts, model, fingerprints = []
   // ETAPA 1 (raciocinio): thinking LIGADO + orcamento generoso p/ o reasoning
   // terminar E ainda emitir o JSON. Plano mais rico/consolidado. No caso comum
   // resolve aqui mesmo, em 1 chamada.
+  // temperature=0 (nao 0.2): agrupamento e uma decisao ESTRUTURADA (nao prosa
+  // criativa) — com o MESMO fingerprint/OCR de entrada, reprocessar o mesmo
+  // modulo deve convergir pro MESMO agrupamento. Medido ao vivo: com 0.2, o
+  // mesmo modulo (32 aulas, mesmo cache de fingerprint) variou 8 -> 12 grupos
+  // entre duas rodadas identicas.
   try {
     const max1 = Math.min(24000, 8000 + transcripts.length * 400);
     const { content, usage } = await chatCompletion({
       system: READING_PLAN_SYSTEM, user: userPrompt, model,
-      temperature: 0.2, maxTokens: max1, responseFormat: { type: 'json_object' },
+      temperature: 0, maxTokens: max1, responseFormat: { type: 'json_object' },
     });
     await planDebug(moduleTitle,
       `[ETAPA 1] ${transcripts.length} aulas | maxTokens=${max1}\n[USAGE] ${JSON.stringify(usage)}\n`
@@ -450,7 +471,7 @@ const planGrouping = async ({ moduleTitle, transcripts, model, fingerprints = []
       const max2 = Math.min(8000, 2500 + transcripts.length * 150);
       const { content, usage } = await chatCompletion({
         system: READING_PLAN_SYSTEM, user: userPrompt, model,
-        temperature: 0.2, maxTokens: max2, responseFormat: { type: 'json_object' },
+        temperature: 0, maxTokens: max2, responseFormat: { type: 'json_object' },
         thinking: { type: 'disabled' },
       });
       const plan = buildPlan(content);
@@ -468,41 +489,128 @@ const planGrouping = async ({ moduleTitle, transcripts, model, fingerprints = []
 // Fase 2 (parte IA): condensa um texto ja montado numa aula de leitura.
 // `normMap` (F1, opcional): correcoes de mis-transcricao ja vetadas p/ o modulo,
 // aplicadas DETERMINISTICO ao texto antes do DeepSeek (no-op se vazio/ausente).
-const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt', normMap, clarity = false, contract = '', ocrVocabulary = [] }) => {
-  if (!merged || merged.length < 40) return null;
+// Soma dois `usage` do DeepSeek (etapa extrair + etapa redigir) num objeto so, pra o
+// chamador contabilizar o custo das DUAS chamadas como se fosse uma.
+const mergeUsage = (a, b) => {
+  if (!a) return b; if (!b) return a;
+  const f = (k) => (a[k] || 0) + (b[k] || 0);
+  return {
+    prompt_tokens: f('prompt_tokens'),
+    completion_tokens: f('completion_tokens'),
+    prompt_cache_hit_tokens: f('prompt_cache_hit_tokens'),
+    prompt_cache_miss_tokens: f('prompt_cache_miss_tokens'),
+    total_tokens: f('total_tokens'),
+  };
+};
+
+// Prepara os inputs comuns as duas etapas: texto normalizado (F1), idioma detectado,
+// header do contrato (F4) e a lista de nomes canonicos (OCR top-40). FONTE UNICA pra a
+// extracao (pre-passe da Course Memory) e a condensacao usarem a MESMA chave de cache.
+const preparedInputs = ({ merged, language = 'pt', normMap, contract = '', ocrVocabulary = [] }) => {
   const text = normMap && normMap.length ? applyNorm(merged, normMap) : merged;
   // "auto" -> detecta o idioma desta aula a partir do texto (lote misto PT/EN).
   const sourceLanguage = language === 'auto' ? detectLang(text) : language;
   // F4: contrato do curso na frente do prompt (nomes canonicos + abordagem unica).
-  // Texto IDENTICO ao contractHeader do spikeReadingModuleV2.mjs.
   const contractHeader = contract
     ? `CONTRATO DO CURSO (PRIORIDADE MÁXIMA — TODAS as aulas seguem isto para o projeto ficar coerente; se a modernização oferecer mais de uma abordagem, o contrato decide qual usar em TODO o curso):\n"""\n${contract}\n"""\n\n`
     : '';
-  // OCR: âncora canônica REDUNDANTE no prompt da aula — mesmo que o contrato
-  // perca um nome, o DeepSeek vê a grafia certa da tela aqui (compacto: top-40,
-  // ~100-200 tokens; ranqueado por frequência). Barato e blinda pacote/classe.
-  // NÃO injeta número de versão (ex.: "0.9.1"): versão não é nome canônico e,
-  // vinda de uma tela da época da gravação, TRAVA a aula na API antiga contra o
-  // preset de modernização (a versão/API é decidida pelo contrato, não aqui).
+  // OCR: âncora canônica REDUNDANTE — grafia da tela (top-40, sem numeros de versao).
   const isVer = (t) => /^\d+\.\d+(?:\.\d+)?(?:[.-]\w+)?$/.test(t);
   const canonicalNames = ocrVocabulary?.length
     ? ocrVocabulary.filter((t) => !isVer(t)).slice(0, 40).join(', ')
     : '';
-  const { content, usage, model: usedModel } = await chatCompletion({
-    system: READING_CONDENSE_SYSTEM,
-    user: contractHeader + buildReadingCondensePrompt({ lessonTitle, transcript: text, instruction, sourceLanguage, clarity, canonicalNames }),
-    model,
-    temperature: 0.3,
-    // Generoso: grupos grandes (ate ~60k de input) precisam de saida longa pra
-    // COBRIR tudo sem truncar a aula no meio.
-    maxTokens: 14000,
-  });
-  return { text: content.trim(), usage, model: usedModel };
+  return { text, sourceLanguage, contractHeader, canonicalNames };
+};
+
+// ETAPA 1 — extrai o Canonical Lesson JSON (cache content-addressed). Usada pela
+// condensacao E pelo pre-passe da Course Memory, com a MESMA chave -> 1 extracao so.
+const extractFactsCached = async ({ lessonTitle, prepared, instruction, contract = '', model, coursesPath }) => {
+  const { text, sourceLanguage, canonicalNames, contractHeader } = prepared;
+  const factsKey = { merged: text, canonicalNames, contract, instruction, sourceLanguage };
+  let facts = await getCachedFacts(coursesPath, factsKey);
+  let usage = null;
+  if (facts == null) {
+    const ex = await chatCompletion({
+      system: READING_EXTRACT_SYSTEM,
+      user: contractHeader + buildReadingExtractFactsPrompt({ lessonTitle, transcript: text, instruction, sourceLanguage, canonicalNames }),
+      model,
+      temperature: 0, // extracao e decisao estruturada, nao prosa criativa
+      maxTokens: 14000,
+    });
+    facts = ex.content.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+    usage = ex.usage;
+    await setCachedFacts(coursesPath, factsKey, facts);
+  }
+  return { facts, usage };
+};
+
+const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt', normMap, clarity = false, contract = '', ocrVocabulary = [], coursesPath, courseMemory = '' }) => {
+  if (!merged || merged.length < 40) return null;
+  const prepared = preparedInputs({ merged, language, normMap, contract, ocrVocabulary });
+  let content, usage, usedModel;
+  if (twoStageEnabled()) {
+    // === Leitura em 2 ETAPAS ===
+    const { facts, usage: extractUsage } = await extractFactsCached({ lessonTitle, prepared, instruction, contract, model, coursesPath });
+    // ETAPA 2 (redigir a aula didatica a partir do JSON + Course Memory).
+    const wr = await chatCompletion({
+      system: READING_WRITE_SYSTEM,
+      user: buildReadingWriteDidacticPrompt({ lessonTitle, facts, instruction, clarity, courseMemory }),
+      model,
+      temperature: 0.3,
+      maxTokens: 14000,
+    });
+    content = wr.content;
+    usage = mergeUsage(extractUsage, wr.usage);
+    usedModel = wr.model;
+  } else {
+    // === Fluxo de 1 etapa (fallback) ===
+    const single = await chatCompletion({
+      system: READING_CONDENSE_SYSTEM,
+      user: prepared.contractHeader + buildReadingCondensePrompt({ lessonTitle, transcript: prepared.text, instruction, sourceLanguage: prepared.sourceLanguage, clarity, canonicalNames: prepared.canonicalNames }),
+      model,
+      temperature: 0.3,
+      // Generoso: grupos grandes (ate ~60k de input) precisam de saida longa pra
+      // COBRIR tudo sem truncar a aula no meio.
+      maxTokens: 14000,
+    });
+    content = single.content; usage = single.usage; usedModel = single.model;
+  }
+  let text2 = content.trim();
+  // Reparo automatico de Mermaid quebrado antes de devolver a leitura pra salvar.
+  if (mermaidRepairEnabled()) {
+    const r = await repairMarkdownMermaid(text2, { lessonTitle, model: usedModel, instruction });
+    if (r.repaired || r.failed) {
+      console.log(`[mermaid] leitura "${lessonTitle}": ${r.repaired} reparado(s), ${r.failed} sem conserto de ${r.checked} diagrama(s)`);
+    }
+    text2 = r.markdown;
+  }
+  lintReadingStructure(text2, { clarity, lessonTitle }); // 2.2: loga problemas estruturais
+  return { text: text2, usage, model: usedModel };
+};
+
+// F2.2 — Pos-processamento DETERMINISTICO: checa a estrutura da aula gerada e LOGA os
+// problemas (heading obrigatorio faltando, fim duplicado, poucas secoes). Nao edita nem
+// re-chama o modelo (auto-regen de secao = follow-up): serve pra flagrar aula malformada
+// que escapou do self-check. So um aviso no log; nunca derruba a geracao.
+const lintReadingStructure = (text, { clarity, lessonTitle }) => {
+  const issues = [];
+  const headings = text.match(/^##\s+.+$/gm) || [];
+  if (clarity) {
+    if (!/^##\s+O n[uú]cleo/im.test(text)) issues.push('sem "## O nucleo"');
+    if (!/^##\s+Fixando/im.test(text)) issues.push('sem "## Fixando"');
+    if (/^##\s+Resumo r[aá]pido/im.test(text)) issues.push('"## Resumo rapido" presente (fim duplicado)');
+    if (/^##\s+Armadilhas comuns/im.test(text)) issues.push('"## Armadilhas comuns" solta (deveria estar embutida)');
+  }
+  if (headings.length < 2) issues.push(`poucas secoes (${headings.length} "##")`);
+  if (/cole o conte[uú]do mostrado acima|conforme visto anteriormente/i.test(text)) issues.push('manda "rolar pra cima" (nao auto-contido)');
+  if (issues.length) console.warn(`[estrutura] leitura "${lessonTitle}": ${issues.join('; ')}`);
+  return issues;
 };
 
 // fs: le as transcricoes do disco e pre-condensa (Qwen, inline) antes do DeepSeek.
-// Usa cache persistente por conteudo: reprocessar nao re-condensa no Qwen.
-const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, clarity = false, contract = '', ocrVocabulary = [] }) => {
+// Usa cache persistente por conteudo: reprocessar nao re-condensa no Qwen. FONTE UNICA
+// do texto merged (usada pela condensacao E pelo pre-passe da Course Memory).
+const mergedForLesson = async ({ sources, ocrVocabulary = [], preCondenseOn, coursesPath, ensureQwen }) => {
   const parts = [];
   for (const src of sources) {
     // Cada aula logica pode ter varias `parts` (original + complemento .1).
@@ -510,7 +618,6 @@ const condenseLesson = async ({ lessonTitle, sources, model, instruction, langua
       try {
         let text = await parseTranscript(part.path);
         // OCR ground-truth: corrige garble (ex.: /alf -> /auth) ancorado na tela.
-        // Mesma correção que buildModulePrep aplica ao extrair fingerprints.
         if (ocrVocabulary.length && text) {
           const { text: corrected, map } = correctTranscriptWithOcr(text, ocrVocabulary);
           if (map.length) text = corrected;
@@ -521,7 +628,51 @@ const condenseLesson = async ({ lessonTitle, sources, model, instruction, langua
       }
     }
   }
-  return condenseText({ lessonTitle, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity, contract, ocrVocabulary });
+  return parts.filter(Boolean).join('\n\n');
+};
+
+const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, clarity = false, contract = '', ocrVocabulary = [], courseMemory = '' }) => {
+  const merged = await mergedForLesson({ sources, ocrVocabulary, preCondenseOn, coursesPath, ensureQwen });
+  return condenseText({ lessonTitle, merged, model, instruction, language, normMap, clarity, contract, ocrVocabulary, coursesPath, courseMemory });
+};
+
+// F2.1 — Course Memory. Pre-passe: extrai SO os fatos de uma aula (merged + ETAPA 1),
+// pra montar o "ja ensinado" antes de redigir. Cacheado -> a condensacao reusa (cache hit).
+const extractFactsForLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, contract = '', ocrVocabulary = [] }) => {
+  const merged = await mergedForLesson({ sources, ocrVocabulary, preCondenseOn, coursesPath, ensureQwen });
+  if (!merged || merged.length < 40) return null;
+  const prepared = preparedInputs({ merged, language, normMap, contract, ocrVocabulary });
+  const { facts } = await extractFactsCached({ lessonTitle, prepared, instruction, contract, model, coursesPath });
+  return facts;
+};
+
+// Extrai os NOMES de conceitos/termos de um Canonical JSON (pra memoria do curso).
+const conceptNamesFromFacts = (factsJson) => {
+  try {
+    const j = JSON.parse(factsJson);
+    const names = [];
+    for (const c of j.core_concepts || []) if (c?.name) names.push(String(c.name).trim());
+    for (const t of j.terminology || []) if (t?.term) names.push(String(t.term).trim());
+    return names.filter(Boolean);
+  } catch { return []; }
+};
+
+// memoryByIdx[i] = texto com os conceitos ja ensinados nas aulas 0..i-1 (ordem do plano).
+// Cap de 60 conceitos (os mais recentes) pra o prompt nao inflar em cursos grandes.
+const buildCourseMemory = (factsByIdx, titlesByIdx) => {
+  const seen = new Map(); // nome -> aula onde apareceu primeiro
+  const out = new Array(factsByIdx.length).fill('');
+  for (let i = 0; i < factsByIdx.length; i++) {
+    const entries = [...seen.entries()];
+    const recent = entries.slice(-60);
+    out[i] = recent.length
+      ? recent.map(([name, t]) => `- ${name}${t ? ` (visto em: ${t})` : ''}`).join('\n')
+      : '';
+    for (const name of conceptNamesFromFacts(factsByIdx[i] || '')) {
+      if (!seen.has(name)) seen.set(name, titlesByIdx[i]);
+    }
+  }
+  return out;
 };
 
 // Monta o bloco OCR CANONICO (ground-truth da tela) pro contrato F4: separa
@@ -570,6 +721,98 @@ const extractFingerprints = async ({ transcripts, readParts, coursesPath, ensure
   return { fingerprints, ok: true };
 };
 
+// Numero do modulo pelo prefixo do nome da pasta ("04. ..." -> 4). Sem prefixo
+// numerico -> Infinity (fica por ultimo, nao vira "anterior" de ninguem).
+const moduleIndexOf = (name) => {
+  const m = String(name || '').match(/^\s*(\d+)/);
+  return m ? parseInt(m[1], 10) : Infinity;
+};
+
+// Pastas dos modulos ANTERIORES a `currentModulePath` no curso (ordenadas). So
+// os anteriores (indice menor) — os futuros podem nem ter cache. Ignora a pasta
+// de saida "... - Leitura" e ocultas.
+const collectPrevModuleDirs = async (coursesPath, courseTitle, currentModulePath) => {
+  const courseDir = join(coursesPath, courseTitle);
+  const curIdx = moduleIndexOf(currentModulePath);
+  if (!Number.isFinite(curIdx)) return [];
+  let entries = [];
+  try { entries = await fs.readdir(courseDir, { withFileTypes: true }); } catch { return []; }
+  return entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !/ - Leitura$/.test(e.name))
+    .map((e) => ({ name: e.name, idx: moduleIndexOf(e.name), dir: join(courseDir, e.name) }))
+    .filter((m) => Number.isFinite(m.idx) && m.idx < curIdx)
+    .sort((a, b) => a.idx - b.idx);
+};
+
+// Le do CACHE (sem rodar OCR) o vocabulario+diagramas de um modulo. Usa o MESMO
+// ranking (rankModuleVocab) do runOcrForModule sobre os resultados por-video
+// cacheados -> reproduz EXATAMENTE o vocabulario que a geracao usou. Isso e
+// crucial: a correcao OCR (correctTranscriptWithOcr) precisa desse mesmo vocab
+// pra reproduzir o texto corrigido que virou a chave do fingerprint. Video sem
+// cache nao contribui.
+export const readCachedModuleOcr = async (coursesPath, moduleDir) => {
+  let videos = [];
+  try { videos = await collectModuleVideos(moduleDir); } catch { return { vocabulary: [], diagrams: [] }; }
+  const results = [];
+  for (const v of videos) {
+    const c = await getOcrCache(coursesPath, v);
+    if (c?.vocabulary?.length || c?.diagrams?.length) results.push({ vocabulary: c.vocabulary || [], diagrams: c.diagrams || [] });
+  }
+  return rankModuleVocab(results);
+};
+
+// Fingerprints de um modulo ANTERIOR, SO do cache (nunca sobe o Qwen): reproduz o
+// mesmo texto corrigido (parseTranscript + correcao OCR do proprio modulo) que
+// gerou a chave do fingerprintStore e le. Aula sem fingerprint cacheado e pulada.
+// Retorna { named, vocabulary, diagrams } — `named` no formato do buildContract.
+const readCachedPrevModule = async (coursesPath, moduleDir, moduleTitle) => {
+  const { vocabulary, diagrams } = await readCachedModuleOcr(coursesPath, moduleDir);
+  const named = [];
+  let transcripts = [];
+  try { transcripts = await collectModuleTranscripts(moduleDir); } catch { return { named, vocabulary, diagrams }; }
+  for (const t of transcripts) {
+    const raws = [];
+    for (const part of t.parts || [t]) {
+      try {
+        let text = await parseTranscript(part.path);
+        if (vocabulary.length && text) {
+          const { text: corrected, map } = correctTranscriptWithOcr(text, vocabulary);
+          if (map.length) text = corrected;
+        }
+        if (text) raws.push(text);
+      } catch { /* ilegivel */ }
+    }
+    if (!raws.length) continue;
+    const fp = await getCachedFingerprint(coursesPath, raws.join('\n\n').trim());
+    if (fp) named.push(`[${moduleTitle}] ${t.title || ''}\n${fp}`);
+  }
+  return { named, vocabulary, diagrams };
+};
+
+// Ranqueia o vocabulario OCR agregando VARIAS listas (uma por modulo): token que
+// aparece em MAIS modulos = mais canonico. Empate -> ordem de primeira aparicao
+// (a lista do modulo ATUAL vem primeiro, entao preserva o ranking intra-modulo
+// dos tokens unicos). 1 lista so -> devolve intacta (nao re-ranqueia).
+const rankVocabByModuleFreq = (lists) => {
+  const clean = lists.filter((l) => l && l.length);
+  if (clean.length <= 1) return clean[0] || [];
+  const df = new Map(); const canon = new Map(); const order = new Map(); let idx = 0;
+  for (const list of clean) {
+    const seen = new Set();
+    for (const tok of list) {
+      if (!tok || tok.length < 2) continue;
+      const lower = tok.toLowerCase();
+      if (!seen.has(lower)) { df.set(lower, (df.get(lower) || 0) + 1); seen.add(lower); }
+      if (!order.has(lower)) order.set(lower, idx++);
+      const ex = canon.get(lower);
+      if (!ex || (tok.match(/[A-Z]/g) || []).length > (ex.match(/[A-Z]/g) || []).length) canon.set(lower, tok);
+    }
+  }
+  return [...canon.keys()]
+    .sort((a, b) => (df.get(b) - df.get(a)) || (order.get(a) - order.get(b)))
+    .map((lower) => canon.get(lower));
+};
+
 // F1 (normalizacao) + F4 (contrato + fingerprints p/ o planejador) por MODULO.
 // Extrai o fingerprint de CADA transcript UMA vez (do texto CRU) e reusa:
 //   - normMap (F1): collectNorm + vet dos fingerprints.
@@ -579,7 +822,7 @@ const extractFingerprints = async ({ transcripts, readParts, coursesPath, ensure
 // FIX A: extrai do texto CRU (`parseTranscript`), NAO do pre-condensado — a limpeza do
 // Qwen apaga o garble. Degrada gracioso: off/Qwen fora -> tudo vazio.
 // `readParts(t)` -> lista de textos crus (parseTranscript no fs, fetch no Drive).
-const buildModulePrep = async ({ transcripts, readParts, preCondenseOn, normalizeOn, contractOn, incomingContract = '', ensureQwen, moduleTitle, instruction, model, log, ocrVocabulary = [], ocrDiagrams = [], coursesPath } = {}) => {
+const buildModulePrep = async ({ transcripts, readParts, preCondenseOn, normalizeOn, contractOn, incomingContract = '', ensureQwen, moduleTitle, instruction, model, log, ocrVocabulary = [], ocrDiagrams = [], coursesPath, courseTitle, modulePath } = {}) => {
   const base = { normMap: [], fingerprints: [], contract: incomingContract, usages: [], ocrDiagrams };
   if (!preCondenseOn) return base;
   const needFp = normalizeOn || (contractOn && !incomingContract);
@@ -590,11 +833,44 @@ const buildModulePrep = async ({ transcripts, readParts, preCondenseOn, normaliz
   // F4 contrato PRIMEIRO — o normMap da F1 ancora nele (o /alf so morre com o contrato).
   let contract = incomingContract;
   if (contractOn && !contract) {
-    const named = fingerprints.map((fp, i) => `${transcripts[i]?.title || ''}\n${fp}`);
-    const ocrCanonical = buildOcrCanonical(ocrVocabulary, ocrDiagrams);
-    const c = await buildContract(named, instruction, model, ocrCanonical);
-    contract = c.text; if (c.usage) usages.push(c.usage);
-    if (contract) log(`[contract] F4 gerado p/ "${moduleTitle}" (${contract.length} chars${ocrVocabulary.length ? `, OCR: ${ocrVocabulary.length} tokens` : ''})`);
+    // CONTRATO-PREFIXO: o contrato do modulo N cobre 01..N — o atual + os
+    // ANTERIORES que ja tem cache (fingerprint + OCR). Assim, reprocessar so o N
+    // ainda fica coerente com o que veio antes, sem rodar os anteriores (so cache;
+    // nunca sobe o Qwen por eles). Modulo sem anterior (01) = so ele. Prefixo so no
+    // modo fs (precisa das pastas irmas): sem courseTitle/modulePath -> so o atual.
+    const currentNamed = fingerprints.map((fp, i) => `${transcripts[i]?.title || ''}\n${fp}`);
+    let allNamed = currentNamed;
+    const vocabLists = [ocrVocabulary];      // atual primeiro (preserva ranking em empate)
+    const allDiagrams = [...ocrDiagrams];
+    if (coursesPath && courseTitle && modulePath) {
+      const prevDirs = await collectPrevModuleDirs(coursesPath, courseTitle, modulePath);
+      const prevNamed = [];
+      for (const p of prevDirs) {
+        const r = await readCachedPrevModule(coursesPath, p.dir, p.name);
+        if (r.named.length) prevNamed.push(...r.named);
+        if (r.vocabulary.length) vocabLists.push(r.vocabulary);
+        if (r.diagrams.length) allDiagrams.push(...r.diagrams);
+      }
+      if (prevNamed.length) {
+        allNamed = [...prevNamed, ...currentNamed]; // anteriores como CONTEXTO, atual por ultimo
+        log(`[contract] prefixo: +${prevNamed.length} aula(s) de ${prevDirs.length} modulo(s) anterior(es) (cache)`);
+      }
+    }
+    const rankedVocab = rankVocabByModuleFreq(vocabLists);
+    const ocrCanonical = buildOcrCanonical(rankedVocab, allDiagrams);
+    // Cache do contrato (content-addressed): mesmo prefixo (instrucao+OCR+
+    // fingerprints 01..N) -> reusa, NAO re-chama o DeepSeek.
+    const cacheKey = `${instruction} ${ocrCanonical} ${allNamed.join('\n---\n')}`;
+    const cached = coursesPath ? await getCachedContract(coursesPath, cacheKey) : null;
+    if (cached != null) {
+      contract = cached;
+      log(`[contract] F4 cache hit p/ "${moduleTitle}" (${contract.length} chars, ${allNamed.length} aulas)`);
+    } else {
+      const c = await buildContract(allNamed, instruction, model, ocrCanonical);
+      contract = c.text; if (c.usage) usages.push(c.usage);
+      if (contract && coursesPath) await setCachedContract(coursesPath, cacheKey, contract);
+      if (contract) log(`[contract] F4 gerado p/ "${moduleTitle}" (${contract.length} chars, ${allNamed.length} aulas${rankedVocab.length ? `, OCR: ${rankedVocab.length} tokens` : ''})`);
+    }
   }
   // F1 normMap (vet) + correcao ANCORADA no contrato (F4).
   let normMap = [];
@@ -627,8 +903,8 @@ export const generateReadingModule = async (opts) => {
   if (contractOn && preCondenseOn) console.log('[reading] CONTRATO de curso ATIVO (F4)');
   if (opts.ocrVocabulary?.length) console.log(`[reading] OCR ATIVO — ${opts.ocrVocabulary.length} tokens canônicos, ${opts.ocrDiagrams?.length || 0} diagramas`);
   const isDrive = (process.env.COURSE_SOURCE || 'filesystem').trim() === 'drive';
-  // `opts.contractText`: contrato JA sintetizado por-curso (vem do lote); se ausente,
-  // o modulo sintetiza o seu (per-modulo).
+  // `opts.contractText`: contrato JA pronto passado de fora (raro); se ausente, o
+  // modulo monta o seu — PREFIXO 01..N no fs (escaneia anteriores), per-modulo no Drive.
   const shared = { ...opts, preCondenseOn, normalizeOn, clarityOn, contractOn, incomingContract: opts.contractText || '' };
   return isDrive ? generateReadingModuleDrive(shared) : generateReadingModuleFs(shared);
 };
@@ -762,87 +1038,10 @@ export const generateReadingBatch = async ({
     }
   };
 
-  // ---- FASE 1.9: CONTRATO PER-CURSO (F4, TD-14) ----
-  // Um contrato POR CURSO em vez de por módulo: agrega os fingerprints de TODAS as
-  // aulas de TODOS os módulos do curso + o OCR canônico do curso e sintetiza UM
-  // contrato, passado a cada módulo via `contractText`. Pega drift CROSS-módulo
-  // (ex.: a mesma classe/abordagem coerente entre o mód 04 e o 05), essencial p/
-  // cursos build-along. Fingerprints já cacheados (fase de OCR/whisper): barato.
-  // Degrada gracioso: se o Qwen não sobe ou o curso não rende contrato, cai no
-  // per-módulo (cada módulo sintetiza o seu). Só no modo filesystem.
-  const courseContract = new Map();
-  if (contractOn && preCondenseOn && !isDrive) {
-    onProgress({ type: 'phase', phase: 'contract', status: 'start' });
-    // Agrupa jobs por curso preservando a ordem.
-    const byCourse = new Map();
-    for (const job of jobs) {
-      if (!byCourse.has(job.courseTitle)) byCourse.set(job.courseTitle, []);
-      byCourse.get(job.courseTitle).push(job);
-    }
-    // OCR canônico do CURSO: token que aparece em MAIS módulos = mais canônico.
-    const aggregateCourseOcr = (courseJobs) => {
-      const df = new Map(); const canon = new Map(); const diagrams = [];
-      for (const job of courseJobs) {
-        const ocr = ocrByJob.get(job.modulePath); if (!ocr) continue;
-        const seen = new Set();
-        for (const tok of ocr.vocabulary || []) {
-          if (!tok || tok.length < 2) continue;
-          const lower = tok.toLowerCase();
-          if (!seen.has(lower)) { df.set(lower, (df.get(lower) || 0) + 1); seen.add(lower); }
-          const ex = canon.get(lower);
-          if (!ex || (tok.match(/[A-Z]/g) || []).length > (ex.match(/[A-Z]/g) || []).length) canon.set(lower, tok);
-        }
-        for (const d of ocr.diagrams || []) diagrams.push(d);
-      }
-      const vocabulary = [...canon.keys()]
-        .sort((a, b) => (df.get(b) || 0) - (df.get(a) || 0) || a.localeCompare(b))
-        .map((lower) => canon.get(lower));
-      return { vocabulary, diagrams };
-    };
-    for (const [courseTitle, courseJobs] of byCourse) {
-      try {
-        const { vocabulary: courseVocab, diagrams: courseDiagrams } = aggregateCourseOcr(courseJobs);
-        const named = [];
-        let aborted = false;
-        for (const job of courseJobs) {
-          const moduleDir = join(coursesPath, courseTitle, job.modulePath);
-          const transcripts = await collectModuleTranscripts(moduleDir);
-          if (!transcripts.length) continue;
-          const modVocab = ocrByJob.get(job.modulePath)?.vocabulary || [];
-          const readParts = async (t) => {
-            const out = [];
-            for (const part of t.parts || [t]) {
-              try {
-                let text = await parseTranscript(part.path);
-                if (modVocab.length && text) {
-                  const { text: corrected, map } = correctTranscriptWithOcr(text, modVocab);
-                  if (map.length) text = corrected;
-                }
-                out.push(text);
-              } catch { /* ilegivel */ }
-            }
-            return out;
-          };
-          const { fingerprints, ok } = await extractFingerprints({ transcripts, readParts, coursesPath, ensureQwen, log });
-          if (!ok) { aborted = true; break; } // Qwen fora -> cai no per-módulo
-          fingerprints.forEach((fp, i) => named.push(`[${job.moduleTitle}] ${transcripts[i]?.title || ''}\n${fp}`));
-        }
-        if (!aborted && named.length) {
-          const ocrCanonical = buildOcrCanonical(courseVocab, courseDiagrams);
-          const c = await buildContract(named, instruction, model, ocrCanonical);
-          if (c.text) {
-            courseContract.set(courseTitle, c.text);
-            log(`[contract] F4 PER-CURSO p/ "${courseTitle}" (${c.text.length} chars, ${named.length} aulas, OCR ${courseVocab.length} tokens)`);
-            onProgress({ type: 'contract', courseTitle, chars: c.text.length, scope: 'course' });
-          }
-        }
-      } catch (err) {
-        log(`[contract] contrato per-curso de "${courseTitle}" falhou (${err.message}); cai no per-módulo`);
-      }
-    }
-    onProgress({ type: 'phase', phase: 'contract', status: 'done' });
-  }
-
+  // CONTRATO: agora e PREFIXO por módulo (dentro do buildModulePrep) — cada módulo
+  // N sintetiza/reusa o contrato de 01..N escaneando os anteriores (cache). No lote,
+  // como os módulos rodam em ordem, quando chega no N os anteriores já cachearam
+  // fingerprint+OCR -> a cadeia se forma sozinha. Não há mais pré-passada por curso.
   onProgress({ type: 'phase', phase: 'deepseek', status: 'start' });
   try {
     for (const job of jobs) {
@@ -870,9 +1069,7 @@ export const generateReadingBatch = async ({
           preCondense: preCondenseOn, // usa o cache; sobe o Qwen so no 1o miss real
           normalize: normalizeOn, // F1: normalizacao de mis-transcricao por modulo
           clarity: clarityOn, // F3: modo clareza
-          contract: contractOn, // F4: liga o contrato
-          // TD-14: contrato PER-CURSO (fase 1.9); vazio -> módulo sintetiza o seu (per-módulo).
-          contractText: courseContract.get(job.courseTitle) || '',
+          contract: contractOn, // F4: liga o contrato (prefixo 01..N montado no buildModulePrep)
           ocrVocabulary: ocrByJob.get(job.modulePath)?.vocabulary || [], // OCR: correção ground-truth
           ocrDiagrams: ocrByJob.get(job.modulePath)?.diagrams || [], // OCR: Mermaid fiel
           ensureQwen,
@@ -961,6 +1158,7 @@ const generateReadingModuleFs = async ({
     transcripts, preCondenseOn, normalizeOn, contractOn, incomingContract, ensureQwen,
     moduleTitle, instruction, model, log: (m) => console.log(m),
     ocrVocabulary: ocrVocab, ocrDiagrams: ocrDiags, coursesPath,
+    courseTitle, modulePath, // fs: habilita o contrato-prefixo (escaneia modulos anteriores)
     readParts: async (t) => {
       const out = [];
       for (const part of t.parts || [t]) {
@@ -1008,6 +1206,22 @@ const generateReadingModuleFs = async ({
     }
   } catch { /* outRoot novo, nada a limpar */ }
   await fs.mkdir(outDir, { recursive: true });
+  console.log(`[leitura] PROMPT_VERSION=${PROMPT_VERSION} | 2etapas=${twoStageEnabled()} memoria=${courseMemoryEnabled()} | ${plan.length} aula(s): ${moduleTitle}`);
+
+  // F2.1 Course Memory: pre-passe extrai os fatos de TODAS as aulas (paralelo, cacheado)
+  // pra montar o "ja ensinado" acumulado por posicao no plano. O loop de redacao abaixo
+  // so escreve (a ETAPA 1 vira cache hit). So roda com 2 etapas + memoria ligadas.
+  let memoryByIdx = [];
+  if (twoStageEnabled() && courseMemoryEnabled()) {
+    const titles = plan.map((l) => cleanLessonTitle(l.title));
+    const factsByIdx = await mapPool(plan, 4, async (lesson, idx) => {
+      const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
+      try {
+        return await extractFactsForLesson({ lessonTitle: titles[idx], sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, contract, ocrVocabulary: ocrVocab });
+      } catch { return null; }
+    });
+    memoryByIdx = buildCourseMemory(factsByIdx, titles);
+  }
 
   // Condensa as aulas planejadas em paralelo (ate 4 por vez). A ordem do
   // arquivo (NN) segue a posicao no plano, nao a de conclusao.
@@ -1017,7 +1231,7 @@ const generateReadingModuleFs = async ({
     const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
     let res;
     try {
-      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab });
+      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab, courseMemory: memoryByIdx[idx] || '' });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };
       } else {
@@ -1172,7 +1386,7 @@ const generateReadingModuleDrive = async ({
         throw new Error(`falha ao ler ${readErrors}/${totalParts} transcricao(oes) no Drive`);
       }
       const out = await condenseText({
-        lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab,
+        lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab, coursesPath,
       });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };

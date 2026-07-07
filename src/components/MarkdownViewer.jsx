@@ -22,6 +22,13 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
   // Sem courseTitle/lessonPrefix, vira no-op (uso fora do contexto de aula).
   useReadTimer(courseTitle, lessonPrefix, "resumo");
 
+  // Titulo da aula: a leitura (modo clareza) comeca em "## O nucleo", sem um `#`, entao
+  // a pagina ficava sem titulo. Derivamos do prefixo (tira o numero NN da frente).
+  const lessonTitle = useMemo(
+    () => (lessonPrefix ? lessonPrefix.replace(/^\d+\s*/, "").trim() : ""),
+    [lessonPrefix],
+  );
+
   // Regenera SO um diagrama (botao no MermaidDiagram), sem recondensar a aula.
   // Disponivel apenas no contexto de uma aula (curso + prefixo conhecidos).
   const canRegen = !!(courseTitle && lessonPrefix);
@@ -113,28 +120,28 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
           const isStandalone =
             typeof children === "string" && children.trim().length > 0;
           return isStandalone ? (
-            <p className="text-slate-300 leading-[1.85] text-[15px] mb-4">
+            <p className="text-slate-300 leading-[2] text-[15px] mb-4">
               {children}
             </p>
           ) : (
-            <p className="text-slate-300 leading-[1.7] text-[15px] mb-3">
+            <p className="text-slate-300 leading-[2] text-[15px] mb-3">
               {children}
             </p>
           );
         },
         ul: ({ children }) => (
-          <ul className="space-y-2 my-3 pl-1 [&_li]:text-slate-300 [&_li]:leading-[1.7]">
+          <ul className="space-y-2.5 my-3 pl-1 [&_li]:text-slate-300 [&_li]:leading-[1.95]">
             {children}
           </ul>
         ),
         ol: ({ children }) => (
-          <ol className="space-y-2 my-3 pl-4 [&_li]:text-slate-300 [&_li]:leading-[1.7]">
+          <ol className="space-y-2.5 my-3 pl-4 [&_li]:text-slate-300 [&_li]:leading-[1.95]">
             {children}
           </ol>
         ),
         li: ({ children }) => (
-          <li className="flex items-start gap-2.5 text-[15px] mb-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-blue-400/60 mt-2.5 flex-shrink-0" />
+          <li className="flex items-start gap-2.5 text-[15px] mb-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-400/60 mt-3 flex-shrink-0" />
             <span>{children}</span>
           </li>
         ),
@@ -144,7 +151,7 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
           </strong>
         ),
         em: ({ children }) => (
-          <em className="text-slate-300 italic not-italic bg-slate-800/40 px-1.5 py-0.5 rounded text-[14px]">
+          <em className="text-slate-300 italic not-italic bg-slate-800/40 px-1.5 py-0.5 rounded text-[14px] decoration-clone">
             {children}
           </em>
         ),
@@ -168,7 +175,7 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
           }
           return isInline ? (
             <code
-              className="text-[13px] font-mono bg-slate-800/70 text-cyan-300 px-1.5 py-0.5 rounded-md border border-slate-700/40"
+              className="text-[13px] font-mono bg-slate-800/70 text-cyan-300 px-1.5 py-0.5 rounded-md border border-slate-700/40 decoration-clone"
               {...props}
             >
               {children}
@@ -235,6 +242,18 @@ const MarkdownViewer = ({ fileUrl, courseTitle, lessonPrefix }) => {
     <div className="h-full flex flex-col bg-slate-950">
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
         <div className="w-full px-4 lg:px-8 py-8">
+        {/* Titulo da aula (fora do articleRef de proposito: nao entra no mapa da
+            narracao nem e realçado). So quando o markdown nao ja traz um `#`. */}
+        {lessonTitle && !/^\s*#\s/.test(content) && (
+          <div className="mb-7 pb-4 border-b border-slate-800/60">
+            <div className="text-[11px] font-medium uppercase tracking-wider text-slate-500 mb-1.5">
+              Leitura da aula
+            </div>
+            <h1 className="text-2xl font-bold text-slate-100 tracking-tight leading-tight">
+              {lessonTitle}
+            </h1>
+          </div>
+        )}
         <article ref={articleRef} className="space-y-6">
           {markdownEl}
         </article>

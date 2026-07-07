@@ -15,11 +15,22 @@
 import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
+import { tmpdir, cpus } from 'os';
+
+// Concorrencia do pHash: cada frame vira 1 ffmpeg efemero (16x16 cinza). Rodar
+// em serie serializava centenas de spawns e travava a CPU (o passo mais lento do
+// OCR — o PaddleOCR em si e rapido na GPU). Paraleliza limitado aos nucleos.
+const PHASH_CONCURRENCY = Math.max(2, Math.min(8, (cpus()?.length || 4)));
+const mapPool = async (items, limit, fn) => {
+  let next = 0;
+  const worker = async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+};
 
 const SCENE_THRESHOLD = 0.40;   // sensitividade do scene-filter do ffmpeg
 const FALLBACK_FPS = 0.5;      // 1 frame a cada 2s se scene-filter pega pouco
 const MAX_FRAMES = 40;         // teto após dedup (40 frames é bom pra OCR)
+const IFRAME_PRECAP = 80;      // teto de I-frames antes do pHash (limita o custo do dedup; o dedup+amostra refina pra MAX_FRAMES)
 const MIN_FRAMES = 4;          // abaixo disso, usa fallback fps
 const RESOLUTION = '1920x1080';
 const PHASH_HAMMING_THRESHOLD = 6; // frames com distância Hamming < 6 são dedup (mais permissivo)
@@ -92,11 +103,16 @@ const dedupAndSample = async (frames, log = () => {}) => {
 
   // 1. Dedup perceptual: marca duplicatas (NÃO apaga ainda — podemos precisar
   // delas se o vídeo for tão estático que o dedup deixa < MIN_FRAMES).
+  // Os pHashes (1 ffmpeg por frame) sao calculados EM PARALELO; a comparacao de
+  // dedup segue SEQUENCIAL e identica (mantem o 1o de cada cluster, na ordem).
+  const hashes = new Array(frames.length);
+  await mapPool(frames, PHASH_CONCURRENCY, async (f, i) => { hashes[i] = await phashPerceptual(f); });
+
   const kept = [];
   const keptHashes = [];
   const isDup = new Array(frames.length).fill(false);
   for (let i = 0; i < frames.length; i++) {
-    const h = await phashPerceptual(frames[i]);
+    const h = hashes[i];
     let dup = false;
     for (const existing of keptHashes) {
       if (hamming(h, existing) < PHASH_HAMMING_THRESHOLD) { dup = true; break; }
@@ -217,6 +233,39 @@ const extractViaFfmpeg = async (videoPath, dir, log) => {
   return frames;
 };
 
+// Extração RÁPIDA: decodifica SÓ os keyframes (I-frames) do vídeo — 1 frame por
+// GOP em vez de todos os ~25fps. ~10x mais rápido que decodificar o vídeo inteiro
+// (scene-filter/fps), e os I-frames já cobrem o vídeo ao longo do tempo (o encoder
+// põe um a cada poucos segundos + nas trocas de cena). São intra-codificados
+// (full-quality), ótimos pra OCR. Se o vídeo tiver I-frames de menos (GOP longo),
+// o chamador cai pro scene-filter/fps.
+const extractViaIframes = async (videoPath, dir) => {
+  const out = join(dir, 'if_%04d.png');
+  const { code } = await run('ffmpeg', [
+    '-y', '-skip_frame', 'nokey', '-i', videoPath,
+    '-vf', `scale=${RESOLUTION}`,
+    '-vsync', 'vfr', '-q:v', '2',
+    out,
+  ]);
+  if (code !== 0) return [];
+  return (await fs.readdir(dir))
+    .filter((f) => /^if_\d+\.png$/.test(f))
+    .sort()
+    .map((f) => join(dir, f));
+};
+
+// Reduz uniformemente uma lista de frames a `cap`, apagando os descartados.
+// Usado pra limitar quantos I-frames vão pro pHash (o dedup depois refina).
+const capUniform = async (frames, cap) => {
+  if (frames.length <= cap) return frames;
+  const step = frames.length / cap;
+  const keep = new Set();
+  const kept = [];
+  for (let i = 0; i < cap; i++) { const f = frames[Math.floor(i * step)]; keep.add(f); kept.push(f); }
+  for (const f of frames) if (!keep.has(f)) await fs.unlink(f).catch(() => {});
+  return kept;
+};
+
 // Extrai keyframes de um video. Retorna { dir, frames: [path...] }.
 // `dir` é temporário — o chamador deve remover após consumir.
 export const extractKeyframes = async ({ videoPath, log = () => {} } = {}) => {
@@ -225,17 +274,27 @@ export const extractKeyframes = async ({ videoPath, log = () => {} } = {}) => {
   const dir = join(tmpdir(), `keyframes-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   await fs.mkdir(dir, { recursive: true });
 
-  // PySceneDetect (preferencial) ou ffmpeg
-  let frames = [];
-  if (await hasScenedetect()) {
-    log('[keyframes] usando PySceneDetect');
-    frames = await extractViaScenedetect(videoPath, dir, log);
-    if (frames.length < MIN_FRAMES) {
-      log('[keyframes] scenedetect pegou pouco; tentando ffmpeg');
+  // 1. RAPIDO: só I-frames (decode ~10x menor). Cobre a maioria dos vídeos de
+  //    aula (screencast/slide/código). Pré-limita a IFRAME_PRECAP pra baratear o
+  //    pHash — o dedup perceptual + amostragem depois refinam pra MAX_FRAMES.
+  let frames = await extractViaIframes(videoPath, dir);
+  if (frames.length >= MIN_FRAMES) {
+    frames = await capUniform(frames, IFRAME_PRECAP);
+    log(`[keyframes] I-frames: ${frames.length} (decode rápido)`);
+  } else {
+    // 2. Poucos I-frames (GOP longo/atípico): cai pro decode completo.
+    for (const f of frames) await fs.unlink(f).catch(() => {});
+    if (await hasScenedetect()) {
+      log('[keyframes] poucos I-frames; usando PySceneDetect');
+      frames = await extractViaScenedetect(videoPath, dir, log);
+      if (frames.length < MIN_FRAMES) {
+        log('[keyframes] scenedetect pegou pouco; tentando ffmpeg');
+        frames = await extractViaFfmpeg(videoPath, dir, log);
+      }
+    } else {
+      log('[keyframes] poucos I-frames; usando ffmpeg scene-filter/fps');
       frames = await extractViaFfmpeg(videoPath, dir, log);
     }
-  } else {
-    frames = await extractViaFfmpeg(videoPath, dir, log);
   }
 
   if (!frames.length) {
