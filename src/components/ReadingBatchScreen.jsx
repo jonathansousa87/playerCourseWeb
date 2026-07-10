@@ -1,11 +1,11 @@
 import React, { useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, BookOpenText, ChevronDown, ChevronRight, Loader2, Check,
-  AlertTriangle, X, Sparkles, SlidersHorizontal, Mic, Cpu, Cloud, ScanText,
+  AlertTriangle, X, Sparkles, SlidersHorizontal, Mic, Cpu, Cloud, ScanText, Eraser,
 } from "lucide-react";
 import { INSTRUCTION_PRESETS } from "../utils/instructionPresets";
 import { collectModules, generateReadingCourseBatch, MATERIAL_KINDS } from "../utils/readingGeneration";
-import { clearPrecondenseCache } from "../utils/progressApi";
+import { clearPrecondenseCache, clearFactsCache } from "../utils/progressApi";
 
 const MODELS = [
   { key: "deepseek-v4-flash", label: "deepseek-v4-flash (rapido)" },
@@ -97,6 +97,21 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
     try { await clearPrecondenseCache(); setCacheMsg("cache do Qwen limpo"); }
     catch (e) { setCacheMsg(`falhou: ${e.message}`); }
     setTimeout(() => setCacheMsg(""), 5000);
+  };
+
+  // Cache dos FATOS extraidos (.facts-cache), por curso — diferente do cache do
+  // Qwen acima. Cada curso tem seu proprio status/mensagem.
+  const [factsCacheStatus, setFactsCacheStatus] = useState({}); // { [courseTitle]: "limpando…" | "limpo" | "falhou: ..." }
+  const handleClearFactsCache = async (courseTitle) => {
+    if (!window.confirm(`Limpar o cache de fatos extraidos (DeepSeek) de "${courseTitle}"? Na proxima geracao ele reextrai do zero (mais lento e mais caro), so pra esse curso.`)) return;
+    setFactsCacheStatus((s) => ({ ...s, [courseTitle]: "limpando…" }));
+    try {
+      await clearFactsCache(courseTitle);
+      setFactsCacheStatus((s) => ({ ...s, [courseTitle]: "limpo" }));
+    } catch (e) {
+      setFactsCacheStatus((s) => ({ ...s, [courseTitle]: `falhou: ${e.message}` }));
+    }
+    setTimeout(() => setFactsCacheStatus((s) => ({ ...s, [courseTitle]: undefined })), 5000);
   };
 
   const [running, setRunning] = useState(false);
@@ -522,14 +537,30 @@ const ReadingBatchScreen = ({ courses, onClose }) => {
             const open = expanded.has(c.title);
             return (
               <div key={c.title} className="border border-slate-700/40 rounded-xl overflow-hidden">
-                <button
-                  onClick={() => toggleExpanded(c.title)}
-                  className="w-full flex items-center gap-2 px-3 py-2.5 bg-slate-800/50 hover:bg-slate-800/80 text-left"
-                >
-                  {open ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
-                  <span className="flex-1 min-w-0 truncate text-sm" title={c.title}>{c.title}</span>
-                  <span className="text-[11px] text-slate-400">{sel.size}/{mods.length}</span>
-                </button>
+                <div className="w-full flex items-center gap-2 px-3 py-2.5 bg-slate-800/50 hover:bg-slate-800/80">
+                  <button
+                    onClick={() => toggleExpanded(c.title)}
+                    className="flex-1 min-w-0 flex items-center gap-2 text-left"
+                  >
+                    {open ? <ChevronDown className="w-4 h-4 text-slate-400 flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-slate-400 flex-shrink-0" />}
+                    <span className="flex-1 min-w-0 truncate text-sm" title={c.title}>{c.title}</span>
+                    <span className="text-[11px] text-slate-400 flex-shrink-0">{sel.size}/{mods.length}</span>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleClearFactsCache(c.title); }}
+                    title="Limpar cache de fatos extraidos (DeepSeek) so deste curso"
+                    className="flex-shrink-0 p-1.5 rounded-lg text-slate-400 hover:text-amber-300 hover:bg-amber-500/10"
+                  >
+                    {factsCacheStatus[c.title] === "limpando…"
+                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      : <Eraser className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+                {factsCacheStatus[c.title] && factsCacheStatus[c.title] !== "limpando…" && (
+                  <div className={`px-3 py-1 text-[11px] ${factsCacheStatus[c.title].startsWith("falhou") ? "text-red-400" : "text-emerald-400"} bg-slate-900/40`}>
+                    cache de fatos: {factsCacheStatus[c.title]}
+                  </div>
+                )}
                 {open && (
                   <div className="p-2 space-y-1 bg-slate-900/40">
                     <div className="flex gap-2 px-1 pb-1 text-[11px]">

@@ -7,8 +7,17 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { query } from '../../db/index.js';
 import { getCoursesPath, getCourseSource, getDriveFolderId } from '../config.js';
+import { requireAdmin } from '../auth.js';
 
 const router = express.Router();
+// IMPORTANTE: precisa do prefixo '/api/maintenance' aqui — um router.use(fn)
+// sem path, montado com app.use(maintenanceRouter) (sem prefixo no server.js),
+// vira um catch-all pra QUALQUER request que chegue ate este router na cadeia
+// de middlewares, mesmo path que nao bate com nenhuma rota deste arquivo (ex.:
+// bloqueou /api/me pra usuario nao-admin, silenciosamente, sem log nenhum
+// daqui — o request nunca chegava no meRouter, mais abaixo na cadeia).
+router.use('/api/maintenance', requireAdmin); // orfaos/renomear/apagar curso sao operacoes destrutivas globais
+
 const dec = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
 
 // Tabelas com course_title. scope 'global' = sem user_id (materiais/cache

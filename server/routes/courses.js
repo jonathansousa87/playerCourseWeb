@@ -9,6 +9,7 @@ import { dirname, join } from 'path';
 import { getCoursesPath, setCoursesPath, getCourseSource, getDriveFolderId } from '../config.js';
 import { isTranscriptOfVideo } from '../transcriptDetect.js';
 import { query } from '../../db/index.js';
+import { allowedCourseTitles } from '../courseAccess.js';
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
@@ -214,6 +215,16 @@ async function readCourseContent(path, basePath = '') {
 // Serve arquivos de midia. Em modo Drive o parametro :file e o fileId do Drive.
 router.get('/cursos/:file(*)', async (req, res) => {
   const rawPath = decodeFileName(req.params.file);
+  // Primeiro segmento do path e sempre o titulo do curso, nos dois modos (em
+  // modo Drive o front manda cursos/{courseTitle}/{fileId}, so o fileId
+  // importa pro streaming em si, mas o courseTitle ja vem junto).
+  const courseTitleForGate = rawPath.split('/')[0];
+  if (req.userRole !== 'admin') {
+    const allowed = await allowedCourseTitles(req.userId);
+    if (!allowed.has(courseTitleForGate)) {
+      return res.status(403).json({ error: 'Sem permissao para acessar este curso.' });
+    }
+  }
   try {
     if (getCourseSource() === 'drive') {
       const { streamFile, getSharedEmails } = await import('../drive/index.js');
@@ -325,7 +336,11 @@ router.get('/api/courses', async (req, res) => {
           return res.json([]); // retorna lista vazia — sem expor mensagem de erro
         }
       }
-      const folders = await listFolders(folderId);
+      let folders = await listFolders(folderId);
+      if (_req.userRole !== 'admin') {
+        const allowedTitles = await allowedCourseTitles(_req.userId);
+        folders = folders.filter((f) => allowedTitles.has(f.name));
+      }
       const courseData = await Promise.all(
         folders.map(async (folder) => {
           const courseTitle = folder.name;
@@ -362,9 +377,11 @@ router.get('/api/courses', async (req, res) => {
     }
 
     const courses = await fs.readdir(coursesPath, { withFileTypes: true });
+    const allowedTitles = _req.userRole !== 'admin' ? await allowedCourseTitles(_req.userId) : null;
     const courseData = await Promise.all(
       courses
         .filter((c) => c.isDirectory())
+        .filter((c) => !allowedTitles || allowedTitles.has(decodeFileName(c.name)))
         .map(async (course) => {
           const courseTitle = decodeFileName(course.name);
           const coursePath = join(coursesPath, course.name);

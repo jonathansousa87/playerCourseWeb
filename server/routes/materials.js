@@ -1,6 +1,8 @@
 import express from 'express';
 import { query } from '../../db/index.js';
 import { getCourseSource } from '../config.js';
+import { requireCourseAccess } from '../courseAccess.js';
+import { requireAdmin } from '../auth.js';
 
 const router = express.Router();
 
@@ -22,7 +24,7 @@ const resolveAudioPointer = (content) => {
 
 // GET /api/materials/:course/:prefix/:kind
 // Retorna o conteudo em texto puro para o viewer no frontend.
-router.get('/api/materials/:course/:prefix/:kind', async (req, res) => {
+router.get('/api/materials/:course/:prefix/:kind', requireCourseAccess, async (req, res) => {
   const { course, prefix, kind } = req.params;
   try {
     const { rows } = await query(
@@ -40,7 +42,7 @@ router.get('/api/materials/:course/:prefix/:kind', async (req, res) => {
 // GET /api/materials-by-kind/:course/:kind — lista as aulas (lesson_prefix) que
 // tem aquele material no curso. Usado pela tela de revisao (aba Diario tecnico).
 // Base distinta de /api/materials/... pra nao colidir com /:course/:prefix/:kind.
-router.get('/api/materials-by-kind/:course/:kind', async (req, res) => {
+router.get('/api/materials-by-kind/:course/:kind', requireCourseAccess, async (req, res) => {
   const { course, kind } = req.params;
   try {
     const { rows } = await query(
@@ -54,7 +56,7 @@ router.get('/api/materials-by-kind/:course/:kind', async (req, res) => {
 });
 
 // GET /api/materials/:course/:prefix  — lista os kinds disponíveis no DB
-router.get('/api/materials/:course/:prefix', async (req, res) => {
+router.get('/api/materials/:course/:prefix', requireCourseAccess, async (req, res) => {
   const { course, prefix } = req.params;
   try {
     const { rows } = await query(
@@ -68,7 +70,7 @@ router.get('/api/materials/:course/:prefix', async (req, res) => {
 });
 
 // PUT /api/materials/:course/:prefix/:kind  — salva/atualiza conteudo (usado pelo diario via editor)
-router.put('/api/materials/:course/:prefix/:kind', async (req, res) => {
+router.put('/api/materials/:course/:prefix/:kind', requireCourseAccess, async (req, res) => {
   const { course, prefix, kind } = req.params;
   const { content } = req.body;
   if (typeof content !== 'string') return res.status(400).json({ error: 'content obrigatorio' });
@@ -90,7 +92,8 @@ router.put('/api/materials/:course/:prefix/:kind', async (req, res) => {
 // Remove apenas conteudo gerado (resumo/quiz/exemplos/diario/piada em
 // lesson_materials, decks de flashcards e pre-questoes). NAO mexe em
 // progresso, anotacoes do aluno, nem nos arquivos do curso no Drive/disco.
-router.delete('/api/materials/:course', async (req, res) => {
+// Destrutivo e de impacto global (materiais nao sao por-usuario) — so admin.
+router.delete('/api/materials/:course', requireAdmin, async (req, res) => {
   const course = dec(req.params.course);
   try {
     const materials = await query(

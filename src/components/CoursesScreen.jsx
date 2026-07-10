@@ -1,12 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { LogOut, Settings, BarChart3, RefreshCw, Keyboard, ChevronRight, Bell, AlertTriangle, ShieldAlert, BookOpenText, Wallet, UploadCloud, Loader2, Check } from "lucide-react";
+import { LogOut, Settings, Palette, BarChart3, RefreshCw, Keyboard, ChevronRight, Bell, AlertTriangle, ShieldAlert, Wallet, UploadCloud, Loader2, Check } from "lucide-react";
 import CourseCard from "./CourseCard";
 import { uploadReadingCourseToDrive } from "../utils/progressApi";
 import ConfigModal from "./ConfigModal";
+import AppearanceModal from "./AppearanceModal";
 import OrphanCoursesModal from "./OrphanCoursesModal";
-import AdminModal from "./AdminModal";
-import ReadingBatchPicker from "./ReadingBatchPicker";
-import ReadingBatchScreen from "./ReadingBatchScreen";
 import {
   countLessons,
   countCompletedLessons,
@@ -28,13 +26,12 @@ const CoursesScreen = ({
   showConfigModal,
   setShowConfigModal,
   onSelectCourse,
-  onClearMaterials,
   onOpenTyping,
   typingCompleted = 0,
   onView,
   onCoursesChanged,
 }) => {
-  const { user, logout } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
 
   // Revisao espacada vencida (por curso) — alimenta o banner + os selos.
   const [dueByCourse, setDueByCourse] = useState({});
@@ -55,11 +52,7 @@ const CoursesScreen = ({
   // Cursos orfaos (no banco mas nao na fonte atual).
   const [orphanCount, setOrphanCount] = useState(0);
   const [showOrphans, setShowOrphans] = useState(false);
-  const [showAdmin, setShowAdmin] = useState(false);
-  // Geracao de curso de leitura em lote: o picker escolhe os cursos; a
-  // ReadingBatchScreen (3 colunas) configura e processa todos.
-  const [showReadingPicker, setShowReadingPicker] = useState(false);
-  const [batchCourses, setBatchCourses] = useState([]);
+  const [showAppearance, setShowAppearance] = useState(false);
   // Saldo DeepSeek (consulta leve, nao gasta creditos de geracao).
   const [balance, setBalance] = useState(null);
 
@@ -100,15 +93,6 @@ const CoursesScreen = ({
     }
   };
 
-  const handleUploadDrive = async (course) => {
-    if (driveUp[course.title]?.status === "running") return;
-    if (!window.confirm(`Enviar "${course.title}" pro Google Drive? (recria a estrutura e substitui arquivos de mesmo nome)`)) return;
-    await uploadOneCourseToDrive(course);
-    // Sem isso, a lista de cursos em memoria continua com os paths antigos
-    // do filesystem (curso some ou toca com URL quebrada em modo drive).
-    onCoursesChanged?.();
-  };
-
   // Progresso do LOTE (persistente — nao some quando sai do modo de selecao). Cada
   // card AINDA mostra o proprio selo de status (`driveUp`), mas essa barra fica
   // fixa no topo da grade mostrando "X/N" + o curso atual, ate o usuario fechar.
@@ -138,12 +122,14 @@ const CoursesScreen = ({
     setDriveBatch((b) => (b ? { ...b, current: null } : b)); // terminou; fica ate o usuario fechar
     onCoursesChanged?.();
   };
-  useEffect(() => { fetchDeepseekBalance().then(setBalance).catch(() => {}); }, []);
+  // /api/ia/balance agora exige admin — nao-admin nem tenta buscar.
+  useEffect(() => { if (isAdmin) fetchDeepseekBalance().then(setBalance).catch(() => {}); }, [isAdmin]);
   const reloadOrphans = () =>
     fetchOrphanCourses()
       .then((res) => setOrphanCount((res.orphans || []).length))
       .catch(() => {});
-  useEffect(() => { reloadOrphans(); }, []);
+  // /api/maintenance/* agora exige admin — nao-admin nem tenta buscar.
+  useEffect(() => { if (isAdmin) reloadOrphans(); }, [isAdmin]);
 
   const totalAllLessons = courses.reduce(
     (sum, c) => sum + countLessons(c.content || []),
@@ -194,7 +180,7 @@ const CoursesScreen = ({
                 </div>
               </div>
             )}
-            {balance && balance.balance != null && (
+            {isAdmin && balance && balance.balance != null && (
               <div
                 title="Saldo DeepSeek (creditos de IA)"
                 className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-sm ${
@@ -225,42 +211,48 @@ const CoursesScreen = ({
               <RefreshCw className="w-4 h-4" />
               <span className="hidden sm:inline">Revisar</span>
             </button>
+            {isAdmin && (
+              <button
+                onClick={() => { setDriveSelectMode((v) => !v); setDriveSelected(new Set()); }}
+                className={`flex items-center gap-2 px-3.5 py-2 border rounded-xl transition-all text-sm ${
+                  driveSelectMode
+                    ? "bg-sky-600/25 border-sky-500/40 text-sky-200"
+                    : "bg-sky-600/15 hover:bg-sky-600/25 border-sky-500/20 text-sky-300 hover:text-sky-200"
+                }`}
+                title="Selecionar varios cursos de leitura pra enviar ao Google Drive de uma vez"
+              >
+                <UploadCloud className="w-4 h-4" />
+                <span className="hidden sm:inline">{driveSelectMode ? "Cancelar selecao" : "Enviar vários p/ Drive"}</span>
+              </button>
+            )}
+            {isAdmin && (
+              <button
+                onClick={() => onView("admin")}
+                className="flex items-center gap-2 px-3.5 py-2 bg-purple-600/15 hover:bg-purple-600/25 border border-purple-500/20 rounded-xl transition-all text-sm text-purple-300 hover:text-purple-200"
+                title="Painel administrativo"
+              >
+                <ShieldAlert className="w-4 h-4" />
+                <span className="hidden sm:inline">Admin</span>
+              </button>
+            )}
             <button
-              onClick={() => setShowReadingPicker(true)}
-              className="flex items-center gap-2 px-3.5 py-2 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 rounded-xl transition-all text-sm text-emerald-300 hover:text-emerald-200"
-              title="Gerar curso de leitura (escolha varios cursos)"
-            >
-              <BookOpenText className="w-4 h-4" />
-              <span className="hidden sm:inline">Gerar leitura</span>
-            </button>
-            <button
-              onClick={() => { setDriveSelectMode((v) => !v); setDriveSelected(new Set()); }}
-              className={`flex items-center gap-2 px-3.5 py-2 border rounded-xl transition-all text-sm ${
-                driveSelectMode
-                  ? "bg-sky-600/25 border-sky-500/40 text-sky-200"
-                  : "bg-sky-600/15 hover:bg-sky-600/25 border-sky-500/20 text-sky-300 hover:text-sky-200"
-              }`}
-              title="Selecionar varios cursos de leitura pra enviar ao Google Drive de uma vez"
-            >
-              <UploadCloud className="w-4 h-4" />
-              <span className="hidden sm:inline">{driveSelectMode ? "Cancelar selecao" : "Enviar vários p/ Drive"}</span>
-            </button>
-            <button
-              onClick={() => setShowAdmin(true)}
-              className="flex items-center gap-2 px-3.5 py-2 bg-purple-600/15 hover:bg-purple-600/25 border border-purple-500/20 rounded-xl transition-all text-sm text-purple-300 hover:text-purple-200"
-              title="Modo admin: renomear ou excluir cursos"
-            >
-              <ShieldAlert className="w-4 h-4" />
-              <span className="hidden sm:inline">Admin</span>
-            </button>
-            <button
-              onClick={() => setShowConfigModal(true)}
+              onClick={() => setShowAppearance(true)}
               className="flex items-center gap-2 px-3.5 py-2 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/50 rounded-xl transition-all text-sm text-slate-300 hover:text-white"
-              title="Configuracoes"
+              title="Aparencia (tema)"
             >
-              <Settings className="w-4 h-4" />
-              <span className="hidden sm:inline">Config</span>
+              <Palette className="w-4 h-4" />
+              <span className="hidden sm:inline">Aparência</span>
             </button>
+            {isAdmin && (
+              <button
+                onClick={() => setShowConfigModal(true)}
+                className="flex items-center gap-2 px-3.5 py-2 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/50 rounded-xl transition-all text-sm text-slate-300 hover:text-white"
+                title="Configuracoes"
+              >
+                <Settings className="w-4 h-4" />
+                <span className="hidden sm:inline">Config</span>
+              </button>
+            )}
             <button
               onClick={logout}
               className="flex items-center gap-2 px-3.5 py-2 bg-slate-800/80 hover:bg-red-900/40 border border-slate-700/50 hover:border-red-700/50 rounded-xl transition-all text-sm text-slate-400 hover:text-red-300"
@@ -415,7 +407,6 @@ const CoursesScreen = ({
             );
             const due = dueByCourse[course.title] || 0;
             const isReading = / - Leitura$/.test(course.title);
-            const up = driveUp[course.title];
             const selected = driveSelected.has(course.title);
             return (
               <div
@@ -426,7 +417,7 @@ const CoursesScreen = ({
                 }}
                 className={`cursor-pointer relative ${driveSelectMode && !isReading ? "opacity-50" : ""}`}
               >
-                {isReading && (driveSelectMode ? (
+                {isReading && driveSelectMode && (
                   <button
                     onClick={(e) => { e.stopPropagation(); toggleDriveSelected(course.title); }}
                     title="Marcar este curso pra enviar ao Google Drive"
@@ -439,27 +430,7 @@ const CoursesScreen = ({
                     {selected ? <Check className="w-3 h-3" /> : <UploadCloud className="w-3 h-3" />}
                     {selected ? "Selecionado" : "Marcar"}
                   </button>
-                ) : (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleUploadDrive(course); }}
-                    disabled={up?.status === "running"}
-                    title={
-                      up?.status === "done" && up.orphansRemoved > 0
-                        ? `Enviado — ${up.orphansRemoved} arquivo(s) órfão(s) de gerações anteriores removido(s) do Drive`
-                        : "Enviar este curso de leitura para o Google Drive"
-                    }
-                    className="absolute top-2 left-2 z-10 flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-900/85 border border-slate-600/50 text-slate-200 text-[11px] font-medium shadow hover:bg-slate-800 disabled:opacity-70"
-                  >
-                    {up?.status === "running" ? <Loader2 className="w-3 h-3 animate-spin" />
-                      : up?.status === "done" ? <Check className="w-3 h-3 text-emerald-400" />
-                        : up?.status === "error" || up?.status === "warn" ? <AlertTriangle className="w-3 h-3 text-amber-400" />
-                          : <UploadCloud className="w-3 h-3" />}
-                    {up?.status === "running" ? `${up.done}/${up.total}`
-                      : up?.status === "done" ? "no Drive"
-                        : up?.status === "warn" ? `${up.failed} falha(s)`
-                          : up?.status === "error" ? "erro" : "Drive"}
-                  </button>
-                ))}
+                )}
                 {due > 0 && (
                   <span
                     className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/90 text-amber-950 text-[11px] font-bold shadow"
@@ -476,11 +447,6 @@ const CoursesScreen = ({
                   completedCount={completed}
                   durationSeconds={durationSeconds}
                   index={index}
-                  onClearMaterials={
-                    onClearMaterials
-                      ? () => onClearMaterials(course)
-                      : undefined
-                  }
                 />
               </div>
             );
@@ -502,29 +468,9 @@ const CoursesScreen = ({
           onCleaned={reloadOrphans}
         />
       )}
-      {showAdmin && (
-        <AdminModal
-          courses={courses}
-          onClose={() => setShowAdmin(false)}
-          onChanged={() => { onCoursesChanged?.(); reloadOrphans(); }}
-        />
+      {showAppearance && (
+        <AppearanceModal onClose={() => setShowAppearance(false)} />
       )}
-
-      {showReadingPicker && (
-        <ReadingBatchPicker
-          courses={courses}
-          onClose={() => setShowReadingPicker(false)}
-          onStart={(queue) => { setBatchCourses(queue); setShowReadingPicker(false); }}
-        />
-      )}
-
-      {batchCourses.length > 0 && (
-        <ReadingBatchScreen
-          courses={batchCourses}
-          onClose={() => { setBatchCourses([]); onCoursesChanged?.(); }}
-        />
-      )}
-
     </div>
   );
 };

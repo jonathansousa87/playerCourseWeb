@@ -1056,7 +1056,14 @@ covered. Do NOT introduce technical facts, code, resources or steps that are NOT
 (this REPLACES transcript fidelity — the fact sheet IS the lesson). You MAY add plain-language
 explanation, analogies and connective tissue to teach it well, but no new technical claims.${instruction ? `
 
-ADDITIONAL USER INSTRUCTION (top priority): """${instruction}""" — the fact sheet already reflects it; apply its tone/scope while writing.` : ''}
+ADDITIONAL USER INSTRUCTION (top priority): """${instruction}"""
+Apply it FULLY while writing — not just tone/scope. Everything you write must obey it, whether
+reused from the fact sheet or invented now. When code_examples is non-empty, treat it as the
+canonical reference (already modernized) — you may still explain, reorganize or add pedagogical
+comments around it. But when code_examples is EMPTY (the lesson had no on-screen code to extract)
+and you still need an illustrative example (e.g. a before/after in "Por que vale a pena"), you are
+INVENTING it from scratch: apply the instruction's version/API/syntax requirements directly to
+whatever you write, exactly as Etapa 1 would.` : ''}
 
 ${courseMemoryBlock(courseMemory)}
 Use the fact sheet's fields as your raw material: core_concepts (the backbone, in order), terminology

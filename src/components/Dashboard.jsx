@@ -7,6 +7,12 @@ import {
   fetchHypercorrection,
   fetchRetentionBadges,
 } from "../utils/progressApi";
+import {
+  fetchAdminDashboard,
+  fetchAdminProfile,
+  fetchAdminActivityBalance,
+  fetchAdminRetentionBadges,
+} from "../utils/adminApi";
 
 const formatHour = (h) => `${String(h).padStart(2, "0")}h`;
 const fmtPct = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
@@ -19,7 +25,12 @@ const heatmapColor = (n) => {
   return "bg-emerald-400";
 };
 
-const Dashboard = ({ onBack }) => {
+// targetUserId (opcional): admin vendo o progresso de OUTRO usuario (view
+// read-only — nunca revisa/grava nada dele). Sem isso, e o dashboard pessoal
+// de sempre. Confusao semantica e hypercorreccao nao tem espelho admin (sao
+// analises finas demais pra fazer sentido o admin fuçar por outra pessoa) —
+// ficam sempre null nesse modo.
+const Dashboard = ({ onBack, targetUserId, targetEmail }) => {
   const [data, setData] = useState(null);
   const [profile, setProfile] = useState(null);
   const [confusion, setConfusion] = useState(null);
@@ -34,12 +45,12 @@ const Dashboard = ({ onBack }) => {
     (async () => {
       try {
         const [d, p, c, b, h, r] = await Promise.all([
-          fetchDashboardStats(),
-          fetchProfileStats().catch(() => null),
-          fetchConfusionGroups({ minLapses: 2, threshold: 0.4 }).catch(() => null),
-          fetchActivityBalance(30).catch(() => null),
-          fetchHypercorrection({ days: 30, limit: 8 }).catch(() => null),
-          fetchRetentionBadges().catch(() => null),
+          targetUserId ? fetchAdminDashboard(targetUserId) : fetchDashboardStats(),
+          targetUserId ? fetchAdminProfile(targetUserId).catch(() => null) : fetchProfileStats().catch(() => null),
+          targetUserId ? Promise.resolve(null) : fetchConfusionGroups({ minLapses: 2, threshold: 0.4 }).catch(() => null),
+          targetUserId ? fetchAdminActivityBalance(targetUserId, 30).catch(() => null) : fetchActivityBalance(30).catch(() => null),
+          targetUserId ? Promise.resolve(null) : fetchHypercorrection({ days: 30, limit: 8 }).catch(() => null),
+          targetUserId ? fetchAdminRetentionBadges(targetUserId).catch(() => null) : fetchRetentionBadges().catch(() => null),
         ]);
         if (!cancelled) {
           setData(d);
@@ -58,7 +69,7 @@ const Dashboard = ({ onBack }) => {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [targetUserId]);
 
   const heatmapWeeks = useMemo(() => {
     if (!data?.heatmap) return [];
@@ -89,7 +100,9 @@ const Dashboard = ({ onBack }) => {
           </svg>
         </button>
         <div>
-          <h2 className="text-lg font-bold text-slate-100">Dashboard de estudo</h2>
+          <h2 className="text-lg font-bold text-slate-100">
+            {targetUserId ? `Progresso de ${targetEmail || "usuário"}` : "Dashboard de estudo"}
+          </h2>
           <p className="text-sm text-slate-400">Consistencia, retencao e backlog</p>
         </div>
       </div>

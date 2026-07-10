@@ -23,8 +23,9 @@ router.get('/api/stats/recent', async (req, res) => {
 });
 
 // Dashboard: heatmap 90d + retencao 7d/30d + top lapsos + backlog ETA.
-router.get('/api/stats/dashboard', async (req, res) => {
-  try {
+// userId de parametro (nao req.userId) pra reaproveitar nas rotas admin de
+// "ver progresso de outro usuario" (server/routes/admin.js).
+export const buildDashboardStats = async (userId) => {
     const heatmap = await query(
       `WITH days AS (
          SELECT generate_series(
@@ -52,7 +53,7 @@ router.get('/api/stats/dashboard', async (req, res) => {
        LEFT JOIN reviews r ON r.day = d.day
        LEFT JOIN pomos p ON p.day = d.day
        ORDER BY d.day`,
-      [req.userId],
+      [userId],
     );
 
     const retention = await query(
@@ -68,7 +69,7 @@ router.get('/api/stats/dashboard', async (req, res) => {
          AND rl.reviewed_at >= NOW() - INTERVAL '30 days'
        GROUP BY d.course_title
        ORDER BY n_30d DESC`,
-      [req.userId],
+      [userId],
     );
 
     const topLapses = await query(
@@ -80,7 +81,7 @@ router.get('/api/stats/dashboard', async (req, res) => {
        WHERE c.user_id = $1 AND r.lapses >= 1
        ORDER BY r.lapses DESC, r.reps DESC
        LIMIT 10`,
-      [req.userId],
+      [userId],
     );
 
     const backlogRes = await query(
@@ -91,27 +92,31 @@ router.get('/api/stats/dashboard', async (req, res) => {
          )) AS due_cards,
          (SELECT COUNT(*)::numeric FROM flashcard_review_log
           WHERE user_id = $1 AND reviewed_at >= NOW() - INTERVAL '14 days') / 14.0 AS avg_per_day`,
-      [req.userId],
+      [userId],
     );
     const b = backlogRes.rows[0] || {};
     const avgPerDay = Number(b.avg_per_day) || 0;
     const dueCards = Number(b.due_cards) || 0;
     const etaDays = avgPerDay > 0 ? Math.ceil(dueCards / avgPerDay) : null;
 
-    res.json({
+    return {
       heatmap: heatmap.rows,
       retention: retention.rows,
       topLapses: topLapses.rows,
       backlog: { dueCards, avgPerDay: Number(avgPerDay.toFixed(2)), etaDays },
-    });
+    };
+};
+
+router.get('/api/stats/dashboard', async (req, res) => {
+  try {
+    res.json(await buildDashboardStats(req.userId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // Perfil cognitivo: hora otima/fraca, streak, drift D, totais.
-router.get('/api/stats/profile', async (req, res) => {
-  try {
+export const buildProfileStats = async (userId) => {
     const hours = await query(
       `SELECT EXTRACT(HOUR FROM reviewed_at)::int AS hr,
               COUNT(*)::int AS n,
@@ -121,7 +126,7 @@ router.get('/api/stats/profile', async (req, res) => {
        GROUP BY hr
        HAVING COUNT(*) >= 5
        ORDER BY hr`,
-      [req.userId],
+      [userId],
     );
 
     let bestHour = null;
@@ -142,7 +147,7 @@ router.get('/api/stats/profile', async (req, res) => {
        FROM flashcard_review_log
        WHERE user_id = $1 AND reviewed_at >= CURRENT_DATE - INTERVAL '365 days'
        ORDER BY day DESC`,
-      [req.userId],
+      [userId],
     );
     let streak = 0;
     if (days.rows.length > 0) {
@@ -166,7 +171,7 @@ router.get('/api/stats/profile', async (req, res) => {
                                    AND reviewed_at <  NOW() - INTERVAL '7 days') AS d_prev
        FROM flashcard_review_log
        WHERE user_id = $1 AND reviewed_at >= NOW() - INTERVAL '30 days' AND difficulty IS NOT NULL`,
-      [req.userId],
+      [userId],
     );
     const dRecent = drift.rows[0]?.d_recent != null ? Number(drift.rows[0].d_recent) : null;
     const dPrev = drift.rows[0]?.d_prev != null ? Number(drift.rows[0].d_prev) : null;
@@ -178,11 +183,11 @@ router.get('/api/stats/profile', async (req, res) => {
          (SELECT COUNT(*)::int FROM flashcards WHERE user_id = $1) AS total_cards,
          (SELECT COUNT(*)::int FROM flashcard_review_log WHERE user_id = $1) AS total_reviews,
          (SELECT COUNT(*)::int FROM flashcard_reviews WHERE user_id = $1 AND state >= 2) AS mature_cards`,
-      [req.userId],
+      [userId],
     );
     const t = totals.rows[0] || { total_cards: 0, total_reviews: 0, mature_cards: 0 };
 
-    res.json({
+    return {
       bestHour,
       worstHour,
       hourly: hours.rows.map((r) => ({
@@ -201,7 +206,12 @@ router.get('/api/stats/profile', async (req, res) => {
         reviews: Number(t.total_reviews),
         matureCards: Number(t.mature_cards),
       },
-    });
+    };
+};
+
+router.get('/api/stats/profile', async (req, res) => {
+  try {
+    res.json(await buildProfileStats(req.userId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -241,28 +251,27 @@ router.post('/api/stats/view-session', async (req, res) => {
   }
 });
 
-router.get('/api/stats/activity-balance', async (req, res) => {
-  try {
-    const days = Math.max(1, Math.min(365, Number(req.query.days) || 30));
+export const buildActivityBalance = async (userId, rawDays = 30) => {
+    const days = Math.max(1, Math.min(365, Number(rawDays) || 30));
     const interval = `${days} days`;
 
     const reviews = await query(
       `SELECT COUNT(*)::int AS n
        FROM flashcard_review_log
        WHERE user_id = $1 AND reviewed_at >= NOW() - $2::interval`,
-      [req.userId, interval],
+      [userId, interval],
     );
     const quizzes = await query(
       `SELECT COUNT(*)::int AS n, COALESCE(SUM(total), 0)::int AS questions
        FROM quiz_attempts
        WHERE user_id = $1 AND answered_at >= NOW() - $2::interval`,
-      [req.userId, interval],
+      [userId, interval],
     );
     const prequiz = await query(
       `SELECT COUNT(*)::int AS n, COALESCE(SUM(total), 0)::int AS questions
        FROM prequestion_attempts
        WHERE user_id = $1 AND attempted_at >= NOW() - $2::interval`,
-      [req.userId, interval],
+      [userId, interval],
     );
 
     const tracked = await query(
@@ -270,7 +279,7 @@ router.get('/api/stats/activity-balance', async (req, res) => {
        FROM view_sessions
        WHERE user_id = $1 AND started_at >= NOW() - $2::interval
        GROUP BY kind`,
-      [req.userId, interval],
+      [userId, interval],
     );
     const trackedByKind = { video: null, resumo: null, exemplos: null };
     for (const row of tracked.rows) {
@@ -284,7 +293,7 @@ router.get('/api/stats/activity-balance', async (req, res) => {
          AND step_key IN ('video', 'resumo', 'exemplos')
          AND completed_at >= NOW() - $2::interval
        GROUP BY step_key`,
-      [req.userId, interval],
+      [userId, interval],
     );
     const stepCounts = { video: 0, resumo: 0, exemplos: 0 };
     for (const row of passiveSteps.rows) stepCounts[row.step_key] = row.n;
@@ -361,7 +370,7 @@ router.get('/api/stats/activity-balance', async (req, res) => {
       recommendation = `Razao ${ratio.toFixed(2)}:1. Quase so consumo passivo. Cards e quiz precisam virar prioridade — fluencia ≠ aprendizado.`;
     }
 
-    res.json({
+    return {
       days,
       active: {
         totalSeconds: activeSeconds,
@@ -378,7 +387,12 @@ router.get('/api/stats/activity-balance', async (req, res) => {
       level,
       recommendation,
       assumedSeconds: SECS,
-    });
+    };
+};
+
+router.get('/api/stats/activity-balance', async (req, res) => {
+  try {
+    res.json(await buildActivityBalance(req.userId, req.query.days));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -393,8 +407,7 @@ const BADGE_TIERS = [
   { key: '2y', days: 730, label: '2 anos' },
 ];
 
-router.get('/api/stats/retention-badges', async (req, res) => {
-  try {
+export const buildRetentionBadges = async (userId) => {
     const { rows: cards } = await query(
       `SELECT c.id, c.front, d.course_title, d.lesson_prefix,
               cf.first_review,
@@ -410,7 +423,7 @@ router.get('/api/stats/retention-badges', async (req, res) => {
          GROUP BY card_id
        ) cf ON cf.card_id = c.id
        WHERE c.user_id = $1`,
-      [req.userId],
+      [userId],
     );
 
     const byTier = BADGE_TIERS.map((t) => ({
@@ -440,11 +453,16 @@ router.get('/api/stats/retention-badges', async (req, res) => {
     }
     milestones.sort((a, b) => b.ageDays - a.ageDays);
 
-    res.json({
+    return {
       tiers: byTier,
       recentMilestones: milestones.slice(0, 20),
       totalMature: cards.length,
-    });
+    };
+};
+
+router.get('/api/stats/retention-badges', async (req, res) => {
+  try {
+    res.json(await buildRetentionBadges(req.userId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

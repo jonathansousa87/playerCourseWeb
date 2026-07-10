@@ -15,6 +15,7 @@ import PreQuiz from "./PreQuiz";
 import AIGenerateModal from "./AIGenerateModal";
 import FloatingNotes from "./FloatingNotes";
 import { API_BASE } from "../config";
+import { useAuth } from "../contexts/AuthContext";
 
 // "requiresVideo": step depende de transcricao (.txt/.vtt) que so existe
 // se a aula tem video. Aparece sempre que materials.video existir.
@@ -140,6 +141,7 @@ const LessonStepper = ({
   onStepChange = () => {},
   onMaterialsChanged,
 }) => {
+  const { isAdmin } = useAuth();
   const [activeStep, setActiveStep] = useState("video");
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const materials = lessonGroup.materials || {};
@@ -290,16 +292,24 @@ const LessonStepper = ({
         <div className="h-full flex flex-col items-center justify-center text-center gap-3 p-8">
           <Sparkles className="w-8 h-8" style={{ color: "var(--text-subtle)" }} />
           <div className="text-slate-300 font-medium">{label} ainda nao foi gerado</div>
-          <div className="text-sm text-slate-500 max-w-xs">
-            Use o botao <b>Gerar IA</b> (no topo) para criar este material a partir da transcricao da aula.
-          </div>
-          <button
-            onClick={() => setAiModalOpen(true)}
-            className="mt-1 flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium border"
-            style={{ background: "var(--accent-soft)", borderColor: "var(--accent-soft-strong)", color: "var(--accent)" }}
-          >
-            <Sparkles className="w-4 h-4" /> Gerar IA
-          </button>
+          {isAdmin ? (
+            <>
+              <div className="text-sm text-slate-500 max-w-xs">
+                Use o botao <b>Gerar IA</b> (no topo) para criar este material a partir da transcricao da aula.
+              </div>
+              <button
+                onClick={() => setAiModalOpen(true)}
+                className="mt-1 flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium border"
+                style={{ background: "var(--accent-soft)", borderColor: "var(--accent-soft-strong)", color: "var(--accent)" }}
+              >
+                <Sparkles className="w-4 h-4" /> Gerar IA
+              </button>
+            </>
+          ) : (
+            <div className="text-sm text-slate-500 max-w-xs">
+              Este material ainda nao foi gerado pelo administrador.
+            </div>
+          )}
         </div>
       );
     }
@@ -539,19 +549,21 @@ const LessonStepper = ({
                 {isLessonComplete ? "Aula concluida" : "Concluir aula"}
               </button>
             )}
-            <button
-              onClick={() => setAiModalOpen(true)}
-              title="Gerar resumo/quiz/flashcards/diario com IA (DeepSeek)"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all hover:brightness-110"
-              style={{
-                background: "var(--accent-soft)",
-                borderColor: "var(--accent-soft-strong)",
-                color: "var(--accent)",
-              }}
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              Gerar IA
-            </button>
+            {isAdmin && (
+              <button
+                onClick={() => setAiModalOpen(true)}
+                title="Gerar resumo/quiz/flashcards/diario com IA (DeepSeek)"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all hover:brightness-110"
+                style={{
+                  background: "var(--accent-soft)",
+                  borderColor: "var(--accent-soft-strong)",
+                  color: "var(--accent)",
+                }}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Gerar IA
+              </button>
+            )}
             <span className="text-xs tabular-nums ml-1" style={{ color: "var(--text-subtle)" }}>
               {completedCount}/{availableSteps.length}
             </span>

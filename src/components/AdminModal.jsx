@@ -1,13 +1,15 @@
 import React, { useState } from "react";
-import { X, Pencil, Trash2, Loader2, Check, ShieldAlert } from "lucide-react";
-import { renameCourse, deleteCourseFull } from "../utils/progressApi";
+import { X, Pencil, Trash2, Eraser, Loader2, Check, ShieldAlert } from "lucide-react";
+import { renameCourse, deleteCourseFull, clearCourseMaterials } from "../utils/progressApi";
 
-// Modo admin: renomear (reflete no banco + renomeia a pasta na fonte) ou
+// Modo admin: renomear (reflete no banco + renomeia a pasta na fonte),
+// limpar materiais gerados por IA (so o banco, nunca a pasta na fonte) ou
 // excluir um curso (apaga a pasta na fonte E tudo do banco). Destrutivo.
 const AdminModal = ({ courses, onClose, onChanged }) => {
   const [editing, setEditing] = useState(null); // title em edicao
   const [draft, setDraft] = useState("");
   const [confirming, setConfirming] = useState(null); // title aguardando confirmacao de exclusao
+  const [confirmingClear, setConfirmingClear] = useState(null); // title aguardando confirmacao de limpeza
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
@@ -36,6 +38,21 @@ const AdminModal = ({ courses, onClose, onChanged }) => {
       const res = await deleteCourseFull(title);
       setMsg(`"${title}" excluido (pasta ${res.folderRemoved ? "removida" : "nao encontrada"}, ${res.total} registros).`);
       setConfirming(null);
+      onChanged?.();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doClearMaterials = async (title) => {
+    setBusy(title); setErr(null); setMsg(null);
+    try {
+      const res = await clearCourseMaterials(title);
+      const { materials = 0, flashcardDecks = 0, prequestions = 0 } = res.deleted || {};
+      setMsg(`Material de "${title}" removido: ${materials} materiais, ${flashcardDecks} decks de flashcards, ${prequestions} pre-quiz.`);
+      setConfirmingClear(null);
       onChanged?.();
     } catch (e) {
       setErr(e.message);
@@ -118,6 +135,21 @@ const AdminModal = ({ courses, onClose, onChanged }) => {
                           Cancelar
                         </button>
                       </div>
+                    ) : confirmingClear === c.title ? (
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-[11px] text-amber-300">Apagar materiais gerados?</span>
+                        <button
+                          onClick={() => doClearMaterials(c.title)}
+                          disabled={busy === c.title}
+                          className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-medium flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          {busy === c.title ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Eraser className="w-3.5 h-3.5" />}
+                          Limpar
+                        </button>
+                        <button onClick={() => setConfirmingClear(null)} className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg text-xs">
+                          Cancelar
+                        </button>
+                      </div>
                     ) : (
                       <div className="flex items-center gap-2 flex-shrink-0">
                         <button
@@ -125,6 +157,13 @@ const AdminModal = ({ courses, onClose, onChanged }) => {
                           className="px-3 py-1.5 bg-slate-700/60 hover:bg-slate-600/60 text-slate-200 rounded-lg text-xs font-medium flex items-center gap-1.5"
                         >
                           <Pencil className="w-3.5 h-3.5" /> Renomear
+                        </button>
+                        <button
+                          onClick={() => setConfirmingClear(c.title)}
+                          title="Apaga resumos, quizzes, exemplos, flashcards e pre-quiz gerados por IA deste curso (nao remove o curso nem os arquivos no Drive)"
+                          className="px-3 py-1.5 bg-amber-600/15 hover:bg-amber-600/25 border border-amber-500/30 text-amber-300 rounded-lg text-xs font-medium flex items-center gap-1.5"
+                        >
+                          <Eraser className="w-3.5 h-3.5" /> Limpar materiais
                         </button>
                         <button
                           onClick={() => setConfirming(c.title)}

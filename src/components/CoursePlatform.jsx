@@ -5,6 +5,7 @@ import LessonsView from "./LessonsView";
 import LessonPlayer from "./LessonPlayer";
 import DailyReview from "./DailyReview";
 import Dashboard from "./Dashboard";
+import AdminPanel from "./AdminPanel";
 import TypingCourse from "./typing/TypingCourse";
 import { shouldShowDiaryPrompt } from "./WeeklyDiaryModal";
 
@@ -23,7 +24,6 @@ import {
   flattenCourseContent,
 } from "../utils/courseUtils";
 import { isVideoFile } from "../utils/fileUtils";
-import { clearCourseMaterials } from "../utils/progressApi";
 
 const MainComponent = () => {
   const [view, setView] = useState("courses");
@@ -234,26 +234,6 @@ const MainComponent = () => {
     setDiaryAutoPrompted(false);
   };
 
-  const handleClearMaterials = async (course) => {
-    const ok = window.confirm(
-      `Apagar TODO o material gerado por IA de "${course.title}"?\n\n` +
-        "Remove resumos, quizzes, exemplos, flashcards, diario e pre-quiz do banco. " +
-        "Nao apaga seu progresso nem os arquivos do curso no Drive.",
-    );
-    if (!ok) return;
-    try {
-      const res = await clearCourseMaterials(course.title);
-      const { materials = 0, flashcardDecks = 0, prequestions = 0 } = res.deleted || {};
-      await reloadCourses();
-      window.alert(
-        `Material removido: ${materials} materiais, ${flashcardDecks} decks de flashcards, ${prequestions} pre-quiz.`,
-      );
-    } catch (err) {
-      console.error("Erro ao limpar materiais:", err);
-      window.alert(`Falha ao limpar materiais: ${err.message}`);
-    }
-  };
-
   const handleLessonSelect = (lesson) => setSelectedLesson(lesson);
 
   const handleToggleLessonComplete = (lesson) => {
@@ -360,6 +340,16 @@ const MainComponent = () => {
     return <Dashboard onBack={() => setView("courses")} />;
   }
 
+  if (view === "admin") {
+    return (
+      <AdminPanel
+        courses={courses}
+        onBack={() => setView("courses")}
+        onCoursesChanged={reloadCourses}
+      />
+    );
+  }
+
   if (view === "typing") {
     return (
       <TypingCourse
@@ -425,7 +415,6 @@ const MainComponent = () => {
       showConfigModal={showConfigModal}
       setShowConfigModal={setShowConfigModal}
       onSelectCourse={handleCourseSelect}
-      onClearMaterials={handleClearMaterials}
       onOpenTyping={() => setView("typing")}
       typingCompleted={typing.completedCount}
       onView={setView}

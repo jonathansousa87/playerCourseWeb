@@ -17,6 +17,8 @@ import statsRouter from './server/routes/stats.js';
 import iaRouter from './server/routes/ia.js';
 import typingRouter from './server/routes/typing.js';
 import maintenanceRouter from './server/routes/maintenance.js';
+import meRouter from './server/routes/me.js';
+import adminRouter from './server/routes/admin.js';
 
 import { stopVl } from './server/ai/ocr/visionServer.mjs';
 import { stopQwen } from './server/ai/qwenServer.js';
@@ -75,6 +77,8 @@ app.use(statsRouter);
 app.use(iaRouter);
 app.use(typingRouter);
 app.use(maintenanceRouter);
+app.use(meRouter);
+app.use(adminRouter);
 
 const PORT = Number(process.env.PORT) || 3001;
 app.listen(PORT, async () => {

@@ -5,6 +5,7 @@ import { generateReadingModule, generateReadingBatch } from '../ai/readingCourse
 import { regenerateLessonDiagram } from '../ai/diagram.js';
 import { generateLessonNarration } from '../ai/narration.js';
 import { clearPrecondenseCache } from '../ai/precondenseStore.js';
+import { clearFactsCache } from '../ai/factsStore.js';
 import { uploadReadingCourseToDrive } from '../ai/uploadReading.js';
 import { generatePodcastForLesson, generatePodcastScript, synthesizePodcast } from '../ai/podcast.js';
 import { generateInterviewQuestions, evaluateInterview } from '../ai/interview.js';
@@ -12,13 +13,14 @@ import { chatWithLesson } from '../ai/chat.js';
 import { generatePrequestionsForLesson } from '../ai/prequestions.js';
 import { DEFAULT_MODEL as DEEPSEEK_DEFAULT_MODEL, costFromUsage } from '../ai/deepseek.js';
 import { getCoursesPath } from '../config.js';
+import { requireAdmin } from '../auth.js';
 
 const router = express.Router();
 
 const ALLOWED_KINDS = new Set(['resumo', 'quiz', 'flashcards', 'diario', 'exemplos', 'piada']);
 
 // Saldo da conta DeepSeek (nao consome creditos de geracao — e so consulta).
-router.get('/api/ia/balance', async (_req, res) => {
+router.get('/api/ia/balance', requireAdmin, async (_req, res) => {
   try {
     if (!process.env.DEEPSEEK_API_KEY) return res.status(500).json({ error: 'DEEPSEEK_API_KEY nao configurada' });
     const r = await fetch('https://api.deepseek.com/user/balance', {
@@ -38,7 +40,7 @@ router.get('/api/ia/balance', async (_req, res) => {
   }
 });
 
-router.post('/api/ia/generate', async (req, res) => {
+router.post('/api/ia/generate', requireAdmin, async (req, res) => {
   try {
     const { courseTitle, lessonPrefix, kinds, model, instruction } = req.body || {};
     if (!courseTitle || !lessonPrefix) {
@@ -80,7 +82,7 @@ router.post('/api/ia/generate', async (req, res) => {
 
 // Gera o curso de leitura de UM modulo (a IA agrupa as aulas e condensa as
 // transcricoes em .txt). So funciona em modo filesystem (escreve em disco).
-router.post('/api/ia/reading-course/module', async (req, res) => {
+router.post('/api/ia/reading-course/module', requireAdmin, async (req, res) => {
   const { courseTitle, modulePath, moduleTitle, index, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract, ocrText, ocrDiagram, stream } = req.body || {};
   if (!courseTitle || !modulePath) {
     return res.status(400).json({ error: 'courseTitle e modulePath obrigatorios' });
@@ -134,7 +136,7 @@ router.post('/api/ia/reading-course/module', async (req, res) => {
 // Gera leitura EM LOTE com revezamento de VRAM entre WhisperX e Qwen:
 // fase 1 transcreve tudo, fase 2 condensa tudo (Qwen sobe 1x e cai), fase 3
 // DeepSeek roda em tudo. Sempre streaming (NDJSON) — o processo e longo.
-router.post('/api/ia/reading-course/batch', async (req, res) => {
+router.post('/api/ia/reading-course/batch', requireAdmin, async (req, res) => {
   const { jobs, model, instruction, autoTranscribe, language, preCondense, normalize, clarity, contract, ocrText, ocrDiagram } = req.body || {};
   if (!Array.isArray(jobs) || jobs.length === 0) {
     return res.status(400).json({ error: 'jobs (array) obrigatorio' });
@@ -176,7 +178,7 @@ router.post('/api/ia/reading-course/batch', async (req, res) => {
 
 // Regenera UM diagrama Mermaid da aula (botao no viewer) — sem recondensar a
 // aula toda, pra gastar poucos tokens.
-router.post('/api/ia/regenerate-diagram', async (req, res) => {
+router.post('/api/ia/regenerate-diagram', requireAdmin, async (req, res) => {
   try {
     const { courseTitle, lessonPrefix, kind, chart, model, instruction } = req.body || {};
     if (!courseTitle || !lessonPrefix || !chart) {
@@ -203,7 +205,7 @@ router.post('/api/ia/regenerate-diagram', async (req, res) => {
 
 // Sobe um curso de LEITURA local para o Google Drive (recria a estrutura).
 // Streaming NDJSON (pode ter muitos arquivos). So aceita cursos "- Leitura".
-router.post('/api/ia/reading-course/upload-drive', async (req, res) => {
+router.post('/api/ia/reading-course/upload-drive', requireAdmin, async (req, res) => {
   const { courseTitle } = req.body || {};
   if (!courseTitle) return res.status(400).json({ error: 'courseTitle obrigatorio' });
   res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
@@ -219,9 +221,22 @@ router.post('/api/ia/reading-course/upload-drive', async (req, res) => {
 });
 
 // Limpa o cache persistente da pre-condensacao do Qwen (recomeca do zero).
-router.post('/api/ia/precondense-cache/clear', async (_req, res) => {
+router.post('/api/ia/precondense-cache/clear', requireAdmin, async (_req, res) => {
   try {
     const ok = await clearPrecondenseCache(getCoursesPath());
+    res.json({ ok });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Limpa o cache dos fatos extraidos (.facts-cache) de UM curso — proxima
+// geracao reextrai do zero (DeepSeek) so pra ele, sem afetar outros cursos.
+router.post('/api/ia/facts-cache/clear', requireAdmin, async (req, res) => {
+  const { courseTitle } = req.body || {};
+  if (!courseTitle) return res.status(400).json({ error: 'courseTitle obrigatorio' });
+  try {
+    const ok = await clearFactsCache(getCoursesPath(), courseTitle);
     res.json({ ok });
   } catch (err) {
     res.status(500).json({ error: err.message });

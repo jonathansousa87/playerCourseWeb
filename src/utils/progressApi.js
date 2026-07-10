@@ -371,6 +371,14 @@ export const uploadReadingCourseToDrive = async ({ courseTitle, onProgress = () 
 export const clearPrecondenseCache = () =>
   fetch(`${API_BASE}/api/ia/precondense-cache/clear`, { method: "POST" }).then(json);
 
+// Limpa o cache dos fatos extraidos (.facts-cache) de UM curso.
+export const clearFactsCache = (courseTitle) =>
+  fetch(`${API_BASE}/api/ia/facts-cache/clear`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ courseTitle }),
+  }).then(json);
+
 // Busca a narracao read-along de uma aula ({ audio, segments, voice, duration })
 // ou null se ainda nao foi gerada.
 export const fetchNarration = (courseTitle, lessonPrefix) =>

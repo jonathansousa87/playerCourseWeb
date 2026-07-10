@@ -7,6 +7,13 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [recoveryMode, setRecoveryMode] = useState(false);
+  // undefined = ainda nao buscou (evita telas piscando); null = buscou e
+  // falhou de verdade (sessao invalida, erro de rede/backend) — tratado como
+  // deslogado, nao fica girando spinner pra sempre. Um 403 PENDING_APPROVAL
+  // do backend NAO cai aqui: e o jeito do backend dizer "logado, so sem
+  // aprovacao ainda" (ver server/auth.js), vira profile.status='pending'.
+  const [profile, setProfile] = useState(undefined);
+  const [profileLoading, setProfileLoading] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -21,6 +28,41 @@ export const AuthProvider = ({ children }) => {
     });
     return () => sub.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setProfile(undefined);
+      return;
+    }
+    let cancelled = false;
+    setProfile(undefined);
+    setProfileLoading(true);
+    fetch('/api/me')
+      .then(async (res) => {
+        const body = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (res.ok) {
+          setProfile({ email: body.email, role: body.role, status: body.status });
+        } else if (body.error === 'PENDING_APPROVAL') {
+          setProfile({ email: user.email, role: 'user', status: body.status });
+        } else {
+          setProfile(null);
+        }
+      })
+      .catch(() => { if (!cancelled) setProfile(null); })
+      .finally(() => { if (!cancelled) setProfileLoading(false); });
+    return () => { cancelled = true; };
+    // Depende so do id, nao do objeto `user` inteiro: o Supabase troca a
+    // REFERENCIA de `user` a cada refresh de token silencioso (comum quando a
+    // aba volta a ficar visivel apos tempo em segundo plano), mesmo sendo o
+    // MESMO usuario logado. Se essa dependencia fosse `[user]`, cada refresh
+    // resetava `profile` pra undefined -> App.jsx renderizava o Spinner no
+    // lugar de MainComponent -> React desmontava o CoursePlatform inteiro
+    // (perde `view`/curso/aula selecionados) -> "a plataforma recarrega e
+    // volta pro inicio" ao trocar de aba. `user.id` so muda em login/logout
+    // de verdade.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   const login = async (email, password) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -68,6 +110,10 @@ export const AuthProvider = ({ children }) => {
         user,
         loading,
         recoveryMode,
+        profile,
+        profileLoading,
+        isAdmin: profile?.role === 'admin',
+        isApproved: profile?.status === 'approved',
         login,
         register,
         logout,

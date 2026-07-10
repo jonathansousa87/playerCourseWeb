@@ -116,10 +116,10 @@ const isReadingMarkdown = (courseTitle, md) =>
 // todos os materiais da aula (flashcards/quiz/exemplos/diario/piada) nascem do MESMO
 // JSON e ficam consistentes entre si. So-cache + 1 chamada de extracao por aula.
 const isVersionToken = (t) => /^\d+\.\d+(?:\.\d+)?(?:[.-]\w+)?$/.test(t);
-const resolveFacts = async ({ coursesPath, text, canonicalNames = '', instruction = '', sourceLanguage = 'pt', lessonTitle = '' }) => {
+const resolveFacts = async ({ coursesPath, courseTitle, text, canonicalNames = '', instruction = '', sourceLanguage = 'pt', lessonTitle = '' }) => {
   if (!text || text.length < 40) return null;
   const key = { merged: text, canonicalNames, contract: '', instruction, sourceLanguage };
-  let facts = await getCachedFacts(coursesPath, key);
+  let facts = await getCachedFacts(coursesPath, courseTitle, key);
   if (facts == null) {
     const ex = await chatCompletion({
       system: READING_EXTRACT_SYSTEM,
@@ -129,7 +129,7 @@ const resolveFacts = async ({ coursesPath, text, canonicalNames = '', instructio
       maxTokens: 14000,
     });
     facts = ex.content.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
-    await setCachedFacts(coursesPath, key, facts);
+    await setCachedFacts(coursesPath, courseTitle, key, facts);
   }
   return facts;
 };
@@ -167,7 +167,7 @@ export const resolveMaterialSource = async ({ courseTitle, coursesPath, lessonPr
   // Canonical Lesson JSON (materiais consomem ELE, nao a transcricao) — atras da flag.
   let facts = null;
   if (twoStageEnabled()) {
-    try { facts = await resolveFacts({ coursesPath, text, canonicalNames, instruction, lessonTitle }); }
+    try { facts = await resolveFacts({ coursesPath, courseTitle, text, canonicalNames, instruction, lessonTitle }); }
     catch { facts = null; } // extracao falhou -> materiais caem na transcricao
   }
   return { text, source, facts };

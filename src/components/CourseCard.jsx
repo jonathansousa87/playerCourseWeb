@@ -1,5 +1,5 @@
 import React from "react";
-import { BookOpen, CheckCircle2, ChevronRight, Eraser, Clock } from "lucide-react";
+import { BookOpen, CheckCircle2, ChevronRight, Clock } from "lucide-react";
 
 // "12h 30min" / "45min". So mostra horas quando ha pelo menos 1h.
 const formatCourseDuration = (seconds) => {
@@ -58,16 +58,11 @@ const ProgressRing = ({ progress, size = 52, strokeWidth = 3, color }) => {
   );
 };
 
-const CourseCard = ({ title, description, totalLessons = 0, completedCount = 0, durationSeconds = 0, index = 0, onClearMaterials }) => {
+const CourseCard = ({ title, description, totalLessons = 0, completedCount = 0, durationSeconds = 0, index = 0 }) => {
   const gradient = COURSE_GRADIENTS[index % COURSE_GRADIENTS.length];
   const accent = COURSE_ACCENTS[index % COURSE_ACCENTS.length];
   const progress = totalLessons > 0 ? (completedCount / totalLessons) * 100 : 0;
   const isComplete = totalLessons > 0 && completedCount === totalLessons;
-
-  const handleClearMaterials = (e) => {
-    e.stopPropagation();
-    onClearMaterials?.();
-  };
 
   return (
     <div className={`group relative bg-slate-800/80 rounded-2xl overflow-hidden border ${accent.border} hover:border-opacity-60 transition-all duration-300 hover:shadow-xl hover:shadow-black/20 hover:-translate-y-1 h-full`}>
@@ -131,18 +126,6 @@ const CourseCard = ({ title, description, totalLessons = 0, completedCount = 0, 
             )}
           </div>
         </div>
-
-        {/* Limpar materiais gerados (so o conteudo de IA no banco — nunca o curso no Drive) */}
-        {onClearMaterials && (
-          <button
-            onClick={handleClearMaterials}
-            title="Apaga resumos, quizzes, exemplos, flashcards e pre-quiz gerados por IA deste curso (nao remove o curso nem os arquivos no Drive)"
-            className="mt-2 flex items-center justify-center gap-1.5 w-full py-1.5 rounded-lg text-xs font-medium text-slate-400 bg-slate-900/40 border border-slate-700/40 hover:text-red-300 hover:bg-red-950/30 hover:border-red-700/40 transition-colors"
-          >
-            <Eraser className="w-3.5 h-3.5" />
-            Limpar materiais gerados
-          </button>
-        )}
       </div>
     </div>
   );

@@ -45,6 +45,32 @@ const similarity = (a, b) => {
 // tem caractere especial (/auth, client-id, .java).
 const looksTechnical = (s) => /[A-Z]/.test(s) && /[a-z]/.test(s) || /[^a-zA-Z0-9]/.test(s);
 
+// Sufixos comuns de classe Java/Spring: o OCR captura o nome da CLASSE
+// (ex.: "RasmooPlusApplication"), mas a fala usa só o nome do projeto
+// ("RasmooPlus"). Gera a variante sem sufixo pra comparar tambem contra ela.
+const CLASS_SUFFIXES = [
+  'Application', 'ServiceImpl', 'RepositoryImpl', 'Controller', 'Service',
+  'Repository', 'Component', 'Configuration', 'Config', 'Exception',
+  'Request', 'Response', 'Client', 'Mapper', 'Filter', 'Handler', 'Factory',
+  'Builder', 'Adapter', 'Listener', 'Entity', 'Impl', 'Dto', 'DTO', 'Tests', 'Test',
+];
+
+// Devolve [canon, canon-sem-sufixo] (só quando o resto sobrando ainda parece
+// um nome de verdade, >=3 chars). O canônico original continua no gate de
+// looksTechnical antes de chegar aqui — a variante herda a mesma garantia
+// porque só remove um sufixo CamelCase de um termo já CamelCase.
+const canonicalVariants = (canon) => {
+  const variants = [canon];
+  for (const suf of CLASS_SUFFIXES) {
+    if (canon.length > suf.length && canon.endsWith(suf)) {
+      const stripped = canon.slice(0, -suf.length);
+      if (stripped.length >= 3) variants.push(stripped);
+      break; // um nivel de strip basta (evita over-stripping tipo Impl+Service)
+    }
+  }
+  return variants;
+};
+
 // Nao é palavra comum em PT/EN (evita trocar "data", "set", etc.).
 // Reusa a stoplist da F1 se disponível, mas localmente também.
 const COMMON_WORDS = new Set([
@@ -72,11 +98,28 @@ const bareTok = (s) => (s || '').replace(/^[^\w/]+|[^\w/)]+$/g, '');
 const buildOcrCorrectionMap = (transcript, vocabulary, { log = () => {} } = {}) => {
   if (!transcript || !vocabulary.length) return [];
 
-  // Tokeniza a transcrição (palavras inteiras, com pontuação de borda).
-  const tokens = new Set();
-  for (const w of transcript.split(/[\s,.!?;:()"'`]+/)) {
-    const t = w.trim();
-    if (t.length >= 3) tokens.add(t);
+  // Tokeniza a transcrição preservando ADJACENCIA REAL no texto (pra poder
+  // juntar palavras vizinhas) — a fala frequentemente separa em duas
+  // palavras ("Hasmo Plus") o que no OCR/código é um token só ("RasmooPlus").
+  // IMPORTANTE: usa as palavras cruas (sem filtro de tamanho) pra achar pares
+  // adjacentes de verdade — se filtrasse antes, "banco DE dados" juntaria
+  // "banco"+"dados" como se fossem vizinhas (nao sao, tem "de" no meio).
+  const rawWords = transcript.split(/[\s,.!?;:()"'`]+/).map((w) => w.trim()).filter(Boolean);
+  const bigrams = new Set();
+  for (let i = 0; i < rawWords.length - 1; i++) {
+    const a = rawWords[i], b = rawWords[i + 1];
+    if (a.length < 3 || b.length < 3) continue; // metade curta demais = ruido
+    if (!/^[A-Za-zÀ-ÿ0-9/._-]+$/.test(a) || !/^[A-Za-zÀ-ÿ0-9/._-]+$/.test(b)) continue;
+    // So descarta o par se AS DUAS forem comuns (ex.: "up down") — um nome
+    // proprio quase sempre tem uma metade "estranha" (ex.: "Hasmo") que
+    // sozinha ja nao seria comum; a outra pode ser ("Plus", "Service"...).
+    if (COMMON_WORDS.has(a.toLowerCase()) && COMMON_WORDS.has(b.toLowerCase())) continue;
+    bigrams.add(`${a} ${b}`); // guarda com espaço: o `from` casa a frase inteira
+  }
+
+  const singles = new Set();
+  for (const w of rawWords) {
+    if (w.length >= 3 && /^[A-Za-zÀ-ÿ0-9/._-]+$/.test(w)) singles.add(w);
   }
 
   const map = [];
@@ -87,26 +130,55 @@ const buildOcrCorrectionMap = (transcript, vocabulary, { log = () => {} } = {}) 
     if (!canon || canon.length < 3) continue;
     if (!looksTechnical(canon)) continue; // so corrige p/ identificadores técnicos
 
-    // Procura um token na transcrição que seja muito parecido com o canônico
-    // mas não igual (se for igual, já está correto, nao precisa corrigir).
+    // Procura o melhor candidato (token simples OU par de palavras juntas)
+    // muito parecido com o canônico OU uma variante dele sem sufixo de
+    // classe (RasmooPlusApplication -> tambem tenta RasmooPlus).
     let bestGarble = null;
     let bestSim = 0;
-    const canonLower = canon.toLowerCase();
+    let bestTo = canon;
 
-    for (const tok of tokens) {
-      const tokLower = tok.toLowerCase();
-      if (tokLower === canonLower) continue; // já correto
-      // So casa tokens de tamanho parecido (±2 chars ou ±30%)
-      const lenDiff = Math.abs(tok.length - canon.length);
-      if (lenDiff > 2 && lenDiff > Math.ceil(canon.length * 0.3)) continue;
-      const sim = similarity(tokLower, canonLower);
-      // Threshold alto: o garble tem que ser MUITO parecido com o canônico
-      // (ex.: alf <-> auth = 0.75, mas data <-> data = 1.0 = igual, ja filtrado)
-      if (sim >= 0.7 && sim > bestSim) {
-        // Garble nao pode ser palavra comum (senao corrompe texto legitimo)
-        if (COMMON_WORDS.has(tokLower)) continue;
-        bestGarble = tok;
-        bestSim = sim;
+    // Token unico: SO contra o canônico ORIGINAL (sem strip de sufixo).
+    // O strip existe pra destravar o casamento com BIGRAMA (nome de
+    // projeto falado em 2 palavras vs classe "XApplication" na tela);
+    // usar o strip tambem aqui deixaria formas curtas demais (ex.: "Order",
+    // "Product", "Error") parecidas demais com palavras comuns em PT
+    // ("ordem", "produto", "erro"), aumentando falso positivo sem necessidade.
+    {
+      const canonLower = canon.toLowerCase();
+      for (const cand of singles) {
+        const candLower = cand.toLowerCase();
+        if (candLower === canonLower) continue; // já correto
+        const lenDiff = Math.abs(candLower.length - canonLower.length);
+        if (lenDiff > 2 && lenDiff > Math.ceil(canonLower.length * 0.3)) continue;
+        const sim = similarity(candLower, canonLower);
+        if (sim >= 0.7 && sim > bestSim) {
+          if (COMMON_WORDS.has(candLower)) continue;
+          bestGarble = cand; bestSim = sim; bestTo = canon;
+        }
+      }
+    }
+
+    // Bigrama: contra o canônico original E as variantes sem sufixo —
+    // aqui o par de palavras adjacentes já é bem mais especifico, então o
+    // risco de falso positivo é bem menor mesmo com a forma mais curta.
+    for (const variant of canonicalVariants(canon)) {
+      const variantLower = variant.toLowerCase();
+      if (variantLower.includes(' ')) continue; // bigrama so casa contra 1 token
+      for (const cand of bigrams) {
+        const [wordA, wordB] = cand.split(' ');
+        const candJoined = cand.toLowerCase().replace(/\s+/g, '');
+        if (candJoined === variantLower) continue; // já correto
+        const lenDiff = Math.abs(candJoined.length - variantLower.length);
+        if (lenDiff > 2 && lenDiff > Math.ceil(variantLower.length * 0.3)) continue;
+        const sim = similarity(candJoined, variantLower);
+        if (sim < 0.7 || sim <= bestSim) continue;
+        // Se UMA das duas palavras sozinha ja bate quase perfeito com o alvo,
+        // a outra e ruido adjacente (verbo/pronome) que a troca apagaria da
+        // frase (ex.: "cliente tem"->"Cliente" apagaria o "tem"). So aceita
+        // o par quando as DUAS palavras contribuem pro match.
+        if (similarity(wordA.toLowerCase(), variantLower) >= 0.75) continue;
+        if (similarity(wordB.toLowerCase(), variantLower) >= 0.75) continue;
+        bestGarble = cand; bestSim = sim; bestTo = variant;
       }
     }
 
@@ -114,7 +186,7 @@ const buildOcrCorrectionMap = (transcript, vocabulary, { log = () => {} } = {}) 
       const garbleLower = bestGarble.toLowerCase();
       if (seen.has(garbleLower)) continue;
       seen.add(garbleLower);
-      map.push({ from: bestGarble, to: canon, source: 'ocr', sim: bestSim.toFixed(2) });
+      map.push({ from: bestGarble, to: bestTo, source: 'ocr', sim: bestSim.toFixed(2) });
     }
   }
 
@@ -129,7 +201,9 @@ const buildOcrCorrectionMap = (transcript, vocabulary, { log = () => {} } = {}) 
 export const applyOcrCorrections = (text, map) => {
   let out = text;
   for (const { from, to } of map || []) {
-    const esc = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // `from` pode ser duas palavras ("Hasmo Plus"): o espaço interno vira \s+
+    // pra casar mesmo se houver pontuação/espaçamento diferente no texto real.
+    const esc = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '[\\s,]+');
     out = out.replace(new RegExp(`(?<![\\w])${esc}(?![\\w])`, 'g'), to);
   }
   return out;
