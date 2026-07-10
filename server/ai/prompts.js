@@ -193,7 +193,7 @@ Before returning, re-read your OWN output and verify each item; if any FAILS, fi
 - Terminology and identifier names are CONSISTENT throughout — the same concept/class/file/endpoint/variable is never renamed or given a synonym mid-answer.
 - Every worked example (code, command, query, calculation, diagram) would ACTUALLY work as written, and nothing was invented that the source did not support (when the source lacked the info for a section, you omitted it instead of guessing).
 - WHEN the output is a step-by-step implementation walkthrough: every fenced code/command/config block is immediately preceded by its own "**Por que agora:**" one-line lead-in.
-- WHEN the output contains a \`\`\`mermaid diagram: it has AT MOST 8 nodes and each node uses the correct shape for its type.`;
+- WHEN the output contains a \`\`\`mermaid diagram: it has AT MOST 8 nodes and each node uses the correct shape for its type, AND it is immediately followed by prose explaining its logic (a listener who can't see it must understand it from the words alone) — never a diagram followed by unrelated text.`;
 const selfCheckBlock = () => (selfCheckEnabled() ? `\n${SELF_CHECK_BLOCK}\n` : '');
 
 // === F3 — Regra de leitura como MODO (fidelidade x clareza) ===
@@ -926,6 +926,11 @@ ${MERMAID_FLOW_RULES}
 - CLASS DIAGRAM / DOMAIN MODEL (DDD, entities with attributes) -> use classDiagram:
 ${MERMAID_CLASSES_RULES}
 - The labels reflect ONLY what the lesson showed (do not invent concepts).
+- MANDATORY, no exceptions: immediately AFTER every \`\`\`mermaid block, write 1-3 paragraphs of prose
+  translating it into words (flow/decision branches, entity relationships, or topic hierarchy,
+  depending on the type). Write for a student who can ONLY LISTEN to this lesson as audio and cannot
+  see the image — they must fully understand the diagram's logic from your words alone. NEVER follow
+  a diagram directly with unrelated text (text -> diagram -> explanation -> continuation, always).
 
 ${readingRuleBlock(clarity)}
 ${structureEnabled() ? `\n${STRUCTURE_BLOCK}\n\n${IMPLEMENTATION_FORMAT_BLOCK}\n` : ''}
@@ -966,7 +971,7 @@ export const READING_EXTRACT_SYSTEM =
 // ETAPA 1 — extrai o Canonical Lesson JSON. Aqui mora TODO o trabalho de "analise":
 // traducao (se EN), modernizacao (VERSION_GUARD + contrato), grafia canonica (OCR),
 // correcao tecnica, decisao de quais diagramas cabem. A saida alimenta a ETAPA 2.
-export const buildReadingExtractFactsPrompt = ({ lessonTitle, transcript, instruction, sourceLanguage = 'pt', canonicalNames = '' }) => `
+export const buildReadingExtractFactsPrompt = ({ lessonTitle, transcript, instruction, sourceLanguage = 'pt', canonicalNames = '', ocrDiagrams = '' }) => `
 Extract a COMPLETE, structured knowledge representation of the lesson below as PURE JSON. Text
 fields go in BRAZILIAN PORTUGUESE${sourceLanguage === 'en' ? ' (the transcript is in ENGLISH — translate the explanatory text, but KEEP code, identifiers, class/method/annotation and library names as-is)' : ''}.
 This is an ANALYSIS step: capture facts faithfully — do NOT teach, do NOT write prose, do NOT add
@@ -981,7 +986,12 @@ ${CORRECTNESS_BLOCK}${canonicalNames ? `
 
 CANONICAL NAMES FROM THE SCREEN (OCR ground-truth, ordered by frequency). Use EXACTLY this spelling
 for package/class/endpoint/entity/method names, consistently. But if a token is CLEARLY an OCR misread
-of a well-known name ("SpingBoot" -> "Spring Boot"), prefer the corrected spelling: """${canonicalNames}"""` : ''}
+of a well-known name ("SpingBoot" -> "Spring Boot"), prefer the corrected spelling: """${canonicalNames}"""` : ''}${ocrDiagrams ? `
+
+DIAGRAM(S) DETECTED ON SCREEN (ground-truth extracted from the video via computer vision). If any of
+these matches what the transcript is discussing, use its ACTUAL structure (nodes/relations) for the
+"diagrams" field below instead of inventing one from scratch — this is more faithful than
+reconstructing from speech alone. Ignore any that are unrelated to the transcript: """${ocrDiagrams}"""` : ''}
 
 COMPLETENESS: capture EVERYTHING technical the lesson actually covered — every concept, every code
 snippet (as modernized code, ready to reuse verbatim), every build step, every pitfall and best
@@ -991,7 +1001,8 @@ invent: if the lesson did not cover something, leave that array empty. No timest
 DIAGRAM PLANNING: decide which diagram(s), if any, genuinely help (do not force one). For each, give
 its type and the list of nodes (AT MOST 8 nodes — pick the essential ones). Types: "flowchart"
 (flow/process/architecture), "classDiagram" (entities/domain model with attributes), "mindmap"
-(concept hierarchy). If a diagram adds nothing, return an empty diagrams array.
+(concept hierarchy). If a matching diagram was detected on screen (above), BASE the nodes on its real
+structure, not on a generic guess. If a diagram adds nothing, return an empty diagrams array.
 
 Output PURE JSON, no code fences, no text before/after, EXACTLY this schema (omit nothing; use [] or
 null when empty):
@@ -1063,6 +1074,15 @@ ${MERMAID_MINDMAP_RULES}
 ${MERMAID_FLOW_RULES}
 - CLASS DIAGRAM / DOMAIN MODEL -> classDiagram:
 ${MERMAID_CLASSES_RULES}
+
+DIAGRAM EXPLANATION — MANDATORY, no exceptions: immediately AFTER every \`\`\`mermaid block, write 1-3
+paragraphs of prose that translate it into words — the flow/decision branches (flowchart), the
+entities and their relationships (classDiagram), or the topic hierarchy (mindmap). Use the fact
+sheet's "note" for that diagram as your starting point, but expand it into full prose. Write for a
+student who can ONLY LISTEN to this lesson as audio and cannot see the image — they must fully
+understand the diagram's logic from your words alone. NEVER follow a diagram directly with unrelated
+text or a new section (text -> diagram -> unrelated text is FORBIDDEN); the order is always: text ->
+diagram -> explanation of that diagram -> continuation.
 
 Other rules:
 - Use **bold** for technical terms. Do NOT cite timestamps nor any instructor name.
@@ -1150,6 +1170,32 @@ ${diagram}
 \`\`\`
 
 Return ONLY the corrected \`\`\`mermaid block, nothing else.`.trim();
+
+// === Reparo pos-geracao: diagrama SEM explicacao em prosa (garantia, nao so instrucao
+// de prompt) — ver server/ai/diagramExplanationRepair.mjs. So chamado quando o detector
+// (puro JS) acha um \`\`\`mermaid nao seguido de paragrafo explicativo.
+export const EXPLAIN_DIAGRAM_SYSTEM =
+  'You write a short prose explanation of a Mermaid diagram from a Brazilian Portuguese reading ' +
+  'lesson, for a student who can ONLY LISTEN to the lesson as audio (cannot see the image). ' +
+  'Output ONLY the explanation paragraph(s), in Brazilian Portuguese, no heading, no code fence, ' +
+  'no commentary about the task.';
+
+export const buildExplainDiagramPrompt = ({ lessonTitle, diagramMermaid, precedingContext = '' }) => `
+The Mermaid diagram below is from the reading lesson "${lessonTitle}" and is MISSING its prose
+explanation (every diagram must be followed by one). Write 1-3 paragraphs, in Brazilian Portuguese,
+translating the diagram into words: for a flowchart, narrate the sequence and any decision branches;
+for a classDiagram, narrate the entities and how they relate; for a mindmap, narrate the topic
+hierarchy. Write for someone who can ONLY LISTEN to this lesson (audio narration) and cannot see the
+image — they must fully understand the diagram's logic from your words alone.${precedingContext ? `
+
+Context — what the lesson was discussing right before this diagram: """${precedingContext}"""` : ''}
+
+Diagram:
+\`\`\`mermaid
+${diagramMermaid}
+\`\`\`
+
+Return ONLY the explanation paragraph(s) (plain prose, no heading, no code fence).`.trim();
 
 // === Job Interview Mode (per module) ===
 // Phase 1: generate 5 progressive technical questions from the module content.

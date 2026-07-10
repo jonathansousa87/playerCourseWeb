@@ -9,15 +9,19 @@
 import { promises as fs } from 'fs';
 import { spawn } from 'child_process';
 import { join, dirname, relative } from 'path';
+import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
-import { ensureServer, synthesize } from './kokoro.js';
+import { ensureServer, synthesize, phonemizeText, synthesizeFromPhonemes } from './kokoro.js';
 import { loadTranscriptForLesson } from './generator.js';
 import { query } from '../../db/index.js';
+import { loadPhonemeCache, getPhoneme, setPhoneme, savePhonemeCache } from './ttsPhonemeStore.js';
 
 // Voz padrao = preset JUNIOR do podcast (configuravel por env).
 const VOICE = () => (process.env.NARRATION_VOICE || process.env.PODCAST_VOICE_JUNIOR || 'pf_dora+bf_lily+if_sara').trim();
 const MAX_TTS_CHARS = 400;
+const truthy = (v) => /^(1|true|yes|on)$/i.test((v || '').trim());
+export const phonemeSpliceEnabled = () => truthy(process.env.NARRATION_PHONEME_SPLICE_ENABLED);
 
 const ffprobeDur = (file) =>
   new Promise((res) => {
@@ -183,6 +187,97 @@ const mapPool = async (items, limit, fn) => {
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 };
 
+// === Normalizacao de pronuncia por FONEMA SPLICING (NARRATION_PHONEME_SPLICE_ENABLED) ===
+// Termo tecnico capitalizado fora do inicio da frase (ex.: RequestBody, Controller,
+// Spring) tende a ser lido com sotaque portugues errado pelo Kokoro. Em vez de uma
+// LLM reescrever a grafia (testado, ficou pior — ex. "RequestBody" virou
+// "Requestybódi"), fonemizamos o termo em INGLES de verdade (Kokoro /dev/phonemize)
+// e colamos no meio do fonema PORTUGUES do resto da frase. Deteccao automatica (sem
+// lista manual por termo), filtrada por um dicionario PT-BR real (hunspell) pra nao
+// aplicar sotaque ingles em palavra que E portugues (titulo/tabela capitalizam TUDO,
+// nao so termo tecnico — ex.: "Atualiza"/"Precisamos" eram falso positivo).
+// Validado em spike (server/ai/spikeTtsPhonemeSplice.mjs) — usuario confirmou ouvindo
+// a aula real. Aqui e a MESMA logica, virando producao.
+const ALLCAPS_RE = /^[A-Z]{2,6}$/; // sigla curta -> ja soletrada por speakable(), nao mexe
+const CAP_WORD_RE = /\b[A-Z][\p{L}0-9]{2,}\b/gu; // \p{L} unicode: sem isso "Exclusão" truncava em "Exclus"
+const HUNSPELL_DICT = (process.env.HUNSPELL_PT_BR_DICT
+  || join(dirname(fileURLToPath(import.meta.url)), 'dict', 'pt_BR')).trim();
+
+const findTechTermSpans = (text, ptMap = new Map()) => {
+  const spans = [];
+  const sentenceRe = /[^.!?]+[.!?]*\s*/g;
+  let m;
+  while ((m = sentenceRe.exec(text))) {
+    const sentence = m[0];
+    const sentStart = m.index;
+    const trimmedOffset = sentence.length - sentence.trimStart().length;
+    CAP_WORD_RE.lastIndex = 0;
+    let cm;
+    while ((cm = CAP_WORD_RE.exec(sentence))) {
+      if (cm.index <= trimmedOffset) continue; // 1a palavra da frase -> pula
+      const word = cm[0];
+      if (ALLCAPS_RE.test(word)) continue; // sigla -> speakable() ja trata
+      if (ptMap.get(word)) continue; // hunspell reconhece como PT -> nao e termo tecnico
+      spans.push({ start: sentStart + cm.index, end: sentStart + cm.index + word.length, word });
+    }
+  }
+  return spans;
+};
+
+const collectCandidateWords = (texts) => {
+  const set = new Set();
+  for (const text of texts) for (const s of findTechTermSpans(text, new Map())) set.add(s.word);
+  return [...set];
+};
+
+// Classifica palavras como portugues (batch, 1 chamada hunspell pra todas). Falha do
+// hunspell (binario ausente etc.) -> mapa vazio, tudo vira candidato a termo tecnico
+// (degrada pro comportamento de antes do filtro, nao trava a narracao).
+const classifyPortuguese = (words) => new Promise((resolve) => {
+  if (!words.length) return resolve(new Map());
+  let p;
+  try { p = spawn('hunspell', ['-d', HUNSPELL_DICT, '-i', 'utf-8']); } catch { return resolve(new Map()); }
+  let out = '';
+  p.stdout.on('data', (d) => { out += d.toString(); });
+  p.on('error', () => resolve(new Map()));
+  p.on('close', () => {
+    const blocks = out.split('\n\n');
+    const map = new Map();
+    words.forEach((w, i) => {
+      const block = (blocks[i] || '').replace(/^Hunspell[^\n]*\n?/, '').trim();
+      map.set(w, block.startsWith('*') || block.startsWith('+') || block.startsWith('-'));
+    });
+    resolve(map);
+  });
+  p.stdin.write(words.join('\n') + '\n');
+  p.stdin.end();
+});
+
+// Fonemiza um bloco PT, trocando termo tecnico detectado pelo fonema em INGLES
+// (cacheado em ttsPhonemeStore). Retorna a string de fonemas combinada.
+const phonemizeSpliced = async (text, ptMap, cache) => {
+  const phonemizeCached = async (t, language) => {
+    const hit = getPhoneme(cache, t, language);
+    if (hit) return hit;
+    const p = await phonemizeText({ text: t, language });
+    setPhoneme(cache, t, language, p);
+    return p;
+  };
+  const spans = findTechTermSpans(text, ptMap);
+  if (!spans.length) return phonemizeCached(text, 'p');
+  const parts = [];
+  let cursor = 0;
+  for (const s of spans) {
+    const before = text.slice(cursor, s.start);
+    if (before.trim()) parts.push(await phonemizeCached(before, 'p'));
+    parts.push(await phonemizeCached(s.word, 'a'));
+    cursor = s.end;
+  }
+  const after = text.slice(cursor);
+  if (after.trim()) parts.push(await phonemizeCached(after, 'p'));
+  return parts.filter(Boolean).join(' ');
+};
+
 export const generateLessonNarration = async ({ coursesPath, courseTitle, lessonPrefix, voice }) => {
   // Fonte = a propria LEITURA (resumo) salva no banco.
   const rows = await query(
@@ -213,17 +308,43 @@ export const generateLessonNarration = async ({ coursesPath, courseTitle, lesson
   const segsFlat = [];
   blocks.forEach((b, bi) => { for (const piece of splitForTTS(b.text)) segsFlat.push({ blockIdx: bi, text: piece }); });
 
+  // Normalizacao por fonema (opt-in): classifica termo tecnico x portugues UMA vez pra
+  // todos os chunks (1 chamada hunspell), carrega o cache de fonemas do curso. Se algo
+  // falhar no meio (endpoint /dev/* indisponivel), desliga pro resto desta narracao e
+  // cai no caminho de texto puro de sempre — nunca aborta a narracao por causa disso.
+  const spliceOn = phonemeSpliceEnabled();
+  let spliceUsable = spliceOn;
+  let ptMap = new Map();
+  let phonemeCache = new Map();
+  if (spliceOn) {
+    const spoken = segsFlat.map((s) => speakable(s.text));
+    ptMap = await classifyPortuguese(collectCandidateWords(spoken));
+    phonemeCache = await loadPhonemeCache(coursesPath);
+  }
+
   const work = join(tmpdir(), `narr-${randomUUID()}`);
   await fs.mkdir(work, { recursive: true });
   try {
     const clips = new Array(segsFlat.length); // { path, dur }
     await mapPool(segsFlat, 4, async (seg, i) => {
-      const wav = await synthesize({ text: speakable(seg.text), voice: usedVoice, langCode: 'p' });
+      const spoken = speakable(seg.text);
+      let wav;
+      if (spliceUsable) {
+        try {
+          const phon = await phonemizeSpliced(spoken, ptMap, phonemeCache);
+          wav = await synthesizeFromPhonemes({ phonemes: phon, voice: usedVoice });
+        } catch (e) {
+          console.warn(`[narracao] fonema splice indisponível (${e.message}); caindo pro texto puro pro resto da aula`);
+          spliceUsable = false;
+        }
+      }
+      if (!wav) wav = await synthesize({ text: spoken, voice: usedVoice, langCode: 'p' });
       const clipPath = join(work, `c_${String(i).padStart(4, '0')}.wav`);
       await fs.writeFile(clipPath, wav);
       clips[i] = { path: clipPath, dur: await ffprobeDur(clipPath) };
     });
     if (clips.some((c) => !c)) { const e = new Error('falha sintetizando algum trecho'); e.code = 'TTS_FAILED'; throw e; }
+    if (spliceOn) await savePhonemeCache(coursesPath, phonemeCache);
 
     // segments por BLOCO (na ordem), somando a duracao dos seus chunks.
     const segments = blocks.map(() => ({ start: 0, end: 0, started: false }));

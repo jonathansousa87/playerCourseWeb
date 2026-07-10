@@ -165,6 +165,64 @@ export const synthesize = async (args) => {
   }
 };
 
+// Fonemiza um trecho num idioma (endpoint /dev/phonemize do Kokoro-FastAPI:
+// "a" = ingles americano, "p" = portugues). Usado pela normalizacao de
+// pronuncia por fonema splicing (narration.js): fonemiza termo tecnico em
+// INGLES de verdade e cola no meio do fonema PORTUGUES do resto da frase —
+// mais fiel que aproximar a grafia. Se o endpoint nao existir (imagem Kokoro
+// mais antiga), marca indisponivel pro resto do processo (nao insiste a cada
+// chamada) e o chamador cai pro synthesize() de texto puro.
+let devEndpointsOk = null; // null=desconhecido, true/false=checado
+export const phonemizeText = async ({ text, language = 'p' }) => {
+  if (devEndpointsOk === false) throw err('NO_DEV_ENDPOINTS', 'endpoints /dev/* do Kokoro indisponiveis (ja checado)');
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    const r = await fetch(`${url()}/dev/phonemize`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, language }), signal: ctrl.signal,
+    });
+    if (!r.ok) {
+      if (r.status === 404) devEndpointsOk = false;
+      throw new Error(`kokoro /dev/phonemize HTTP ${r.status}`);
+    }
+    devEndpointsOk = true;
+    const { phonemes } = await r.json();
+    return phonemes || '';
+  } finally {
+    clearTimeout(to);
+  }
+};
+
+// Sintetiza a partir de uma string de fonemas JA PRONTA (mistura de idiomas
+// possivel — ver phonemizeText). Mesmo semaforo/idle-stop de synthesize().
+export const synthesizeFromPhonemes = async ({ phonemes, voice }) => {
+  await kkAcquire();
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 60_000);
+    try {
+      const r = await fetch(`${url()}/dev/generate_from_phonemes`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phonemes, voice }), signal: ctrl.signal,
+      });
+      if (!r.ok) {
+        if (r.status === 404) devEndpointsOk = false;
+        throw new Error(`kokoro /dev/generate_from_phonemes HTTP ${r.status}`);
+      }
+      devEndpointsOk = true;
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length < 256) throw new Error('kokoro retornou audio vazio (fonemas)');
+      return buf;
+    } finally {
+      clearTimeout(to);
+    }
+  } finally {
+    kkRelease();
+    scheduleIdleStop();
+  }
+};
+
 const synthesizeNow = async ({ text, voice, speed = 1.0, langCode = 'p' }) => {
   const body = {
     model: 'kokoro',

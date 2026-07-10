@@ -21,6 +21,7 @@ import { transcribeToTxt, detectAudioLanguage } from './whisperx.js';
 import { processModuleOcr, ocrTextEnabled, ocrDiagramEnabled } from './ocr/ocrModule.mjs';
 import { correctTranscriptWithOcr } from './ocr/ocrCorrect.mjs';
 import { repairMarkdownMermaid, mermaidRepairEnabled } from './mermaidRepair.mjs';
+import { repairMissingDiagramExplanations, diagramExplanationRepairEnabled } from './diagramExplanationRepair.mjs';
 import { query } from '../../db/index.js';
 import {
   READING_PLAN_SYSTEM,
@@ -506,9 +507,10 @@ const mergeUsage = (a, b) => {
 };
 
 // Prepara os inputs comuns as duas etapas: texto normalizado (F1), idioma detectado,
-// header do contrato (F4) e a lista de nomes canonicos (OCR top-40). FONTE UNICA pra a
-// extracao (pre-passe da Course Memory) e a condensacao usarem a MESMA chave de cache.
-const preparedInputs = ({ merged, language = 'pt', normMap, contract = '', ocrVocabulary = [] }) => {
+// header do contrato (F4), a lista de nomes canonicos (OCR top-40) e o diagrama real
+// extraido da tela (ground-truth). FONTE UNICA pra a extracao (pre-passe da Course
+// Memory) e a condensacao usarem a MESMA chave de cache.
+const preparedInputs = ({ merged, language = 'pt', normMap, contract = '', ocrVocabulary = [], ocrDiagrams = [] }) => {
   const text = normMap && normMap.length ? applyNorm(merged, normMap) : merged;
   // "auto" -> detecta o idioma desta aula a partir do texto (lote misto PT/EN).
   const sourceLanguage = language === 'auto' ? detectLang(text) : language;
@@ -521,7 +523,13 @@ const preparedInputs = ({ merged, language = 'pt', normMap, contract = '', ocrVo
   const canonicalNames = ocrVocabulary?.length
     ? ocrVocabulary.filter((t) => !isVer(t)).slice(0, 40).join(', ')
     : '';
-  return { text, sourceLanguage, contractHeader, canonicalNames };
+  // Diagrama real extraido do video (Qwen3-VL, ver ocr/extractDiagram.mjs) — antes so
+  // alimentava o contrato (F4); agora tambem vai DIRETO pra Etapa 1, que decidia o
+  // diagrama da aula so pela fala (inventava do zero, sem ver a tela).
+  const diagramContext = ocrDiagrams?.length
+    ? ocrDiagrams.map((d) => d.mermaid).join('\n\n---\n\n')
+    : '';
+  return { text, sourceLanguage, contractHeader, canonicalNames, diagramContext };
 };
 
 const stripFences = (s) => (s || '').trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
@@ -562,12 +570,12 @@ const repairFactsJson = (raw) => {
 // nao validar nem apos o reparo (jsonrepair), cai pro DeepSeek — igual ao fluxo de
 // sempre. Nunca cacheia JSON invalido.
 const extractFactsCached = async ({ lessonTitle, prepared, instruction, contract = '', model, coursesPath, ensureQwen, extractStats }) => {
-  const { text, sourceLanguage, canonicalNames, contractHeader } = prepared;
-  const factsKey = { merged: text, canonicalNames, contract, instruction, sourceLanguage };
+  const { text, sourceLanguage, canonicalNames, contractHeader, diagramContext } = prepared;
+  const factsKey = { merged: text, canonicalNames, diagramContext, contract, instruction, sourceLanguage };
   let facts = await getCachedFacts(coursesPath, factsKey);
   let usage = null;
   if (facts == null) {
-    const userPrompt = contractHeader + buildReadingExtractFactsPrompt({ lessonTitle, transcript: text, instruction, sourceLanguage, canonicalNames });
+    const userPrompt = contractHeader + buildReadingExtractFactsPrompt({ lessonTitle, transcript: text, instruction, sourceLanguage, canonicalNames, ocrDiagrams: diagramContext });
 
     if (extractLocalEnabled()) {
       if (!fitsLocalContext(READING_EXTRACT_SYSTEM, userPrompt)) {
@@ -602,12 +610,17 @@ const extractFactsCached = async ({ lessonTitle, prepared, instruction, contract
     }
 
     if (facts == null) {
+      // thinking desligado: A/B real (aula isolada, aula pratica e grupo
+      // mesclado por planGrouping) mostrou OFF igual ou melhor em conteudo,
+      // ~2x mais rapido e ~60% mais barato — e ON chegou a gerar um exemplo
+      // de codigo com import repetido ~30x (loop degenerado) num dos testes.
       const ex = await chatCompletion({
         system: READING_EXTRACT_SYSTEM,
         user: userPrompt,
         model,
         temperature: 0, // extracao e decisao estruturada, nao prosa criativa
         maxTokens: 14000,
+        thinking: { type: 'disabled' },
       });
       facts = stripFences(ex.content);
       usage = ex.usage;
@@ -617,20 +630,22 @@ const extractFactsCached = async ({ lessonTitle, prepared, instruction, contract
   return { facts, usage };
 };
 
-const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt', normMap, clarity = false, contract = '', ocrVocabulary = [], coursesPath, courseMemory = '', ensureQwen, extractStats }) => {
+const condenseText = async ({ lessonTitle, merged, model, instruction, language = 'pt', normMap, clarity = false, contract = '', ocrVocabulary = [], ocrDiagrams = [], coursesPath, courseMemory = '', ensureQwen, extractStats }) => {
   if (!merged || merged.length < 40) return null;
-  const prepared = preparedInputs({ merged, language, normMap, contract, ocrVocabulary });
+  const prepared = preparedInputs({ merged, language, normMap, contract, ocrVocabulary, ocrDiagrams });
   let content, usage, usedModel;
   if (twoStageEnabled()) {
     // === Leitura em 2 ETAPAS ===
     const { facts, usage: extractUsage } = await extractFactsCached({ lessonTitle, prepared, instruction, contract, model, coursesPath, ensureQwen, extractStats });
     // ETAPA 2 (redigir a aula didatica a partir do JSON + Course Memory).
+    // thinking desligado — mesma justificativa da Etapa 1, validado no A/B.
     const wr = await chatCompletion({
       system: READING_WRITE_SYSTEM,
       user: buildReadingWriteDidacticPrompt({ lessonTitle, facts, instruction, clarity, courseMemory }),
       model,
       temperature: 0.3,
       maxTokens: 14000,
+      thinking: { type: 'disabled' },
     });
     content = wr.content;
     usage = mergeUsage(extractUsage, wr.usage);
@@ -656,6 +671,16 @@ const condenseText = async ({ lessonTitle, merged, model, instruction, language 
       console.log(`[mermaid] leitura "${lessonTitle}": ${r.repaired} reparado(s), ${r.failed} sem conserto de ${r.checked} diagrama(s)`);
     }
     text2 = r.markdown;
+  }
+  // Garantia (nao so instrucao de prompt): todo diagrama tem que vir seguido de
+  // explicacao em prosa (aluno que so ESCUTA a aula). Detector puro JS; so chama o
+  // DeepSeek pro(s) diagrama(s) que realmente violam a regra.
+  if (diagramExplanationRepairEnabled()) {
+    const de = await repairMissingDiagramExplanations(text2, { lessonTitle, model: usedModel });
+    if (de.fixed || de.failed) {
+      console.log(`[diagrama] leitura "${lessonTitle}": ${de.fixed} explicacao(oes) inserida(s), ${de.failed} sem conserto de ${de.checked} diagrama(s)`);
+    }
+    text2 = de.markdown;
   }
   lintReadingStructure(text2, { clarity, lessonTitle }); // 2.2: loga problemas estruturais
   return { text: text2, usage, model: usedModel };
@@ -704,17 +729,17 @@ const mergedForLesson = async ({ sources, ocrVocabulary = [], preCondenseOn, cou
   return parts.filter(Boolean).join('\n\n');
 };
 
-const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, clarity = false, contract = '', ocrVocabulary = [], courseMemory = '', extractStats }) => {
+const condenseLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, clarity = false, contract = '', ocrVocabulary = [], ocrDiagrams = [], courseMemory = '', extractStats }) => {
   const merged = await mergedForLesson({ sources, ocrVocabulary, preCondenseOn, coursesPath, ensureQwen });
-  return condenseText({ lessonTitle, merged, model, instruction, language, normMap, clarity, contract, ocrVocabulary, coursesPath, courseMemory, ensureQwen, extractStats });
+  return condenseText({ lessonTitle, merged, model, instruction, language, normMap, clarity, contract, ocrVocabulary, ocrDiagrams, coursesPath, courseMemory, ensureQwen, extractStats });
 };
 
 // F2.1 — Course Memory. Pre-passe: extrai SO os fatos de uma aula (merged + ETAPA 1),
 // pra montar o "ja ensinado" antes de redigir. Cacheado -> a condensacao reusa (cache hit).
-const extractFactsForLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, contract = '', ocrVocabulary = [], extractStats }) => {
+const extractFactsForLesson = async ({ lessonTitle, sources, model, instruction, language = 'pt', preCondenseOn, coursesPath, ensureQwen, normMap, contract = '', ocrVocabulary = [], ocrDiagrams = [], extractStats }) => {
   const merged = await mergedForLesson({ sources, ocrVocabulary, preCondenseOn, coursesPath, ensureQwen });
   if (!merged || merged.length < 40) return null;
-  const prepared = preparedInputs({ merged, language, normMap, contract, ocrVocabulary });
+  const prepared = preparedInputs({ merged, language, normMap, contract, ocrVocabulary, ocrDiagrams });
   const { facts } = await extractFactsCached({ lessonTitle, prepared, instruction, contract, model, coursesPath, ensureQwen, extractStats });
   return facts;
 };
@@ -1294,7 +1319,7 @@ const generateReadingModuleFs = async ({
     const factsByIdx = await mapPool(plan, 4, async (lesson, idx) => {
       const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
       try {
-        return await extractFactsForLesson({ lessonTitle: titles[idx], sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, contract, ocrVocabulary: ocrVocab, extractStats });
+        return await extractFactsForLesson({ lessonTitle: titles[idx], sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, contract, ocrVocabulary: ocrVocab, ocrDiagrams: ocrDiags, extractStats });
       } catch { return null; }
     });
     memoryByIdx = buildCourseMemory(factsByIdx, titles);
@@ -1308,7 +1333,7 @@ const generateReadingModuleFs = async ({
     const sources = lesson.sources.map((id) => transcripts[id]).filter(Boolean);
     let res;
     try {
-      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab, courseMemory: memoryByIdx[idx] || '', extractStats });
+      const out = await condenseLesson({ lessonTitle: title, sources, model, instruction, language, preCondenseOn, coursesPath, ensureQwen, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab, ocrDiagrams: ocrDiags, courseMemory: memoryByIdx[idx] || '', extractStats });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };
       } else {
@@ -1470,7 +1495,7 @@ const generateReadingModuleDrive = async ({
         throw new Error(`falha ao ler ${readErrors}/${totalParts} transcricao(oes) no Drive`);
       }
       const out = await condenseText({
-        lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab, coursesPath, ensureQwen, extractStats,
+        lessonTitle: title, merged: parts.filter(Boolean).join('\n\n'), model, instruction, language, normMap, clarity: clarityOn, contract, ocrVocabulary: ocrVocab, ocrDiagrams: ocrDiags, coursesPath, ensureQwen, extractStats,
       });
       if (!out) {
         res = { title, ok: false, error: 'transcricao vazia' };

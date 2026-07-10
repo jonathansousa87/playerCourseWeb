@@ -253,3 +253,176 @@ didática funcionarem de verdade.
   nível sênior. Manter.
 - Ordem de execução: começar por Fase 0 (0.1 é trivial e todos mandam fazer "hoje"),
   Fase 1 depois de um design mais detalhado.
+
+---
+
+## Benchmark LFM2.5 vs Qwen/DeepSeek (spike, não mexe em produção)
+
+Motivação: LFM2.5 (Liquid AI) é MUITO menor que o stack atual (texto 8B-A1B
+MoE com só 1.5B ativo/token; VL 1.6B) — testar se dá pra rodar texto+VL+embedding
+juntos sem revezar VRAM na RTX 2080 Ti (11GB), e se a qualidade se mantém.
+Scripts: `server/ai/spikeLfmServer.mjs` (start/stop standalone), `spikeTextBenchRun.mjs`
+(Track 1), `spikeVlCompare.mjs` (Track 2). Saída em `docs/spike-out/lfm-text-bench/`
+e `docs/spike-out/vl-bench/`.
+
+- [x] Setup — baixados LFM2.5-8B-A1B-Q4_K_M (5.16GB), LFM2.5-VL-1.6B-Q8_0 (1.25GB)
+  + mmproj (583MB), LFM2.5-Embedding-350M-Q8_0 (379MB). **Confirmado: os 3 juntos
+  usam 8,7GB de VRAM (2,1GB livre) — cabem SIMULTANEAMENTE sem revezar**, ao
+  contrário de hoje (Qwen texto 5,8GB + Qwen VL 5,8GB não cabem juntos).
+- [x] Track 1 (texto) — 20 lições reais de "Especialista Spring REST" (módulos
+  03/06/08/09), Qwen3.5-9B vs LFM2.5-8B-A1B na extração Etapa 1 (Canonical
+  Lesson JSON), 5 delas também com DeepSeek. 40/40 chamadas OK, 0 falhas.
+  Spot-check qualitativo (ver `lfm-text-bench/NOTAS-QUALITATIVAS.md`): LFM ficou
+  mais genérico, perdeu o grounding no projeto real do curso, e deixou `steps`/
+  `diagrams` vazios onde o Qwen preencheu com conteúdo real. **1 amostra só —
+  falta ler os outros 19 pares antes de decidir.**
+- [x] Track 2 (diagrama) — Qwen3-VL-8B vs LFM2.5-VL-1.6B no MESMO prompt de
+  produção (`DIAGRAM_PROMPT`/`toMermaid` de `extractDiagram.mjs`), em 4 frames
+  reais (1 flowchart de raias "bom caso", 3 diagramas de arquitetura complexos
+  "caso difícil": microsserviços+Kafka, hexagonal, Clean Architecture círculos).
+  Ver `vl-bench/NOTAS-QUALITATIVAS.md`: **contagem de nodes/edges enganou** — o
+  LFM teve MAIS nodes nos casos difíceis mas com estrutura ERRADA (arestas que
+  não existem no diagrama, "estrela" a partir de um nó central em vez do fluxo
+  real); o Qwen3-VL, mais lento (7-12s vs 1.3-3.5s), continua entendendo melhor
+  a estrutura de verdade. Confirma a hipótese original: LFM-VL serve como
+  detector/filtro rápido, não como substituto direto do extrator.
+- [x] Track 4 (embedding) — **descartada sem rodar**. LFM2.5 perdeu em
+  qualidade nos dois testes cabeça-a-cabeça (texto e diagrama) apesar de mais
+  rápido/leve; sem vitória em nenhum dos dois, não compensa continuar. Servers/
+  modelos LFM2.5 ficam baixados em `/mnt/nvme2/llm/models/` (7,4GB) e os
+  scripts (`spikeLfmServer.mjs`, `spikeTextBenchRun.mjs`, `spikeVlCompare.mjs`)
+  ficam no repo caso valha retomar no futuro.
+- [x] Track 3 (normalização TTS) — 3 iterações, a mais recente é a boa:
+  1. `spikeTtsNormalize.mjs` (Qwen reescreve grafia fonética, 8 frases
+     isoladas do curso ERRADO) — usuário reportou diferença pouco perceptível
+     em frases curtas.
+  2. `spikeTtsNormalizeLesson.mjs` (aula inteira, mas do curso errado e da
+     TRANSCRIÇÃO BRUTA, não da leitura) — usuário corrigiu: sempre testamos
+     com `Spring Rest-Construindo Web Services Poderosos`, e o teste tem que
+     ser na LEITURA (onde está a fidelidade), não no vídeo cru.
+  3. `spikeTtsNormalizeLeitura.mjs` (leitura real, curso certo, mesma
+     segmentação/voz da narração de produção já existente) — só aí o usuário
+     conseguiu comparar de verdade, e reportou que "@RequestBody" saiu pior
+     normalizado ("Requestybódi") que sem normalizar, e pediu algo **mais
+     automatizado** em vez de catalogar exemplo por exemplo (pesquisar melhor).
+  4. **Pesquisa + descoberta**: Kokoro-FastAPI expõe `/dev/phonemize`
+     `{text, language}` e `/dev/generate_from_phonemes` `{phonemes, voice}` —
+     dá pra fonemizar um termo em INGLÊS de verdade (`language="a"`) e colar
+     esse fonema IPA no meio de uma frase fonemizada em PORTUGUÊS
+     (`language="p"`), sintetizando a mistura numa chamada só. Testado ao vivo:
+     "RequestBody" em EN = `ɹəkwˈɛstbˌɑdi` (correto) vs em PT =
+     `xekˈesʧ bˈodi` (o que soava errado). Zero LLM.
+  5. `spikeTtsPhonemeSplice.mjs` — detecção automática (sem lista manual por
+     termo): qualquer palavra capitalizada que NÃO está no início da frase, no
+     corpus de aula técnica em PT-BR, é quase sempre nome de classe/framework;
+     siglas 2-6 letras TODAS-MAIÚSCULAS ficam de fora (soletração já funciona).
+     Cache persistente de fonemas em `docs/spike-out/tts-bench/phoneme-cache.json`.
+     Rodado na mesma aula/leitura real: 51 termos únicos detectados, maioria
+     correta (RequestBody, Controller, Repository, Service, Spring, Boot,
+     Hibernate, Lombok, Flyway...). **Falsos positivos conhecidos** (~10-15%):
+     fragmentos do TÍTULO da aula (title-case quebra a heurística de "início de
+     frase") e células de TABELA markdown (viram uma "sentença" só ao juntar
+     colunas) — ex.: "Cria"/"Atualiza"/"Precisamos"/"Verbo" foram mandados pro
+     fonemizador em inglês por engano.
+  6. **Fix**: usuário confirmou que a direção geral melhorou, só pediu pra não
+     aplicar sotaque inglês em palavra que É português. Achado um dicionário
+     PT-BR real no sistema (hunspell, pacote flatpak `org.gnome.Platform.Locale`)
+     — `classifyPortuguese()` roda TODOS os candidatos numa chamada batch e
+     descarta quem o hunspell reconhece como português (`*`/`+`/`-`) antes de
+     mandar pro fonemizador em inglês. Também corrigido bug de truncagem
+     (`CAP_WORD_RE` não pegava acento — "Exclusão" virava "Exclus" e ia pro
+     fonemizador errado por estar incompleta; trocado pra `\p{L}` unicode).
+     Resultado: de 51 candidatos, 15 eram falso positivo de verdade (Criação,
+     Atualização, Exclusão, Resposta, Erro, Verbo, Finalidade, Precisamos,
+     Inserir, Substituir, Remover — todos descartados corretamente); 36 termos
+     técnicos reais ficaram (RequestBody, Controller, Repository, Service,
+     Spring, Boot, Hibernate, Lombok, Flyway, BadRequestException...). Único
+     residual sabido: "Java"/"Data"/"Status" também foram descartados como PT
+     (são loanwords/nomes ambíguos que o dicionário reconhece) — pronúncia
+     nesses 3 fica em português, aceitável (diferença pequena). Áudio
+     regenerado em `docs/spike-out/tts-bench/aula-crud-leitura-fonema-splice.mp3`
+     — **aguardando usuário ouvir de novo antes de decidir virar produção.**
+- [x] **DECISÃO FINAL: não substituir Qwen3.5-9B nem Qwen3-VL-9B por LFM2.5.**
+  Produção continua como está. O único ganho real do LFM2.5 (rodar texto+VL+
+  embedding juntos em 8,7GB sem revezar) não compensa a perda de qualidade
+  observada tanto na extração de texto (menos grounded, `steps`/`diagrams`
+  vazios) quanto na extração de diagrama (estrutura errada apesar de mais
+  nodes). Sem ação de código pendente em produção.
+
+---
+
+## Pipeline de diagrama (OCR/VL) + TTS por fonema — LEVADOS PRA PRODUÇÃO
+
+Usuário aprovou plano (`~/.claude/plans/wiggly-dancing-ritchie.md`) e as 4 partes foram
+implementadas e testadas ao vivo (não é mais spike):
+
+- [x] **Parte A — detector de diagrama embutido no OCR** (`server/ai/ocr/extractDiagram.mjs`):
+  `OCR_PROMPT` ganhou trailer `DIAGRAM: yes/no` (mesma chamada/imagem já paga); só dispara
+  `DIAGRAM_PROMPT` (caro) quando `yes`. Resposta malformada/ausente assume `yes` (nunca perde
+  diagrama por falha de parse). Testado ao vivo no vídeo real do DFD (curso "Requirements
+  Modeling Masterclass", módulo 5): extraiu 2 diagramas fiéis ao que foi inspecionado
+  visualmente antes nesta sessão, 0/4 frames pularam (vídeo é todo sobre o diagrama, esperado).
+- [x] **Parte B — dedup de diagramas quase-idênticos** (mesmo arquivo, fim de
+  `extractDiagrams()`): `dedupeDiagrams()` agrupa por Jaccard >0.85 do set de labels dos nodes,
+  mantém o mais completo de cada grupo. 0 duplicata no teste (os 2 diagramas extraídos eram
+  genuinamente diferentes).
+- [x] **Parte C — injeção direta do diagrama no prompt da aula** (`server/ai/prompts.js`,
+  `server/ai/readingCourse.js`): `ocrDiagrams` agora é threaded ponta a ponta
+  (`preparedInputs` → `extractFactsCached` → `buildReadingExtractFactsPrompt`, + os 2 call
+  sites fs/Drive que antes descartavam a variável na desestruturação). Antes, o Mermaid
+  extraído do vídeo só influenciava o `contract`; agora chega DIRETO na Etapa 1, que decidia o
+  diagrama da aula só pela fala (inventava do zero). Testado isoladamente (sem custo de
+  DeepSeek): `buildReadingExtractFactsPrompt` confirmado injetando o bloco
+  "DIAGRAM(S) DETECTED ON SCREEN" com o Mermaid real. Sem flag nova (aditivo, no-op sem
+  diagrama).
+- [x] **Parte D — TTS por fonema splicing em produção** (`server/ai/kokoro.js`:
+  `phonemizeText`/`synthesizeFromPhonemes` novos, mesmo semáforo/idle-stop de `synthesize()`,
+  fallback gracioso se os endpoints `/dev/*` não existirem; `server/ai/narration.js`:
+  `findTechTermSpans`/`classifyPortuguese`/`phonemizeSpliced` — mesma lógica validada no spike,
+  agora produção; `server/ai/ttsPhonemeStore.js` novo, cache por curso; dicionário PT-BR
+  copiado do flatpak pro repo em `server/ai/dict/pt_BR.{aff,dic}` (path frágil antes, agora
+  estável). Flag `NARRATION_PHONEME_SPLICE_ENABLED=1` (default ON). **Testado ao vivo**:
+  regenerou a narração real da aula CRUD (curso `Spring Rest-Construindo Web Services
+  Poderosos - Leitura`, modo Drive ativo) — 532.83s, 79 blocos, cache de fonemas populado com
+  172 entradas (splice realmente rodou, não caiu no fallback). Duração bate com o spike já
+  validado pelo usuário (532.4s).
+- [x] `node --check` + `npx eslint` em todos os arquivos tocados: só os 2 erros
+  `no-empty` pré-existentes em `readingCourse.js` (confirmado via `git stash`, mesma
+  linha antes das mudanças) — nada novo introduzido.
+- [x] **Regra adicional (pós-implementação, sugestão do usuário + GPT):** o diagrama
+  virar Mermaid correto não garantia que ele fosse EXPLICADO em prosa — a narração
+  pula o bloco `mermaid` (correto, não dá pra falar um desenho), mas nada garantia
+  texto explicando a lógica dele. Adicionado em `prompts.js`
+  (`buildReadingWriteDidacticPrompt` E `buildReadingCondensePrompt`, os dois
+  caminhos): regra MANDATÓRIA — todo diagrama tem que vir seguido de 1-3
+  parágrafos traduzindo ele pra palavras (fluxo/decisões, relações de classe, ou
+  hierarquia, conforme o tipo), escritos pensando num aluno que SÓ ESCUTA a aula
+  (sem ver a imagem); proibido diagrama seguido de texto não-relacionado. Reforçado
+  também no `SELF_CHECK_BLOCK` (rubrica silenciosa que já existia pra outras regras
+  de diagrama).
+- [x] **Reparo pós-geração (GARANTIA de código, não só instrução de prompt)** —
+  `server/ai/diagramExplanationRepair.mjs` novo, MESMO padrão do
+  `mermaidRepair.mjs` já existente: detector puro JS (grátis) varre cada
+  ` ```mermaid ` do markdown gerado e verifica se vem seguido de um parágrafo de
+  prosa (≥40 chars); se não vier, chama o DeepSeek SÓ pra esse diagrama
+  (`buildExplainDiagramPrompt`, prompt novo) e insere a explicação faltante. Nunca
+  remove nada, nunca derruba a geração se falhar. Flag
+  `DIAGRAM_EXPLANATION_ENABLED=1` (default ON). Chamado em `condenseText`
+  logo após o `repairMarkdownMermaid` existente.
+- [x] **Verificação end-to-end real**: regenerei o módulo 5 "Data Modeling" do
+  curso "Requirements Modeling Masterclass..." (DFD/ERD reais, 7 vídeos, forçando
+  modo filesystem só pro teste pra não mexer no curso ativo em Drive) com TODAS as
+  mudanças da sessão ligadas. Resultado: detector pulou 3/4, 1/4, 1/4, 2/4 frames
+  sem diagrama em 4 dos 6 vídeos (economia real); dedup removeu 1 duplicata; **o
+  reparo pós-geração disparou de verdade** — 1 diagrama saiu sem explicação e foi
+  corrigido automaticamente (log: `1 explicacao(oes) inserida(s)`) — prova a
+  garantia funcionando em produção, não só em teste isolado.
+- [x] **Bug achado no próprio teste, corrigido**: o detector considerava só a
+  PRIMEIRA LINHA após o diagrama — um rótulo curto em negrito tipo
+  "**Explicação do diagrama:**" (visto no resultado real, com a explicação de
+  verdade logo na linha seguinte, mesma paragrafo) ficava abaixo do limiar de 40
+  chars e disparava reparo REDUNDANTE (não errado, só duplicava a explicação).
+  Corrigido: agora acumula o PARÁGRAFO inteiro (até linha em branco ou
+  heading/fence/tabela) antes de medir. Validado com 2 testes isolados (caso com
+  label+continuação → não dispara mais; caso realmente sem explicação → ainda
+  dispara e repara certo, chamada real ao DeepSeek confirmada).

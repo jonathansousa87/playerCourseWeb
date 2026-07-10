@@ -35,3 +35,7 @@ video-durations-cache.json
 
 # Notas de pesquisa pessoais (nao versionadas)
 pesquisa*.txt.transcode-cache/
+
+# Scripts e saidas de spike/benchmark (experimentais, nao vao pra producao)
+docs/spike-out/
+server/ai/spike*.mjs
